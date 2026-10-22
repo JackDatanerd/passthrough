@@ -817,6 +817,14 @@ async function resetPassword(c) {
   if (!swapped) return c.json({ success: false, code: 'RESET_LINK_INVALID', message: 'Reset link invalid or expired.' }, 400)
   await revokeAllSessions(supabase, user.id)
 
+  // The reset also verified the address (see email_verified above). An account that was still unverified is verifying its email
+  // for the first time right here, so it earns its welcome code exactly as clicking the verification link would have: until now
+  // only verifyEmail issued it, and someone who verified through a password reset never got one. Idempotent and best-effort.
+  if (!user.emailVerified) {
+    const work = grantWelcomeCode(c.env, supabase, user)
+    try { c.executionCtx.waitUntil(work) } catch (_) { await work }
+  }
+
   // BUG FIX (account lockout, section audit round 2): proving control of the
   // account's inbox — clicking a time-limited, single-use emailed link — is a
   // far stronger identity check than the "8 failed guesses from 2+ IPs" the

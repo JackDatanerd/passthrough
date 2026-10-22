@@ -58,6 +58,7 @@ const PartnerDetail      = lazyWithRetry(() => import('./pages/admin/PartnerDeta
 const AdminUsers         = lazyWithRetry(() => import('./pages/admin/AdminUsers'))
 const AdminScans         = lazyWithRetry(() => import('./pages/admin/AdminScans'))
 const AdminPayments      = lazyWithRetry(() => import('./pages/admin/AdminPayments'))
+const AdminPromo         = lazyWithRetry(() => import('./pages/admin/AdminPromo'))
 const AdminWebhooks      = lazyWithRetry(() => import('./pages/admin/AdminWebhooks'))
 const AdminLeads         = lazyWithRetry(() => import('./pages/admin/AdminLeads'))
 const AdminSystemHealth  = lazyWithRetry(() => import('./pages/admin/AdminSystemHealth'))
@@ -166,6 +167,7 @@ function RoutedApp() {
             <Route path="users"        element={<AdminUsers />} />
             <Route path="scans"        element={<AdminScans />} />
             <Route path="payments"     element={<AdminPayments />} />
+            <Route path="promo"        element={<AdminPromo />} />
             <Route path="webhooks"     element={<AdminWebhooks />} />
             <Route path="leads"        element={<AdminLeads />} />
             <Route path="health"       element={<AdminSystemHealth />} />

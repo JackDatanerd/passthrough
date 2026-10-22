@@ -3,6 +3,8 @@ import PromoCountdown from '../ui/PromoCountdown'
 import { usePricing, fmtPrice } from '../../hooks/usePricing'
 import { ATS_BADGE_THRESHOLD, ATS_PASS_THRESHOLD, MAX_FIX_RETRIES } from '../../lib/scoreThresholds'
 import { ReferralCodeEntry, PricingFailedNotice } from '../ui/ReferralCodeEntry'
+import NewTag from '../ui/NewTag'
+import { coverLetterText } from '../../lib/coverLetterOffer'
 
 // A typical professional resume writer's fee, in cents (USD only - see showWriterCompare). Used as the
 // reference point on the offer; change it here if the market figure you stand behind changes.
@@ -48,10 +50,10 @@ function OfferCard({ title, price, note, points, featured = false, flag = 'Best 
       <p className="mt-1 text-3xl font-bold tracking-tight text-gray-900">{price}</p>
       {note && <p className="text-xs text-gray-500">{note}</p>}
       <ul className="mt-3 mb-4 flex-1 space-y-1.5 text-sm text-gray-600">
-        {points.map(([ok, text]) => (
+        {points.map(([ok, text, isNew]) => (
           <li key={text} className="flex gap-2">
             <span aria-hidden="true" className={ok ? 'text-green-600 font-bold' : 'text-gray-400'}>{ok ? '✓' : '–'}</span>
-            <span>{text}</span>
+            <span>{isNew && <><NewTag />{' '}</>}{text}</span>
           </li>
         ))}
       </ul>
@@ -103,6 +105,8 @@ export default function FixBanner({
 
   // The "$X more" nudge uses live prices, so it is true during a promo, a referral discount or neither.
   const stepUp = byTier('FIX').amount - byTier('FIX_PLAIN').amount
+  // The cover letter is the newest thing a purchase includes, so every card names it, with that tier's allowance.
+  const letter = tier => [true, coverLetterText(pricing, tier), true]
   const nudge = stepUp > 0 ? `Only ${fmtPrice(stepUp, currency)} more than the plain fix` : ''
 
   const normalizedCode = (referralCode || '').trim().toUpperCase()
@@ -171,7 +175,7 @@ export default function FixBanner({
   const shared = (
     <>
       {showCountdown && (
-        <PromoCountdown endsAt={pricing.promoEndsAt} clockOffsetMs={clockOffsetMs} onExpire={refreshPricing} className="mb-3" />
+        <PromoCountdown endsAt={pricing.promoEndsAt} clockOffsetMs={clockOffsetMs} label={pricing.promoLabel} onExpire={refreshPricing} className="mb-3" />
       )}
       {hasCredit && (
         <p className="text-sm text-green-700 mt-1 mb-3 font-medium">
@@ -217,7 +221,7 @@ export default function FixBanner({
           <OfferCard
             title="Fix only"
             price={<PriceTag tier="FIX_PLAIN" byTier={byTier} currency={currency} />}
-            points={[[true, 'AI rewrite using your real experience'], [true, 'ATS-optimised .docx and PDF'], [true, 'Bonus: tailored cover letter'], [false, 'No Verified credential']]}
+            points={[[true, 'AI rewrite using your real experience'], [true, 'ATS-optimised .docx and PDF'], letter('FIX_PLAIN'), [false, 'No Verified credential']]}
             assurance={assurance}
           >
             <Button onClick={() => onPay('FIX_PLAIN')} variant="secondary" disabled={payLoading} loading={payingTier === 'FIX_PLAIN'}>
@@ -228,7 +232,7 @@ export default function FixBanner({
             featured
             title="Full fix + Verified"
             price={<PriceTag tier="FIX" byTier={byTier} currency={currency} />}
-            points={[[true, 'Everything in Fix only'], [true, 'Passthrough Verified credential employers can check'], [true, 'Shareable link and badge']]}
+            points={[[true, 'Everything in Fix only'], letter('FIX'), [true, 'Passthrough Verified credential employers can check'], [true, 'Shareable link and badge']]}
             nudge={nudge}
             assurance={assurance}
           >
@@ -289,7 +293,7 @@ export default function FixBanner({
           <OfferCard
             title="Verified credential"
             price={<PriceTag tier="BADGE" byTier={byTier} currency={currency} />}
-            points={[[true, 'Verified link and badge'], [true, 'Employers see your score and an unchanged-file check'], [true, 'Bonus: tailored cover letter'], [false, 'No rewrite']]}
+            points={[[true, 'Verified link and badge'], [true, 'Employers see your score and an unchanged-file check'], letter('BADGE'), [false, 'No rewrite']]}
           >
             <Button onClick={() => onPay('BADGE')} disabled={payLoading} loading={payingTier === 'BADGE'}>
               Verified Credential only — <PriceTag tier="BADGE" byTier={byTier} currency={currency} />
@@ -299,7 +303,7 @@ export default function FixBanner({
         <OfferCard
           title="Fix only"
           price={<PriceTag tier="FIX_PLAIN" byTier={byTier} currency={currency} />}
-          points={[[true, 'AI rewrite using your real experience'], [true, 'ATS-optimised .docx and PDF'], [true, 'Bonus: tailored cover letter'], [false, 'No Verified credential']]}
+          points={[[true, 'AI rewrite using your real experience'], [true, 'ATS-optimised .docx and PDF'], letter('FIX_PLAIN'), [false, 'No Verified credential']]}
           assurance={assurance}
         >
           <Button onClick={() => onPay('FIX_PLAIN')} variant="secondary" disabled={payLoading} loading={payingTier === 'FIX_PLAIN'}>
@@ -314,7 +318,7 @@ export default function FixBanner({
           flag="Most complete"
           title="Full fix + Verified"
           price={<PriceTag tier="FIX" byTier={byTier} currency={currency} />}
-          points={[[true, 'Everything in Fix only'], [true, 'Passthrough Verified credential'], [true, 'Verified link and badge']]}
+          points={[[true, 'Everything in Fix only'], letter('FIX'), [true, 'Passthrough Verified credential'], [true, 'Verified link and badge']]}
           nudge={nudge}
           assurance={assurance}
         >

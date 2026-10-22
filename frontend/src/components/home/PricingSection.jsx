@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom'
 import PromoCountdown from '../ui/PromoCountdown'
 import { fmtPrice } from '../../hooks/usePricing'
 import { ATS_PASS_THRESHOLD } from '../../lib/scoreThresholds'
+import NewTag from '../ui/NewTag'
+import { coverLetterText, coverLetterLimit } from '../../lib/coverLetterOffer'
 
 // Every number here comes from /api/pricing (usePricing falls back internally to the standard prices): the
 // amounts, the struck-through anchors, the promo deadline, the Verified threshold, the retry count and
@@ -24,10 +26,10 @@ function Price({ tier, currency, size = 'text-4xl' }) {
 function Features({ items }) {
   return (
     <ul className="flex flex-col gap-2 mb-5 text-sm text-gray-700">
-      {items.map(([ok, text]) => (
+      {items.map(([ok, text, isNew]) => (
         <li key={text} className={ok ? '' : 'text-gray-400'}>
           <span aria-hidden="true" className={`font-extrabold mr-2 ${ok ? 'text-green-600' : 'text-gray-400'}`}>{ok ? '✓' : '–'}</span>
-          <span className="sr-only">{ok ? 'Included: ' : 'Not included: '}</span>{text}
+          <span className="sr-only">{ok ? 'Included: ' : 'Not included: '}</span>{isNew && <><NewTag />{' '}</>}{text}
         </li>
       ))}
     </ul>
@@ -87,7 +89,7 @@ export default function PricingSection({ pricing, byTier, refresh, clockOffsetMs
 
         {pricing?.promoActive && pricing.promoEndsAt && (
           <div className="flex justify-center mb-6">
-            <PromoCountdown endsAt={pricing.promoEndsAt} clockOffsetMs={clockOffsetMs} onExpire={refresh} />
+            <PromoCountdown endsAt={pricing.promoEndsAt} clockOffsetMs={clockOffsetMs} label={pricing.promoLabel} onExpire={refresh} />
           </div>
         )}
         {anyDiscount && <p className="text-center text-sm text-emerald-700 mb-6">✓ Your referral discount is applied to the prices below.</p>}
@@ -113,7 +115,7 @@ export default function PricingSection({ pricing, byTier, refresh, clockOffsetMs
             {rec === 'badge' && <FitPill />}
             <Price tier={badge} currency={currency} />
             <p className="text-sm text-gray-500 mb-4">Already scoring {badgeThreshold}+? Prove it.</p>
-            <Features items={[[true, 'Passthrough Verified link & badge'], [true, 'Integrity check for employers'], [true, 'Bonus: tailored cover letter'], [false, 'No rewrite']]} />
+            <Features items={[[true, 'Passthrough Verified link & badge'], [true, 'Integrity check for employers'], [true, coverLetterText(pricing, 'BADGE'), true], [false, 'No rewrite']]} />
             {locked && <p className="text-[12.5px] font-bold text-amber-800 mb-2.5">Unlocks at a score of {badgeThreshold}+</p>}
             {locked
               ? <span aria-disabled="true" className="mt-auto block text-center font-semibold rounded-lg border border-gray-200 bg-gray-100 text-gray-500 px-4 py-2.5 cursor-not-allowed">Needs a score of {badgeThreshold}+</span>
@@ -130,7 +132,7 @@ export default function PricingSection({ pricing, byTier, refresh, clockOffsetMs
             {premium > 0 && <p className="text-xs text-blue-800 bg-blue-100 rounded-lg px-2.5 py-2 mb-3.5">Only {fmtPrice(premium, currency)} more than Fix only — and it adds the link employers can check.</p>}
             <Features items={[
               [true, 'AI rewrite, re-scored against the job'], [true, 'ATS-ready .docx + PDF'], [true, 'Passthrough Verified link & badge'],
-              [true, 'Bonus: tailored cover letter'],
+              [true, coverLetterText(pricing, 'FIX'), true],
               [true, `${maxFixRetries} free retries + a free-credit safety net`],
             ]} />
             <a href="#scan-form" className="mt-auto block text-center font-semibold rounded-lg bg-blue-700 text-white px-4 py-3 hover:bg-blue-800 shadow">Fix &amp; verify my resume →</a>
@@ -140,7 +142,7 @@ export default function PricingSection({ pricing, byTier, refresh, clockOffsetMs
             <div className="text-sm font-semibold text-gray-500 mb-1.5">Fix only</div>
             <Price tier={plain} currency={currency} />
             <p className="text-sm text-gray-500 mb-4">Just the rewrite.</p>
-            <Features items={[[true, 'AI rewrite + ATS .docx + PDF'], [true, 'Bonus: tailored cover letter'], [true, 'Any starting score'], [false, 'No verification link']]} />
+            <Features items={[[true, 'AI rewrite + ATS .docx + PDF'], [true, coverLetterText(pricing, 'FIX_PLAIN'), true], [true, 'Any starting score'], [false, 'No verification link']]} />
             <a href="#scan-form" className={ghostBtn}>Fix only</a>
           </div>
         </div>
@@ -149,7 +151,7 @@ export default function PricingSection({ pricing, byTier, refresh, clockOffsetMs
           <span className="self-start font-mono text-[11px] font-bold uppercase tracking-wide bg-blue-700 text-white px-2 py-0.5 rounded whitespace-nowrap">New · bonus</span>
           <div>
             <h3 className="text-lg font-bold text-gray-900">A tailored cover letter comes with every paid plan.</h3>
-            <p className="text-sm text-gray-600">Written from your delivered resume and the job you scanned against. Pick the tone and who it&apos;s addressed to, edit it, then download it as .docx or PDF. No extra charge.</p>
+            <p className="text-sm text-gray-600">Written from your delivered resume and the job you scanned against. Pick the tone and who it&apos;s addressed to, edit it, then download it as .docx or PDF. No extra charge: {coverLetterLimit(pricing, 'BADGE')} letters with Credential only, {coverLetterLimit(pricing, 'FIX_PLAIN')} with Fix only, {coverLetterLimit(pricing, 'FIX')} with the Full fix.</p>
           </div>
         </div>
 

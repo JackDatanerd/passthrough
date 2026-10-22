@@ -740,6 +740,31 @@ Each action is written to the admin audit log as `lead.auto_suppressed` (no acto
 - [ ] Answering "Yes" to the interview question saves immediately (check the dashboard no longer asks again
       after one tap, even if the optional details and story are skipped).
 
+### Launch batch 2: promotions, welcome code on the dashboard, rewrite screen, model stamp (migration 0109)
+- [ ] Migration `0109_model_stamp` is applied (adds `scans.fix_model` / `letter_model` and the `model_outcome_rates` view);
+      `GET /api/admin/health` shows the schema `ok` (the Worker now expects schema version 109). The Worker is safe either side of it:
+      the stamps are written best-effort after delivery.
+- [ ] **Promotions are run from Admin -> Promotions** (name, on/off, optional start, end, and the price of each tier). A saved
+      promo overrides `PROMO_ACTIVE` / `PROMO_ENDS_AT` in `wrangler.toml`; "Revert to deploy settings" deletes it and the
+      wrangler variables apply again. A change reaches every Worker within about 30 seconds. Saving needs the admin step-up
+      (password) like the other money actions and is written to the audit log (`promo.update` / `promo.clear`).
+      Test it once: set a promo with a name of your own, check the pricing page, the scan offer card and the countdown show it,
+      then revert.
+- [ ] The countdown now reads "<promo name> ends in ..." (default name **Introductory price**), not "Launch pricing".
+- [ ] **Hardship code (`VITE_HARDSHIP_CODE`)**: its tier prices are fixed numbers in the code row, not a percentage. They do not
+      follow an admin-set promo, so when a promo ends (the shipped one ends 2026-11-22) re-check that code's prices in
+      Admin -> Partners. (The welcome code is different: it is always 30% off the price in force when it is used.)
+- [ ] Welcome code: appears as a green card on the dashboard of a verified account (and is retried for a few seconds after
+      verifying, while it is being issued), is also issued when verifying through a password reset, and no longer skips new
+      signups in the last days of a promo.
+- [ ] After paying, the scan page shows only the rewrite (progress, no score or buy cards); once delivered it leads with the
+      new resume, then the downloads, then the cover letter. The verification link, badge and sharing options and the original
+      scan are collapsed below.
+- [ ] **Model switch (Sonnet 5.5): NOT done in this batch.** `ANTHROPIC_MODEL` is still `claude-sonnet-4-6`. To switch, run
+      `npm run eval:prompts -- --model claude-sonnet-5-5` against your baseline and read the result, then change `ANTHROPIC_MODEL`
+      in `wrangler.toml` and set `CLAUDE_USD_PER_MTOK_*` for the new model's price so Admin -> Claude Usage stays accurate. Every
+      delivery is stamped with the model that wrote it, and `model_outcome_rates` compares interview rates per model.
+
 ### Infrastructure
 - [ ] R2 bucket created: `passthrough-resumes`
 - [ ] Both queues created: `passthrough-fix-jobs` and `passthrough-fix-jobs-dlq` (Section 3)

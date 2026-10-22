@@ -303,7 +303,7 @@ async function send(env, supabase, to, subject, template, vars, opts = {}) {
 const hoursLabel = h => `${h} hour${h === 1 ? '' : 's'}`
 
 async function sendWelcome(env, supabase, email, name) {
-  return send(env, supabase, email, 'Welcome to Passthrough', 'welcome', { NAME: name })
+  return send(env, supabase, email, 'Welcome to Passthrough', 'welcome', { NAME: name, PERCENT: String(c.WELCOME_PERCENT_OFF) })
 }
 
 // The welcome offer (see services/welcomeCode.service.js): one personal code, sent once after the email is verified.
@@ -766,26 +766,34 @@ async function sendPartnerLinkRegenerated(env, supabase, email, name, payoutUrl)
 // the candidate on a "Passthrough Verified resume" and tell them to paste
 // "My resume has been Passthrough Verified" into cover letters — for a
 // resume whose public page says the opposite.
-async function sendFixDelivered(env, supabase, email, name, code, verificationUrl, verified = true) {
+// `scanId` (last, optional) points the buttons at the result page itself, where the files, the before/after view and the cover
+// letter are; without it they fall back to the dashboard.
+const resultUrls = (env, scanId) => {
+  const dash = `${env.FRONTEND_URL}/dashboard`
+  const scan = scanId ? `${env.FRONTEND_URL}/scan/${encodeURIComponent(scanId)}` : dash
+  return { DOWNLOAD_URL: scan, COVER_LETTER_URL: scan }
+}
+
+async function sendFixDelivered(env, supabase, email, name, code, verificationUrl, verified = true, scanId = null) {
   if (!verified) {
     return send(env, supabase, email, 'Your rewritten resume is ready', 'fix_delivered_report', {
       NAME:             name,
       VERIFICATION_URL: verificationUrl,
-      DOWNLOAD_URL:     `${env.FRONTEND_URL}/dashboard`
+      ...resultUrls(env, scanId)
     })
   }
   return send(env, supabase, email, '✓ Your Passthrough Verified resume is ready', 'fix_delivered', {
     NAME:              name,
     VERIFICATION_CODE: code,
     VERIFICATION_URL:  verificationUrl,
-    DOWNLOAD_URL:      `${env.FRONTEND_URL}/dashboard`
+    ...resultUrls(env, scanId)
   })
 }
 
-async function sendFixDeliveredPlain(env, supabase, email, name) {
+async function sendFixDeliveredPlain(env, supabase, email, name, scanId = null) {
   return send(env, supabase, email, '✓ Your fixed resume is ready', 'fix_delivered_plain', {
     NAME:         name,
-    DOWNLOAD_URL: `${env.FRONTEND_URL}/dashboard`
+    ...resultUrls(env, scanId)
   })
 }
 

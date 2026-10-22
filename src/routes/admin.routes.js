@@ -6,6 +6,7 @@ const rl    = require('../middleware/rateLimiter')
 const wh    = require('../controllers/webhooks.controller')
 const stories = require('../controllers/admin-stories.controller')
 const hotCategories = require('../controllers/admin-hot-categories.controller')
+const promo = require('../controllers/admin-promo.controller')
 
 const router = new Hono()
 
@@ -63,6 +64,12 @@ router.post('/stories/:id/moderate', validateUuidParam(), stories.adminModerateS
 // read-only what-if (it computes a ranking from the real counts plus the numbers in the body and stores nothing).
 router.get('/hot-categories', hotCategories.adminHotCategories)
 router.post('/hot-categories/simulate', hotCategories.adminSimulateHotCategories)
+
+// Promotions: the site-wide promo (name, window, prices) is set here instead of by editing wrangler.toml. Changing what every
+// visitor is charged is a money action, so writes need the same step-up as refunds.
+router.get('/promo', promo.adminGetPromo)
+router.put('/promo', admin.stepUp, promo.adminSetPromo)
+router.delete('/promo', admin.stepUp, promo.adminClearPromo)
 
 router.get('/email-logs', c.adminListEmailLogs)
 router.get('/alerts',     c.adminListAlerts)

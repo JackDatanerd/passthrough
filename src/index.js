@@ -21,6 +21,7 @@ const bodyLimit         = require('./middleware/bodyLimit')
 const envCheck          = require('./middleware/envCheck')
 const securityHeaders   = require('./middleware/securityHeaders')
 const normalizeThrown   = require('./middleware/normalizeThrown')
+const promoOverlay      = require('./middleware/promoOverlay')
 const corsMiddleware    = require('./middleware/cors')
 const { normalizeEnv }  = envCheck
 
@@ -66,6 +67,8 @@ app.use('*', securityHeaders)   // wraps every response, success or error — mo
 // message it knows how to show. Origin list, exposed headers and preflight caching: middleware/cors.js.
 app.use('*', corsMiddleware)
 app.use('/api/*', envCheck)     // fail fast on a broken config before any route runs
+// The promo an admin set from the panel (if any) replaces the deploy-time promo for this request; see lib/promoConfig.js.
+app.use('/api/*', promoOverlay)
 app.use('/api/*', bodyLimit())  // caps non-multipart bodies before a handler reads one
 
 // ── 1b. Health check ──────────────────────────────────────────────────────────

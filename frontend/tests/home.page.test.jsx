@@ -157,7 +157,11 @@ describe('pricing section', () => {
   it('says the cover letter bonus comes with every paid plan, on each paid card and in the bonus strip and FAQ', async () => {
     renderHome()
     await ready()
-    expect(screen.getAllByText('Bonus: tailored cover letter')).toHaveLength(3)   // Credential only, Full fix, Fix only; not the free card
+    // Credential only, Full fix, Fix only (each with its own allowance and a NEW tag); not the free card
+    expect(screen.getByText('Cover letter writing: 2 tailored letters')).toBeInTheDocument()
+    expect(screen.getByText('Cover letter writing: 5 tailored letters')).toBeInTheDocument()
+    expect(screen.getByText('Cover letter writing: 3 tailored letters')).toBeInTheDocument()
+    expect(screen.getAllByTestId('new-tag')).toHaveLength(3)
     expect(screen.getByText(/A tailored cover letter comes with every paid plan/)).toBeInTheDocument()
     expect(document.getElementById('faq-coverletter')).toBeTruthy()
   })

@@ -17,6 +17,8 @@ import OutcomeCard from '../../components/account/OutcomeCard'
 import ScanRow from '../../components/dashboard/ScanRow'
 import NextStepCard from '../../components/dashboard/NextStepCard'
 import StatsRow from '../../components/dashboard/StatsRow'
+import WelcomeOfferCard from '../../components/dashboard/WelcomeOfferCard'
+import { useWelcomeOffer } from '../../hooks/useWelcomeOffer'
 import BreakdownModal from '../../components/dashboard/BreakdownModal'
 import { statusLabel } from '../../lib/utils'
 import ToggleChip from '../../components/ui/ToggleChip'
@@ -62,6 +64,7 @@ const chipLabel = key => CHIPS.find(c => c.key === key)?.label || statusLabel(ke
 export default function DashboardIndex() {
   const { user, refreshUser } = useAuth()
   const { pricing, byTier } = usePricing()
+  const welcomeOffer = useWelcomeOffer(user)
   const [scans,    setScans   ] = useState([])
   const [loading,  setLoading ] = useState(true)
   const [resending, setResending] = useState(false)
@@ -401,7 +404,10 @@ export default function DashboardIndex() {
           <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 flex flex-col sm:flex-row items-start sm:items-center gap-3">
             <div className="flex-1">
               <p className="text-sm font-medium text-amber-900">Verify your email to download files</p>
-              <p className="text-xs text-amber-700 mt-0.5">Check your inbox for a verification email.</p>
+              <p className="text-xs text-amber-700 mt-0.5">
+                Check your inbox for a verification email.
+                {pricing?.welcomePercentOff > 0 && <> Verifying also unlocks {pricing.welcomePercentOff}% off your first full fix.</>}
+              </p>
             </div>
             {resentOk ? (
               <span className="text-xs text-green-700 bg-green-100 px-3 py-1.5 rounded-md">Sent!</span>
@@ -415,6 +421,9 @@ export default function DashboardIndex() {
             )}
           </div>
         )}
+
+        {/* The welcome code, for a new account: shown here as well as in the email. Only once verified (the code is issued then). */}
+        {user?.emailVerified && <WelcomeOfferCard offer={welcomeOffer} onScan={openComposer} />}
 
         {/* The allowance in words: a callout once it is used up, otherwise read by screen readers (the stats card shows it). */}
         {q && (

@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import PromoCountdown from '../components/ui/PromoCountdown'
+import NewTag from '../components/ui/NewTag'
+import { coverLetterText } from '../lib/coverLetterOffer'
 import { AuthContext } from '../context/AuthContext'
 import { usePricing, fmtPrice } from '../hooks/usePricing'
 import { getStoredReferralCode, setStoredReferralCode } from '../hooks/useReferralCapture'
@@ -48,6 +50,17 @@ export default function Pricing() {
   // ScanResult.jsx already uses for FixBanner's identical field.
   const [referralCode, setReferralCode] = useState(getStoredReferralCode())
   const { pricing, byTier, pricingFailed, refresh: refreshPricing, clockOffsetMs } = usePricing(referralCode)
+  // The cover letter is the newest included feature: tagged NEW, with each plan's allowance from /api/pricing.
+  const coverItem = tier => ({ text: coverLetterText(pricing, tier), isNew: true })
+  const renderFeature = f => {
+    const item = typeof f === 'string' ? { text: f } : f
+    return (
+      <li key={item.text} className="flex items-start gap-2">
+        <span className="text-green-500 mt-0.5">✓</span>
+        <span>{item.isNew && <><NewTag />{' '}</>}{item.text}</span>
+      </li>
+    )
+  }
 
   function handleApplyReferralCode(code) {
     setStoredReferralCode(code)
@@ -119,7 +132,7 @@ export default function Pricing() {
             </div>
           )}
           {pricing?.promoActive && pricing.promoEndsAt && (
-            <PromoCountdown endsAt={pricing.promoEndsAt} clockOffsetMs={clockOffsetMs} onExpire={refreshPricing} className="mb-8" />
+            <PromoCountdown endsAt={pricing.promoEndsAt} clockOffsetMs={clockOffsetMs} label={pricing.promoLabel} onExpire={refreshPricing} className="mb-8" />
           )}
           {/* FEATURE GAP CLOSED (Payments & Pricing pass 1 — G5): FixBanner
               (checkout) has always let a visitor type a code by hand; this
@@ -155,11 +168,7 @@ export default function Pricing() {
             <PriceBlock tier={byTier('BADGE')} currency={pricing?.currency} />
             <p className="text-sm text-gray-500 mb-6">Score {badgeThreshold}+ required (for an uploaded file, its ATS-formatted version must reach it too) · no content changes</p>
             <ul className="flex flex-col gap-2 text-sm text-gray-600 mb-8 flex-1">
-              {['Passthrough Verified credential','Employer-checkable verification','Cryptographic integrity check','ATS-optimised .docx','Beautiful PDF','Bonus: tailored cover letter'].map(f => (
-                <li key={f} className="flex items-start gap-2">
-                  <span className="text-green-500 mt-0.5">✓</span>{f}
-                </li>
-              ))}
+              {['Passthrough Verified credential','Employer-checkable verification','Cryptographic integrity check','ATS-optimised .docx','Beautiful PDF',coverItem('BADGE')].map(renderFeature)}
             </ul>
             <Link to={buyTo}
               className="text-center bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors">
@@ -173,11 +182,7 @@ export default function Pricing() {
             <PriceBlock tier={byTier('FIX_PLAIN')} currency={pricing?.currency} />
             <p className="text-sm text-gray-500 mb-6">Any score · no verification link</p>
             <ul className="flex flex-col gap-2 text-sm text-gray-600 mb-8 flex-1">
-              {['Full AI rewrite','ATS-optimised .docx','Beautiful designer PDF','Bonus: tailored cover letter',`${maxFixRetries} free retries toward the ${badgeThreshold}+ target score`,'No Passthrough Verified link — just your documents'].map(f => (
-                <li key={f} className="flex items-start gap-2">
-                  <span className="text-green-500 mt-0.5">✓</span>{f}
-                </li>
-              ))}
+              {['Full AI rewrite','ATS-optimised .docx','Beautiful designer PDF',coverItem('FIX_PLAIN'),`${maxFixRetries} free retries toward the ${badgeThreshold}+ target score`,'No Passthrough Verified link — just your documents'].map(renderFeature)}
             </ul>
             <Link to={buyTo}
               className="text-center bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors">
@@ -194,11 +199,7 @@ export default function Pricing() {
             <PriceBlock tier={byTier('FIX')} currency={pricing?.currency} />
             <p className="text-sm text-gray-500 mb-6">Any score</p>
             <ul className="flex flex-col gap-2 text-sm text-gray-600 mb-8 flex-1">
-              {['Full AI rewrite','ATS-optimised .docx','Beautiful designer PDF','Bonus: tailored cover letter','Passthrough Verified credential','Cryptographic integrity check','Employer-checkable verification'].map(f => (
-                <li key={f} className="flex items-start gap-2">
-                  <span className="text-green-500 mt-0.5">✓</span>{f}
-                </li>
-              ))}
+              {['Full AI rewrite','ATS-optimised .docx','Beautiful designer PDF',coverItem('FIX'),'Passthrough Verified credential','Cryptographic integrity check','Employer-checkable verification'].map(renderFeature)}
             </ul>
             <Link to={buyTo}
               className="text-center bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors">

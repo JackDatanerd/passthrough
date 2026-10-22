@@ -15,7 +15,7 @@ module.exports = {
   // migration ends by writing its number to system_state.schema_version (see 0059); the Worker
   // compares the two (lib/health.js). Bump it in the same commit as the migration —
   // the schema-version test in tests/crossCutting.round1.test.js fails when the newest migration and this value disagree.
-  EXPECTED_SCHEMA_VERSION: 108,
+  EXPECTED_SCHEMA_VERSION: 109,
 
   // Standard (post-promo) prices — these are what priceForTier() falls back
   // to once PROMO_ENDS_AT passes, and what the frontend shows crossed-out as
@@ -61,7 +61,28 @@ module.exports = {
   },
   priceTable(env) {
     if (!this.isSupportedCurrency(env)) throw this.unsupportedCurrencyError(env)
-    return this.PRICES_BY_CURRENCY[this.activeCurrency(env)]
+    const table = this.PRICES_BY_CURRENCY[this.activeCurrency(env)]
+    const override = this.promoPriceOverride(env)
+    return override ? { standard: table.standard, promo: { ...table.promo, ...override } } : table
+  },
+  // Promo prices an admin set from the admin panel (lib/promoConfig.js hands them to the request as env.PROMO_PRICES_JSON, in the
+  // currency named by env.PROMO_PRICES_CURRENCY). They replace the promo row above for those tiers; with none set, or set for a
+  // different currency than the one in force, the row in this file applies as before.
+  promoPriceOverride(env) {
+    if (!env || !env.PROMO_PRICES_JSON) return null
+    if (String(env.PROMO_PRICES_CURRENCY || '').trim().toUpperCase() !== this.activeCurrency(env)) return null
+    let parsed
+    try { parsed = JSON.parse(env.PROMO_PRICES_JSON) } catch (_) { return null }
+    if (!parsed || typeof parsed !== 'object') return null
+    const out = {}
+    for (const tier of ['FIX', 'BADGE', 'FIX_PLAIN']) if (Number.isInteger(parsed[tier]) && parsed[tier] > 0) out[tier] = parsed[tier]
+    return Object.keys(out).length ? out : null
+  },
+  // The name shown beside the countdown and in the admin panel. Set per promo from the admin panel (env.PROMO_LABEL).
+  DEFAULT_PROMO_LABEL: 'Introductory price',
+  promoLabel(env) {
+    const label = env && typeof env.PROMO_LABEL === 'string' ? env.PROMO_LABEL.trim() : ''
+    return label || this.DEFAULT_PROMO_LABEL
   },
 
   // Whether the promo price applies right now. This is what makes the
@@ -75,6 +96,11 @@ module.exports = {
     if (!env || env.PROMO_ACTIVE !== 'true' || !env.PROMO_ENDS_AT) return false
     const endsAt = Date.parse(env.PROMO_ENDS_AT)
     if (Number.isNaN(endsAt)) return false   // fails safe to standard pricing on bad config
+    // A promo scheduled from the admin panel (env.PROMO_STARTS_AT) is off until its start; an unparseable start fails safe to off.
+    if (env.PROMO_STARTS_AT) {
+      const startsAt = Date.parse(env.PROMO_STARTS_AT)
+      if (Number.isNaN(startsAt) || Date.now() < startsAt) return false
+    }
     return Date.now() < endsAt
   },
 
@@ -117,11 +143,18 @@ module.exports = {
     return 'Full fix'
   },
   // Welcome code (migration 0105): once a new account verifies its email it gets ONE personal, single-use code worth
-  // WELCOME_PERCENT_OFF off the full fix, valid for WELCOME_VALID_DAYS (and never longer than the launch promo it was priced
-  // against). The code belongs to the account (referral_codes.user_id), is owned by the 0%-commission system partner below, and
+  // WELCOME_PERCENT_OFF off the full fix (off whatever price is in force when it is used), valid for WELCOME_VALID_DAYS.
+  // The code belongs to the account (referral_codes.user_id), is owned by the 0%-commission system partner below, and
   // is applied for the buyer automatically; nobody else can use it even if the string leaks.
   WELCOME_PERCENT_OFF: 30,
   WELCOME_VALID_DAYS: 14,
+  // What a welcome code charges for a tier whose price in force is `standardCents`: always WELCOME_PERCENT_OFF off TODAY's price,
+  // worked out when the code is redeemed (not frozen when it was issued), so the discount stays what the email says whether a
+  // promo started, ended or was extended in between. referral_codes.tier_prices.FIX on a welcome code is only the marker that it
+  // prices the full fix.
+  welcomeAmountFor(standardCents) {
+    return Math.round(standardCents * (100 - this.WELCOME_PERCENT_OFF) / 100)
+  },
   WELCOME_PARTNER_ID: '00000000-0000-4000-8000-00000000e1c0',
   // Cover letters the Worker will write for ONE scan, by tier. The first letter counts, so 2 means "write it, then one
   // rewrite". Editing a letter by hand costs nothing and is not counted - only a call to the model is. Each rewrite is a paid

@@ -504,6 +504,17 @@ describe('prompt version', () => {
   })
 })
 
+describe('model stamp (0109)', () => {
+  it('model() follows ANTHROPIC_MODEL and is stamped on fixes and letters in their own writes', () => {
+    expect(claude.model({ ANTHROPIC_MODEL: 'claude-sonnet-5-5' })).toBe('claude-sonnet-5-5')
+    expect(claude.model({})).toBe('claude-sonnet-4-6')
+    const fs = require('node:fs')
+    const ctrl = fs.readFileSync(new URL('../src/controllers/scan.controller.js', import.meta.url), 'utf8')
+    expect(ctrl).toMatch(/update\(\{ fix_model: claudeService\.model\(env\) \}\)/)
+    expect(ctrl).toMatch(/update\(\{ letter_model: claudeService\.model\(ctx\.env\) \}\)/)
+  })
+})
+
 describe('round-1 closeout regressions', () => {
   it("does not flag an apostrophe surname that is the candidate's own, but still flags an invented one", () => {
     const letter = "Dear Hiring Manager,\n\nI ran reporting at Acme.\n\nSincerely,\nAmina O'Brien"

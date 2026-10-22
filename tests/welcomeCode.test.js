@@ -65,9 +65,14 @@ describe('price and expiry', () => {
     expect(welcome.expiryFor(STANDARD, NOW)).toBe(NOW + 14 * DAY)
     expect(welcome.expiryFor(promoEnv(30), NOW)).toBe(NOW + 14 * DAY)
   })
-  it('never outlives the promo it was priced against', () => {
+  it('is a fixed 14 days whatever the promo does: the percentage is worked out when the code is used, so there is nothing to outlive', () => {
     freezeTime()
-    expect(welcome.expiryFor(promoEnv(5), NOW)).toBe(NOW + 5 * DAY)
+    expect(welcome.expiryFor(promoEnv(5), NOW)).toBe(NOW + 14 * DAY)
+    expect(welcome.expiryFor(promoEnv(0.5), NOW)).toBe(NOW + 14 * DAY)
+  })
+  it('is always the stated percentage of the price in force (constants.welcomeAmountFor)', () => {
+    expect(c.welcomeAmountFor(2900)).toBe(2030)
+    expect(c.welcomeAmountFor(4900)).toBe(3430)
   })
 })
 
@@ -118,12 +123,12 @@ describe('issueWelcomeCode', () => {
     expect(state.inserts).toEqual([])
   })
 
-  it('does not issue a code that would be about to lapse (promo ends within a day)', async () => {
+  it('issues a code even in the last day of a promo (nothing about it depends on the promo any more)', async () => {
     freezeTime()
     const { db, state } = codesDb()
     const res = await welcome.issueWelcomeCode(db, promoEnv(0.5), USER, NOW)
-    expect(res).toEqual({ issued: false, reason: 'promo-ending' })
-    expect(state.inserts).toEqual([])
+    expect(res.issued).toBe(true)
+    expect(state.inserts[0].expires_at).toBe(iso(NOW + 14 * DAY))
   })
 
   it('tries again with a new code when the random one is already taken', async () => {
@@ -191,9 +196,15 @@ describe('getWelcomeOffer', () => {
     expect(await offer({ active: false })).toBeNull()
     expect(await offer({ partners: { status: 'PAUSED' } })).toBeNull()
   })
-  it('returns null when the code no longer undercuts the price in force', async () => {
-    expect(await offer({ tier_prices: { FIX: 2900 } })).toBeNull()
-    expect(await offer({ tier_prices: { FIX: 4000 } })).toBeNull()
+  it("quotes the percentage off TODAY's price, not the cents the code was issued with", async () => {
+    freezeTime()
+    // Issued during the promo ($29 -> 2030); the promo has since ended, so today's full fix is $49 and the code is 30% off that.
+    const after = await welcome.getWelcomeOffer(codesDb({ rows: [row()] }).db, STANDARD, 'u1', NOW)
+    expect(after).toMatchObject({ amountCents: 3430, listAmountCents: 4900, percentOff: 30 })
+  })
+  it('returns null for a code that does not price the full fix at all', async () => {
+    expect(await offer({ tier_prices: {} })).toBeNull()
+    expect(await offer({ tier_prices: { BADGE: 450 } })).toBeNull()
   })
   it('returns null (not an error) before migration 0105 is applied, and rethrows anything else', async () => {
     freezeTime()
@@ -238,6 +249,14 @@ describe('a welcome code prices for its own account only', () => {
   it('whereas an ordinary partner code with no price for a tier still attributes the sale there', async () => {
     const all = await referral.resolvePricesForTiers(db(codeRow({ user_id: null, tier_prices: { FIX: 2500 } })), ['FIX', 'BADGE'], env(), 'FN-AAAAA', { buyerEmail: 'x@example.com', buyerUserId: 'u9' })
     expect(all.BADGE.referralApplied).toBe(true)
+  })
+  it('charges the percentage off the price in force when it is used: a promo that ended after issue does not deepen the discount', async () => {
+    const standard = await referral.resolvePricesForTiers(db(codeRow()), ['FIX'], { PAYSTACK_CURRENCY: 'USD' }, 'FN-AAAAA', { buyerEmail: 'faith@example.com', buyerUserId: 'u1' })
+    expect(standard.FIX).toMatchObject({ amount: 3430, referralApplied: true, discountApplied: true })   // 30% of $49, not the stored $20.30
+  })
+  it('and a promo that started after issue is respected too', async () => {
+    const q = await quote(codeRow({ tier_prices: { FIX: 3430 } }), { buyerEmail: 'faith@example.com', buyerUserId: 'u1' })
+    expect(q).toMatchObject({ amount: 2030 })                                                              // 30% of the $29 promo price
   })
   it('a used code does not apply even to its owner', async () => {
     const q = await quote(codeRow({ uses_so_far: 1 }), { buyerEmail: 'faith@example.com', buyerUserId: 'u1' })

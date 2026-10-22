@@ -59,7 +59,8 @@ export default function AdminDashboard() {
         <div className="border border-gray-200 rounded-lg p-5 bg-white">
           <h2 className="font-semibold text-gray-900 mb-3">Pricing status</h2>
           <div className="flex items-center gap-2 mb-2">
-            <Badge variant={promo.active ? 'green' : 'gray'}>{promo.active ? 'Promo active' : 'Standard pricing'}</Badge>
+            <Badge variant={promo.active ? 'green' : 'gray'}>{promo.active ? `${promo.label || 'Promo'} active` : 'Standard pricing'}</Badge>
+            {promo.source === 'admin' && <Badge variant="gray">set in Promotions</Badge>}
             {promo.endsAt && (
               <span className="text-xs text-gray-400">
                 {promo.active ? 'ends' : 'ended'} {formatDate(promo.endsAt)}

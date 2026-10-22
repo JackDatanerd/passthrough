@@ -211,6 +211,10 @@ async function adminDashboardStats(ctx) {
     promo: {
       active: c.isPromoActive(ctx.env),
       endsAt: ctx.env.PROMO_ENDS_AT || null,
+      startsAt: ctx.env.PROMO_STARTS_AT || null,
+      label: c.promoLabel(ctx.env),
+      // 'admin' once a promo has been saved from Admin -> Promotions, otherwise the deploy settings (wrangler.toml + constants.js).
+      source: ctx.env.__promoSource === 'admin' ? 'admin' : 'deploy',
       // Round 12: read from the active currency's table (null when PAYSTACK_CURRENCY has none — see envCheck).
       standardCents: c.isSupportedCurrency(ctx.env) ? { ...c.priceTable(ctx.env).standard } : null,
       promoCents:    c.isSupportedCurrency(ctx.env) ? { ...c.priceTable(ctx.env).promo } : null,

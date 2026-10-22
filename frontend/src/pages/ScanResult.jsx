@@ -780,6 +780,11 @@ export default function ScanResult() {
   const attemptStartedAt = scan.scanStartedAt || scan.createdAt
   const stalled = scanning && attemptStartedAt && (nowTs - Date.parse(attemptStartedAt)) > 3 * 60 * 1000
 
+  // Paid and not yet delivered: from the moment payment is confirmed (or still being confirmed) the screen is about the rewrite.
+  const rewriting = ['FIX_PURCHASED', 'FIX_GENERATING'].includes(scan.status)
+    || (confirmingPayment && ['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status))
+  const delivered = scan.status === 'FIX_DELIVERED'
+
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
       <Navbar />
@@ -876,6 +881,49 @@ export default function ScanResult() {
         {/* Results */}
         {RESULTS_READY.includes(scan.status) && (
           <div className="flex flex-col gap-6">
+            {/* Between payment and delivery the page is about one thing: the resume being rewritten. The score, the "why"
+                panels, the editor and the buy cards belong to the step before and are hidden until the file lands (they return
+                inside "Your original scan" on the delivered page). */}
+            {rewriting && (
+              <div className="flex flex-col gap-4" data-testid="rewriting-focus">
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900">We're rewriting your resume</h2>
+                  <p className="mt-1 text-sm text-gray-600">
+                    {typeof scan.atsScore === 'number' && <>You started at {scan.atsScore}/100. </>}
+                    We're reworking it for this job and scoring the real file. Your cover letter unlocks as soon as it's done.
+                  </p>
+                </div>
+                {/* "Already paid" and similar answers arrive as the payment message; the page has moved on to the rewrite, so they read as a note. */}
+                {(payError || payNotice) && (
+                  <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">{payError || payNotice}</p>
+                )}
+                {paymentOutcome && (
+                  <div className={`rounded-xl border p-4 text-sm ${paymentOutcome.tone === 'red' ? 'bg-red-50 border-red-200 text-red-800' : 'bg-amber-50 border-amber-200 text-amber-900'}`} role="status">
+                    <p>{paymentOutcome.text}</p>
+                    <button type="button" onClick={() => setPaymentOutcome(null)} className="mt-2 underline underline-offset-2">Dismiss</button>
+                  </div>
+                )}
+                {confirmingPayment && ['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status) && (
+                  <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex items-center gap-3" role="status">
+                    <Spinner size="sm" />
+                    <p className="text-sm text-blue-900">
+                      Payment received — waiting for the bank to confirm it. This can take a minute or two
+                      (mobile money especially). This page updates by itself; you don't need to pay again.
+                    </p>
+                  </div>
+                )}
+                {['FIX_PURCHASED', 'FIX_GENERATING'].includes(scan.status) && (
+                  <FixProgress tier={scan.fixTier} startedAt={scan.updatedAt} progress={scan.fixProgress} round={scan.fixRetryCount}>
+                    {pollError && (
+                      <p className="text-xs text-amber-600 mt-3">{pollError}</p>
+                    )}
+                  </FixProgress>
+                )}
+              </div>
+            )}
+
+            {!rewriting && !delivered && (
+              <>
             {/* Score card */}
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 sm:p-8">
               <div className="flex flex-col sm:flex-row items-center gap-8">
@@ -911,7 +959,7 @@ export default function ScanResult() {
                 is the next thing they see. The explanation of the number (points lost, the detail panel, the job
                 description) is the "why" and follows below. */}
             {/* Fix banner — only when not yet purchased */}
-            {!scan.fixPurchased && (
+            {!scan.fixPurchased && !rewriting && (
               <>
                 {pendingPayment && !payLoading && !confirmingPayment && (
                   <div className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
@@ -1015,25 +1063,11 @@ export default function ScanResult() {
               </div>
             )}
 
-            {confirmingPayment && ['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status) && (
-              <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex items-center gap-3" role="status">
-                <Spinner size="sm" />
-                <p className="text-sm text-blue-900">
-                  Payment received — waiting for the bank to confirm it. This can take a minute or two
-                  (mobile money especially). This page updates by itself; you don't need to pay again.
-                </p>
-              </div>
+              </>
             )}
 
-            {/* Fix generating */}
-            {['FIX_PURCHASED', 'FIX_GENERATING'].includes(scan.status) && (
-              <FixProgress tier={scan.fixTier} startedAt={scan.updatedAt} progress={scan.fixProgress} round={scan.fixRetryCount}>
-                {pollError && (
-                  <p className="text-xs text-amber-600 mt-3">{pollError}</p>
-                )}
-              </FixProgress>
-            )}
-
+            {delivered && (
+              <>
             {/* Delivered */}
             {scan.status === 'FIX_DELIVERED' && (
               <div className={`border rounded-xl p-6 ${scan.fixAtsScore >= ATS_BADGE_THRESHOLD ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200'}`}>
@@ -1195,6 +1229,79 @@ export default function ScanResult() {
                   </p>
                 )}
 
+              </div>
+            )}
+
+            {scan.status === 'FIX_DELIVERED' && (
+              <DiffView
+                originalResumeData={scan.originalResumeData}
+                rewrittenResumeData={scan.rewrittenResumeData}
+                fixTier={scan.fixTier}
+                editedByUser={!!scan.userEditedResumeData && JSON.stringify(scan.userEditedResumeData) === JSON.stringify(scan.rewrittenResumeData)}
+              />
+            )}
+
+            {/* Diff view — only meaningful once a fix/badge has been delivered */}
+            {/* G3 (round 3): why the DELIVERED file scored what it did. The panel above is the free scan
+                of the original upload and is stale once a fix has landed - without this, a result
+                under the bar gave no hint of what was still missing. */}
+            {scan.status === 'FIX_DELIVERED' && !scan.rewriteFailed && scan.fixAtsDetail &&
+              typeof scan.fixAtsScore === 'number' && scan.fixAtsScore < ATS_BADGE_THRESHOLD && (
+              <AtsDetailPanel detail={scan.fixAtsDetail} title="Why the new score" />
+            )}
+
+            {/* The cover letter is the BONUS that comes with the purchase, so it is the next thing under the delivered files
+                rather than something found after the before/after view and the editor. Same gate as before: the signed-in
+                owner of a delivered, unrevoked scan that has a job description to write against (the endpoints enforce it too). */}
+            {scan.status === 'FIX_DELIVERED' && user && scan.userId && user.id === scan.userId &&
+              !(scan.verificationStatus === 'REVOKED' && scan.verificationRevokedReason !== 'OWNER') &&
+              (scan.jobDescriptionText || '').trim().length >= 50 && (
+              <CoverLetterPanel scan={scan} onUpdated={updated => setScan(prev => ({ ...prev, ...updated }))} />
+            )}
+
+            {/* Quantification prompts — renders nothing if the array is empty/null,
+                which is always true for badge-only purchases (no AI rewrite ran) */}
+            {scan.status === 'FIX_DELIVERED' && (
+              <QuantificationPrompts
+                prompts={scan.quantificationPrompts}
+                scan={scan}
+                // Round 4: the signed-in owner can add the number right on the prompt (same endpoint as the editor below).
+                onSaved={user && scan.userId && user.id === scan.userId
+                  && !(scan.verificationStatus === 'REVOKED' && scan.verificationRevokedReason !== 'OWNER')
+                  ? async updated => { setScan(prev => ({ ...prev, ...updated })); await fetchScan() }
+                  : null}
+              />
+            )}
+
+            {/* Owner tools on a delivered resume: edit it (both files rebuilt and re-scored), and a
+                cover letter for the same job. Signed-in owner only — the endpoints enforce it too. */}
+            {scan.status === 'FIX_DELIVERED' && user && scan.userId && user.id === scan.userId &&
+              !(scan.verificationStatus === 'REVOKED' && scan.verificationRevokedReason !== 'OWNER') && (
+              <>
+                <DeliveredResumeEditor
+                  scan={scan}
+                  onSaved={async updated => { setScan(prev => ({ ...prev, ...updated })); await fetchScan() }}
+                />
+              </>
+            )}
+
+            {/* FEATURE GAP CLOSED (Scan/ATS pass): the product's real loop is one resume,
+                many job postings. Signed-in owners can rescan this same resume against
+                another job description without re-uploading or re-typing it. */}
+            {user && scan.userId && user.id === scan.userId && (
+              <p className="text-sm text-gray-600 -mt-2">
+                Applying somewhere else?{' '}
+                <Link to={`/?from=${scan.id}`} className="text-blue-700 underline underline-offset-2 hover:text-blue-800">
+                  Scan this same resume against another job
+                </Link>
+              </p>
+            )}
+
+            {/* Verification link, badge and sharing options: still here, but after the things a new owner came for. */}
+            {delivered && scan.verificationUrl && (
+              <details className="rounded-xl border border-green-200 bg-green-50 p-4 sm:p-5" data-testid="sharing-tools">
+                <summary className="cursor-pointer text-sm font-semibold text-green-900">Verification link, badge and sharing</summary>
+                <div className="mt-3">
                 {/* Public document visibility — off by default (see
                     0007_verify_document_visibility.sql). The verification
                     page always shows the score; these two toggles
@@ -1202,8 +1309,8 @@ export default function ScanResult() {
                     downloadable from that same public page, e.g. so an
                     employer can get a clean, malware-free copy via the link
                     instead of an email attachment. */}
-                {scan.verificationUrl && (
-                  <div className="mt-4 pt-4 border-t border-green-200">
+                {true && (
+                  <div>
                     <p className="text-xs font-medium text-green-900 mb-2">
                       Let anyone with your verification link also download the file itself
                     </p>
@@ -1296,59 +1403,38 @@ export default function ScanResult() {
                     )}
                   </div>
                 )}
+                </div>
+              </details>
+            )}
+
+            {/* After delivery the original scan is history: its score and "points lost" are collapsed so the page leads with the new result. */}
+            {delivered && (
+              <details className="rounded-xl border border-gray-200 bg-white p-4 sm:p-5" data-testid="original-scan-details">
+                <summary className="cursor-pointer text-sm font-semibold text-gray-700">Your original scan</summary>
+                <div className="mt-4 flex flex-col gap-6">
+            {/* Score card */}
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 sm:p-8">
+              <div className="flex flex-col sm:flex-row items-center gap-8">
+                <ScoreGauge score={scan.atsScore} passed={scan.passed} />
+                <div className="flex-1 w-full">
+                  <h2 className="text-lg font-semibold text-gray-900 mb-4">
+                    {scan.passed ? 'Your resume passed ATS screening' : 'Your resume is failing ATS filters'}
+                  </h2>
+                  <CategoryScores scan={scan} />
+                </div>
               </div>
+            </div>
+
+            <PointsLost scan={scan} />
+            <AtsDetailPanel scan={scan} />
+
+            {/* G5: the exact job description this was scored against. */}
+            <JobDescriptionPanel scan={scan} />
+
+                </div>
+              </details>
             )}
 
-            {/* The cover letter is the BONUS that comes with the purchase, so it is the next thing under the delivered files
-                rather than something found after the before/after view and the editor. Same gate as before: the signed-in
-                owner of a delivered, unrevoked scan that has a job description to write against (the endpoints enforce it too). */}
-            {scan.status === 'FIX_DELIVERED' && user && scan.userId && user.id === scan.userId &&
-              !(scan.verificationStatus === 'REVOKED' && scan.verificationRevokedReason !== 'OWNER') &&
-              (scan.jobDescriptionText || '').trim().length >= 50 && (
-              <CoverLetterPanel scan={scan} onUpdated={updated => setScan(prev => ({ ...prev, ...updated }))} />
-            )}
-
-            {/* Diff view — only meaningful once a fix/badge has been delivered */}
-            {/* G3 (round 3): why the DELIVERED file scored what it did. The panel above is the free scan
-                of the original upload and is stale once a fix has landed - without this, a result
-                under the bar gave no hint of what was still missing. */}
-            {scan.status === 'FIX_DELIVERED' && !scan.rewriteFailed && scan.fixAtsDetail &&
-              typeof scan.fixAtsScore === 'number' && scan.fixAtsScore < ATS_BADGE_THRESHOLD && (
-              <AtsDetailPanel detail={scan.fixAtsDetail} title="Why the new score" />
-            )}
-
-            {scan.status === 'FIX_DELIVERED' && (
-              <DiffView
-                originalResumeData={scan.originalResumeData}
-                rewrittenResumeData={scan.rewrittenResumeData}
-                fixTier={scan.fixTier}
-                editedByUser={!!scan.userEditedResumeData && JSON.stringify(scan.userEditedResumeData) === JSON.stringify(scan.rewrittenResumeData)}
-              />
-            )}
-
-            {/* Quantification prompts — renders nothing if the array is empty/null,
-                which is always true for badge-only purchases (no AI rewrite ran) */}
-            {scan.status === 'FIX_DELIVERED' && (
-              <QuantificationPrompts
-                prompts={scan.quantificationPrompts}
-                scan={scan}
-                // Round 4: the signed-in owner can add the number right on the prompt (same endpoint as the editor below).
-                onSaved={user && scan.userId && user.id === scan.userId
-                  && !(scan.verificationStatus === 'REVOKED' && scan.verificationRevokedReason !== 'OWNER')
-                  ? async updated => { setScan(prev => ({ ...prev, ...updated })); await fetchScan() }
-                  : null}
-              />
-            )}
-
-            {/* Owner tools on a delivered resume: edit it (both files rebuilt and re-scored), and a
-                cover letter for the same job. Signed-in owner only — the endpoints enforce it too. */}
-            {scan.status === 'FIX_DELIVERED' && user && scan.userId && user.id === scan.userId &&
-              !(scan.verificationStatus === 'REVOKED' && scan.verificationRevokedReason !== 'OWNER') && (
-              <>
-                <DeliveredResumeEditor
-                  scan={scan}
-                  onSaved={async updated => { setScan(prev => ({ ...prev, ...updated })); await fetchScan() }}
-                />
               </>
             )}
 
@@ -1369,7 +1455,7 @@ export default function ScanResult() {
                 Checking originalResumeData alone is the correct, mode-
                 agnostic signal: it's simply never populated yet for a
                 file-upload scan that hasn't had a fix generated. */}
-            {user && scan.originalResumeData && (
+            {!rewriting && user && scan.originalResumeData && (
               <SaveProfilePrompt key={scan.id} scanId={scan.id}
                 deliveredAvailable={scan.status === 'FIX_DELIVERED' && !!(scan.userEditedResumeData || scan.rewrittenResumeData)} />
             )}

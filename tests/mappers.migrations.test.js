@@ -24,7 +24,7 @@ const DELIBERATELY_UNMAPPED = {
   // display_score (0076): generated ORDER BY key for the dashboard score sort; the row already exposes atsScore / fixAtsScore it is derived from.
   // prompt_version / letter_prompt_version (0092): which prompt generation wrote the delivery - read by the prompt_outcome_rates view and by hand, never part of the API shape.
   // fix_job_lock_token (0089): the per-job lease token claim_fix_job stores and release_fix_job compares - only the job that owns the lease ever holds it.
-  scans: ['outcome_prompted_at', 'outcome_prompt_attempts', 'display_score', 'fix_job_lock_token', 'prompt_version', 'letter_prompt_version'],
+  scans: ['outcome_prompted_at', 'outcome_prompt_attempts', 'display_score', 'fix_job_lock_token', 'prompt_version', 'letter_prompt_version', 'fix_model', 'letter_model'],
   // Both partner bearer tokens are secrets: the payout link (write; stored as payout_token_hash since 0087, payout_details_token is legacy) and dashboard_token (read-only, migration 0055).
   // previous_emails (0080): the addresses a partner used to have, kept ONLY so erasure can reach the mail history sent to them — personal data the
   // admin/partner API never needs (partners.controller.js reads it directly for the erasure).

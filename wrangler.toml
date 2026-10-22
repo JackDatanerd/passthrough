@@ -117,6 +117,9 @@ OWNER_ALERT_EMAIL       = "passthrough672@gmail.com"
 # deadline, not a fake one ticking down to a date that was never going to
 # matter. Set PROMO_ACTIVE = "false" to kill the promo immediately regardless
 # of the date.
+# PROMOTIONS ARE NOW RUN FROM THE ADMIN PANEL (Admin -> Promotions): on/off, name, optional start, end and the price
+# of each tier, with no redeploy. A promo saved there overrides the three variables below; "Revert to deploy settings"
+# there deletes it and these variables apply again. So these are the FALLBACK, not the day-to-day control.
 # Launch promo (second run): $29 full fix / $19 fix only / $9 credential, shown against the struck-through
 # standard prices ($49 / $39 / $39). It is a REAL deadline: at PROMO_ENDS_AT checkout reverts to standard
 # prices on its own. Decide deliberately whether to extend it (change the date and redeploy) or let it lapse;

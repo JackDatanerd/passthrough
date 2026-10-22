@@ -84,6 +84,8 @@ async function getPricing(ctx) {
     // against THIS clock at checkout, not theirs.
     serverTime: Date.now(),
     promoActive,
+    // The promo's name (set per promo from the admin panel), shown beside the countdown.
+    promoLabel: promoActive ? c.promoLabel(ctx.env) : null,
     // null when there's no active promo — frontend should not render a
     // countdown in that case rather than showing a stale/zero timer.
     // Round 8: normalised to an unambiguous UTC instant. The raw config string used to be passed through, and
@@ -108,6 +110,10 @@ async function getPricing(ctx) {
     // Round 9 (G3): what the Pricing page may promise about refunds is read from the same switches that
     // actually run them (AUTO_REFUND_DUPLICATES / AUTO_REFUND_UNDELIVERABLE), so the copy can never
     // promise an automatic refund the operator has turned off.
+    // Welcome offer and cover-letter allowances, read from the constants that enforce them so the dashboard, the offer card and
+    // the pricing copy can never promise a number the Worker does not apply.
+    welcomePercentOff: c.WELCOME_PERCENT_OFF,
+    coverLetterLimits: { ...c.COVER_LETTER_LIMITS },
     autoRefundDuplicates:    refundService.autoRefundEnabled(ctx.env),
     autoRefundUndeliverable: refundService.autoRefundUndeliverableEnabled(ctx.env),
     tiers

@@ -1,10 +1,12 @@
 // Welcome codes (migration 0105): one personal, single-use discount code on the full fix for each account that verifies its
 // email. The code lives in referral_codes like any other, owned by the 0%-commission system partner, and carries the
-// account's id so it prices for that account only (see priceForResolvedCode in referral.service.js).
+// account's id so it prices for that account only (see priceForResolvedCode in referral.service.js). It is worth
+// WELCOME_PERCENT_OFF off the price in force when it is USED, so a promo that starts, ends or is extended afterwards never
+// changes what the account was promised.
 //
 // Everything here is best-effort from the caller's side: issuing a code must never break email verification, so
-// issueWelcomeCode reports what happened instead of throwing for the expected cases (migration not applied, promo about to
-// end, a race with another request), and only a genuinely unexpected database error is thrown for the caller to log.
+// issueWelcomeCode reports what happened instead of throwing for the expected cases (migration not applied, a race with
+// another request), and only a genuinely unexpected database error is thrown for the caller to log.
 const c = require('../config/constants')
 
 // No 0/O/1/I: a code is read off a screen and typed. 32 symbols, so a random byte maps onto it without bias.
@@ -12,8 +14,6 @@ const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 const SUFFIX_LENGTH = 5
 const MAX_CODE_TRIES = 5
 const DAY_MS = 24 * 60 * 60 * 1000
-// A code that would expire within this long is not issued: it would arrive already about to lapse.
-const MIN_REMAINING_MS = DAY_MS
 
 // Up to two capital letters from the name (first and last word): "Faith Njeri" -> "FN", "Cher" -> "C", "李雷" -> "". Initials, not
 // the name itself, so a code left behind in a payment record after the account is erased says nothing about who it was.
@@ -38,22 +38,18 @@ function generateCode(name) {
   return `${initialsOf(name) || 'PT'}-${randomSuffix()}`
 }
 
-// What the code charges for the full fix: WELCOME_PERCENT_OFF off the price in force RIGHT NOW (promo included, so the discount is
-// real against what the buyer would otherwise pay). Stored as fixed cents, like every code, which is why expiry is tied to the
-// promo below: priced against the promo, it must not outlive it.
+// What the code charges for the full fix right now: WELCOME_PERCENT_OFF off the price in force (promo included, so the discount is
+// real against what the buyer would otherwise pay). The same figure is recomputed when the code is redeemed (constants.
+// welcomeAmountFor), so what is stored with the code is only the marker that it prices the full fix.
 function welcomePriceCents(env) {
   const base = c.priceForTier('FIX', env)
-  const cents = Math.round(base * (100 - c.WELCOME_PERCENT_OFF) / 100)
+  const cents = c.welcomeAmountFor(base)
   return { base, cents }
 }
 
+// Fixed length, independent of any promo: the percentage is worked out at redemption, so there is nothing to outlive.
 function expiryFor(env, now) {
-  let expires = now + c.WELCOME_VALID_DAYS * DAY_MS
-  if (c.isPromoActive(env)) {
-    const promoEnd = Date.parse(env.PROMO_ENDS_AT)
-    if (Number.isFinite(promoEnd)) expires = Math.min(expires, promoEnd)
-  }
-  return expires
+  return now + c.WELCOME_VALID_DAYS * DAY_MS
 }
 
 const isMissingColumn = err => !!err && (err.code === '42703' || err.code === 'PGRST204' || /column .* (does not exist|of relation)|could not find the '[^']+' column/i.test(err.message || ''))
@@ -65,17 +61,18 @@ function offerFromRow(row, env, now) {
   const expiresMs = Date.parse(row.expires_at)
   if (!Number.isFinite(expiresMs) || expiresMs <= now) return null
   if (row.usage_limit != null && (row.uses_so_far || 0) >= row.usage_limit) return null
-  const tierCents = row.tier_prices && row.tier_prices.FIX
+  // The stored FIX value is only the marker that this code prices the full fix; the amount is today's price less the percentage.
+  if (!row.tier_prices || !Number.isInteger(row.tier_prices.FIX)) return null
   const base = c.priceForTier('FIX', env)
-  // A code that no longer undercuts today's price (the promo ended after it was priced) is not an offer worth showing.
-  if (!Number.isInteger(tierCents) || tierCents >= base) return null
+  const amount = c.welcomeAmountFor(base)
+  if (!(amount > 0 && amount < base)) return null
   return {
     code: row.code,
     expiresAt: new Date(expiresMs).toISOString(),
     tier: 'FIX',
-    amountCents: tierCents,
+    amountCents: amount,
     listAmountCents: base,
-    percentOff: Math.round((1 - tierCents / base) * 100),
+    percentOff: c.WELCOME_PERCENT_OFF,
     currency: c.activeCurrency(env),
   }
 }
@@ -94,7 +91,7 @@ async function getWelcomeOffer(supabase, env, userId, now = Date.now()) {
 
 // Gives the account its welcome code if it has none. Idempotent: a second call (a replayed verification link, a retry) returns
 // the code the account already has.
-// -> { issued: true, offer } | { issued: false, reason, offer? }   reason: 'exists' | 'promo-ending' | 'migration' | 'no-system-partner' | 'no-price'
+// -> { issued: true, offer } | { issued: false, reason, offer? }   reason: 'exists' | 'migration' | 'no-system-partner' | 'no-price'
 async function issueWelcomeCode(supabase, env, user, now = Date.now()) {
   const existing = await supabase.from('referral_codes').select('id').eq('user_id', user.id).maybeSingle()
   if (existing.error) {
@@ -104,7 +101,6 @@ async function issueWelcomeCode(supabase, env, user, now = Date.now()) {
   if (existing.data) return { issued: false, reason: 'exists', offer: await getWelcomeOffer(supabase, env, user.id, now) }
 
   const expires = expiryFor(env, now)
-  if (expires - now < MIN_REMAINING_MS) return { issued: false, reason: 'promo-ending' }
   const { base, cents } = welcomePriceCents(env)
   if (!(cents > 0 && cents < base)) return { issued: false, reason: 'no-price' }
 

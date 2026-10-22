@@ -69,6 +69,17 @@ export default function Terms() {
             already scores at or above the Verified threshold.
           </p>
           <p>
+            <strong>Fix only:</strong> the same AI rewrite and .docx and PDF documents as the Fix,
+            at a lower price and without the public verification link or badge.
+          </p>
+          <p>
+            <strong>Cover letter writing:</strong> every paid purchase includes a cover letter
+            written for the job you scanned against, from your delivered resume. Each purchase
+            includes a fixed number of letters (shown on the Pricing page and on your result page,
+            and higher for the Fix than for the other options). Letters are drafts for you to review
+            and edit before you send them; you are responsible for what you submit to an employer.
+          </p>
+          <p>
             <strong>Welcome code:</strong> when you verify your email address we may add one
             personal discount code to your account for the Full fix + Verified credential. It works
             once, only on your own account, only for the Full fix, and only until the expiry date

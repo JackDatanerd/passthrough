@@ -13,6 +13,7 @@ const NAV = [
   { to: '/admin/users',     label: 'Users' },
   { to: '/admin/scans',     label: 'Scans' },
   { to: '/admin/payments',  label: 'Payments' },
+  { to: '/admin/promo',     label: 'Promotions' },
   { to: '/admin/webhooks',  label: 'Webhooks' },
   { to: '/admin/leads',     label: 'Leads' },
   { to: '/admin/stories',   label: 'Stories' },

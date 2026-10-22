@@ -18,6 +18,16 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers() })
 
 describe('PromoCountdown', () => {
+  it('names the promo with the label it is given, and defaults to "Introductory price"', () => {
+    const endsAt = new Date(NOW + 3723 * 1000).toISOString()
+    const { rerender } = render(<PromoCountdown endsAt={endsAt} />)
+    expect(screen.getByRole('timer')).toHaveTextContent(/^Introductory price ends in/)
+    rerender(<PromoCountdown endsAt={endsAt} label="Black Friday" />)
+    expect(screen.getByRole('timer')).toHaveTextContent(/^Black Friday ends in/)
+    rerender(<PromoCountdown endsAt={endsAt} label="" />)
+    expect(screen.getByRole('timer')).toHaveTextContent(/^Introductory price ends in/)
+  })
+
   it('renders nothing for an unparseable date, and never calls onExpire', () => {
     const onExpire = vi.fn()
     const { container } = render(<PromoCountdown endsAt="not-a-date" onExpire={onExpire} />)

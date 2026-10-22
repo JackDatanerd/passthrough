@@ -85,7 +85,11 @@ function priceForResolvedCode(fixTier, env, codeRow, opts = {}) {
   // pricing.controller.js's getPricing — if PAYSTACK_CURRENCY is ever set,
   // the quoted currency here would silently disagree with what gets charged.
   const currency = c.activeCurrency(env)
-  const tierPrice = codeRow?.tier_prices?.[fixTier]
+  const storedTierPrice = codeRow?.tier_prices?.[fixTier]
+  // A personal (welcome) code is a percentage of the price in force NOW, not the cents it was issued with: an admin ending or
+  // starting a promo after it was issued must not turn "30% off" into 58% or into nothing. The stored value only says which
+  // tier it prices.
+  const tierPrice = codeRow?.user_id && Number.isInteger(storedTierPrice) ? c.welcomeAmountFor(standard) : storedTierPrice
 
   if (!isCodeUsable(codeRow))
     return { amount: standard, currency, referralApplied: false, referralCode: null }

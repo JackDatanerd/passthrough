@@ -770,6 +770,30 @@ describe('verifyEmail', () => {
   })
 })
 
+describe('resetPassword — welcome code', () => {
+  const reset = (over = {}) => baseUserRow({ reset_token: 'hashed', reset_token_expiry: FUTURE(), ...over })
+  const post = () => ({ body: { token: 'raw-token', newPassword: 'a-fresh-passphrase' } })
+
+  it('an account that was still unverified earns its welcome code when the reset verifies it (it used to get none)', async () => {
+    t = await setup({ userRow: reset({ email_verified: false }) })
+    const res = await t.mod.resetPassword(t.c(post()))
+    expect(res.status).toBe(200)
+    expect(t.state.welcome).toEqual([{ userId: 'u1', name: 'Ada' }])
+    expect(t.state.emails.filter(e => e.type === 'welcome_offer')).toEqual([{ type: 'welcome_offer', to: 'user@example.com', code: 'AD-7K2QH' }])
+  })
+  it('an account that was already verified is not given one by a reset', async () => {
+    t = await setup({ userRow: reset({ email_verified: true }) })
+    expect((await t.mod.resetPassword(t.c(post()))).status).toBe(200)
+    expect(t.state.welcome).toEqual([])
+  })
+  it('a failure issuing the code never fails the reset', async () => {
+    t = await setup({ userRow: reset({ email_verified: false }), welcomeThrows: true })
+    const res = await t.mod.resetPassword(t.c(post()))
+    expect(res.status).toBe(200)
+    expect(res.body.success).toBe(true)
+  })
+})
+
 describe('verifyEmail — welcome code', () => {
   const unverified = () => baseUserRow({ email_verify_token: 'x', email_verify_expiry: FUTURE(), email_verified: false })
   const post = () => ({ method: 'POST', body: { token: 'raw' } })
@@ -788,7 +812,7 @@ describe('verifyEmail — welcome code', () => {
     expect(t.state.welcome).toEqual([])
   })
 
-  it('does not email anything when no code was issued (already had one, promo ending, migration not applied)', async () => {
+  it('does not email anything when no code was issued (already had one, migration not applied)', async () => {
     t = await setup({ userRow: unverified(), welcomeResult: { issued: false, reason: 'exists' } })
     await t.mod.verifyEmail(t.c(post()))
     expect(t.state.emails.some(e => e.type === 'welcome_offer')).toBe(false)

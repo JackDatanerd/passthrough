@@ -1582,6 +1582,8 @@ async function generateCoverLetter(ctx) {
   // Which prompt generation wrote it (migration 0094) - best-effort and AFTER the letter is stored, so a worker deployed
   // before the migration still delivers the letter.
   try { await supabase.from('scans').update({ letter_prompt_version: claudeService.LETTER_PROMPT_VERSION }).eq('id', scan.id) } catch (_) {}
+  // Which model wrote it (migration 0109): its own write, so a database without that column still records the prompt version above.
+  try { await supabase.from('scans').update({ letter_model: claudeService.model(ctx.env) }).eq('id', scan.id) } catch (_) {}
   return ctx.json({ success: true, data: {
     coverLetterText: result.data,
     // What the panel shows as "N left". null count = the limit is not being enforced yet (migration 0104 not applied).
@@ -3564,6 +3566,8 @@ async function generateFixRun(env, supabase, scanId, leaseToken = null) {
     // across prompt versions. Best-effort and after delivery, so it can never block one (a no-op until the migration is applied).
     if (producedCandidate && !rewriteFailed) {
       try { await supabase.from('scans').update({ prompt_version: claudeService.PROMPT_VERSION }).eq('id', scanId) } catch (_) {}
+      // Which model wrote it (migration 0109): a separate write so a database without that column still records the prompt version.
+      try { await supabase.from('scans').update({ fix_model: claudeService.model(env) }).eq('id', scanId) } catch (_) {}
     }
     await deleteSuperseded(env, [scan.resumeAtsPath, scan.resumePdfPath], [docxKey, finalPdfKey])
     // SECTION 7 AUDIT FIX (bug, fresh pass): a RETRY round can change fix_ats_score,
@@ -3577,8 +3581,8 @@ async function generateFixRun(env, supabase, scanId, leaseToken = null) {
 
     if (user) {
       try {
-        if (isPlain) await emailService.sendFixDeliveredPlain(env, supabase, user.email, user.name)
-        else         await emailService.sendFixDelivered(env, supabase, user.email, user.name, code, verificationUrl, credentialVerified)
+        if (isPlain) await emailService.sendFixDeliveredPlain(env, supabase, user.email, user.name, scanId)
+        else         await emailService.sendFixDelivered(env, supabase, user.email, user.name, code, verificationUrl, credentialVerified, scanId)
       } catch (e) { console.error('Fix email:', e.message) }
     }
     return { success: true }
@@ -3807,7 +3811,7 @@ async function generateBadgeRun(env, supabase, scanId) {
 
     if (user) {
       try {
-        await emailService.sendFixDelivered(env, supabase, user.email, user.name, code, verificationUrl, credentialVerified)
+        await emailService.sendFixDelivered(env, supabase, user.email, user.name, code, verificationUrl, credentialVerified, scanId)
       } catch (e) { console.error('Badge email:', e.message) }
     }
     return { success: true }

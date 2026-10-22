@@ -92,3 +92,31 @@ describe('FixBanner offer — credential-eligible', () => {
     expect(container).toBeEmptyDOMElement()
   })
 })
+
+describe('FixBanner offer — NEW cover letter writing', () => {
+  it('every card names the cover letter with its own allowance and a NEW tag (below the bar)', () => {
+    promo = { coverLetterLimits: { BADGE: 2, FIX_PLAIN: 3, FIX: 5 } }; currency = 'USD'
+    show()
+    expect(screen.getByText('Cover letter writing: 3 tailored letters')).toBeInTheDocument()   // Fix only
+    expect(screen.getByText('Cover letter writing: 5 tailored letters')).toBeInTheDocument()   // Full fix
+    expect(screen.getAllByTestId('new-tag')).toHaveLength(2)
+    promo = {}
+  })
+
+  it('shows the credential-only allowance too once the score clears the bar, and uses what the server sends', () => {
+    promo = { coverLetterLimits: { BADGE: 1, FIX_PLAIN: 4, FIX: 9 } }
+    show({ atsScore: 88, status: 'COMPLETE_PASS', badgeEligible: true })
+    expect(screen.getByText('Cover letter writing: 1 tailored letter')).toBeInTheDocument()
+    expect(screen.getByText('Cover letter writing: 4 tailored letters')).toBeInTheDocument()
+    expect(screen.getByText('Cover letter writing: 9 tailored letters')).toBeInTheDocument()
+    expect(screen.getAllByTestId('new-tag')).toHaveLength(3)
+    promo = {}
+  })
+
+  it('falls back to the mirrored allowances when /api/pricing predates the field', () => {
+    promo = {}
+    show({ atsScore: 88, status: 'COMPLETE_PASS', badgeEligible: true })
+    expect(screen.getByText('Cover letter writing: 2 tailored letters')).toBeInTheDocument()
+    expect(screen.getByText('Cover letter writing: 5 tailored letters')).toBeInTheDocument()
+  })
+})

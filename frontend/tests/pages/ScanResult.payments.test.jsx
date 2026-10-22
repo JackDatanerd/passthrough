@@ -129,7 +129,9 @@ describe('ScanResult — open checkout notice (G3) and already-paid (B2)', () =>
     api.post.mockRejectedValue({ response: { status: 409, data: { success: false, alreadyPaid: true, message: 'An earlier payment for this resume actually went through — it is being delivered now.' } } })
     renderPage()
     fireEvent.click(await screen.findByText('Cancel that payment'))
-    expect(await screen.findByText(/actually went through/)).toBeInTheDocument()
+    // The message moves into the focused "we're rewriting" view once the page starts waiting for delivery, so wait for that settled state.
+    await waitFor(() => expect(screen.getByText(/actually went through/)).toBeInTheDocument())
+    expect(screen.getByTestId('rewriting-focus')).toBeInTheDocument()
     expect(screen.queryByText(/payment in progress/i)).toBeNull()
   })
 
@@ -138,7 +140,8 @@ describe('ScanResult — open checkout notice (G3) and already-paid (B2)', () =>
     api.post.mockRejectedValue({ response: { status: 409, data: { success: false, alreadyPaid: true, message: 'An earlier payment for this resume actually went through.', data: { paidReference: 'old', scanId: 's1' } } } })
     renderPage()
     fireEvent.click(await screen.findByText('pay-fix'))
-    expect(await screen.findByText(/actually went through/)).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText(/actually went through/)).toBeInTheDocument())
+    expect(screen.getByTestId('rewriting-focus')).toBeInTheDocument()
     expect(screen.queryByText('Cancel that payment and choose again')).toBeNull()
   })
 })

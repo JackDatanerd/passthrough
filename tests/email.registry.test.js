@@ -108,3 +108,25 @@ describe('timestamps are labelled UTC', () => {
     expect(sent[0].html).toMatch(/October 5, 2026 \(UTC\)/)
   })
 })
+
+describe('delivery emails — cover letter and the result page', () => {
+  const cases = [
+    ['sendFixDelivered', ['u@x.y', 'Ann', 'ABC', 'https://v', true, 'scan-42']],
+    ['sendFixDelivered', ['u@x.y', 'Ann', 'ABC', 'https://v', false, 'scan-42']],
+    ['sendFixDeliveredPlain', ['u@x.y', 'Ann', 'scan-42']],
+  ]
+  for (const [fn, args] of cases) {
+    it(`${fn}${args[4] === false ? ' (report)' : ''}: names the cover letter and links the buttons to /scan/<id>`, async () => {
+      const { svc, sent, db, env } = setup()
+      await svc[fn](env, db, ...args)
+      expect(sent[0].html).toMatch(/cover letter/i)
+      expect(sent[0].html).toContain('https://usepassthrough.com/scan/scan-42')
+      expect(sent[0].html).not.toContain('/dashboard"')
+    })
+  }
+  it('falls back to the dashboard when no scan id is given', async () => {
+    const { svc, sent, db, env } = setup()
+    await svc.sendFixDeliveredPlain(env, db, 'u@x.y', 'Ann')
+    expect(sent[0].html).toContain('https://usepassthrough.com/dashboard')
+  })
+})

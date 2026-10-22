@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from 'react'
 //    pricing. Without it the countdown quietly disappeared while the cached promo
 //    prices stayed on screen — and checkout then charged the higher standard price.
 //  - An unparseable `endsAt` renders nothing instead of "NaN:NaN:NaN".
+//  - `label` is the promo's name (admin-set, /api/pricing promoLabel); the old hardcoded "Launch pricing" is gone.
 //  - Multi-day deadlines read "2d 03:04:05" rather than "51:04:05".
 //  - The interval stops after expiry instead of ticking forever.
 function computeRemaining(endsAt, offsetMs) {
@@ -20,7 +21,7 @@ function computeRemaining(endsAt, offsetMs) {
   return Number.isFinite(end) ? end - (Date.now() + offsetMs) : null
 }
 
-export default function PromoCountdown({ endsAt, clockOffsetMs = 0, onExpire, className = '' }) {
+export default function PromoCountdown({ endsAt, clockOffsetMs = 0, onExpire, label = 'Introductory price', className = '' }) {
   const [remaining, setRemaining] = useState(() => computeRemaining(endsAt, clockOffsetMs))
   const expiredRef = useRef(false)
   const onExpireRef = useRef(onExpire)
@@ -55,7 +56,7 @@ export default function PromoCountdown({ endsAt, clockOffsetMs = 0, onExpire, cl
       role="timer"
       className={`inline-flex items-center gap-2 bg-amber-50 border border-amber-200 text-amber-800 text-sm font-medium px-4 py-2 rounded-full ${className}`}
     >
-      Launch pricing ends in {days > 0 ? `${days}d ` : ''}{pad(h)}:{pad(m)}:{pad(s)}
+      {label || 'Introductory price'} ends in {days > 0 ? `${days}d ` : ''}{pad(h)}:{pad(m)}:{pad(s)}
     </div>
   )
 }
