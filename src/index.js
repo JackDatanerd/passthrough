@@ -366,6 +366,7 @@ async function webhookMaintenanceSweep(event, env, ctx) {
       }
       // Round 6 (G3): payloads stored for event types no handler acts on, before they stopped being kept.
       try { await require('./controllers/webhooks.controller').scrubUnactionablePayloads(getSupabase(env)) } catch (_) { /* best effort */ }
+      try { await require('./controllers/webhooks.controller').scrubRefundPayloads(getSupabase(env)) } catch (_) { /* best effort (webhooks round 25, B1) */ }
       // webhook_events is an audit log, not an archive.
       // Webhooks round 14 (B2/B5): per-provider / per-type retention (Resend payload scrub, dispute + refund keys kept longer).
       try { await require('./controllers/webhooks.controller').pruneWebhookEvents(getSupabase(env)) } catch (err) { console.error('webhook_events prune error:', err.message) }

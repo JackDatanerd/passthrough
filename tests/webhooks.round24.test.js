@@ -77,14 +77,17 @@ describe('B1: a dispute with no payment is IGNORED and stays replayable', () => 
 describe('B2: poison characters never reach the database, and a refusal never loops', () => {
   it('redactEvent strips NUL and lone surrogates from kept text, and still drops customer / authorization', () => {
     const { mod } = load(createWorld({}))
-    const ev = { event: 'refund.processed', data: { id: 9, amount: '100', transaction_reference: 'r1', merchant_note: 'ok\u0000bad', customer_note: 'x\ud800y', customer: { email: 'a@b.co' }, authorization: { last4: '4081' } } }
+    // Round 25 (B1): refunds keep an allow-list, so the free-text notes are dropped outright; the kept scalars are still cleaned.
+    const ev = { event: 'refund.processed', data: { id: 9, amount: '100', status: 'pro\u0000cessed', refund_reference: 'x\ud800y', transaction_reference: 'r1', merchant_note: 'ok\u0000bad', customer_note: 'x\ud800y', customer: { email: 'a@b.co' }, authorization: { last4: '4081' } } }
     const out = mod.redactEvent(ev)
-    expect(out.data.merchant_note).toBe('okbad')
-    expect(out.data.customer_note).toBe('xy')
+    expect(out.data.status).toBe('processed')
+    expect(out.data.refund_reference).toBe('xy')
+    expect(out.data.merchant_note).toBeUndefined()
+    expect(out.data.customer_note).toBeUndefined()
     expect(out.data.customer).toBeUndefined()
     expect(out.data.authorization).toBeUndefined()
     expect(JSON.stringify(out)).not.toMatch(/\\u0000|\\ud800/i)
-    expect(out.data.amount).toBe('100')   // everything else is untouched
+    expect(out.data.amount).toBe('100')   // what the handlers read is untouched
   })
   it('a dispute payload (the allow-list copy) is cleaned too', () => {
     const { mod } = load(createWorld({}))

@@ -128,7 +128,7 @@ export default function AdminWebhooks() {
     setPayloads(p => ({ ...p, [ev.id]: 'loading' }))
     try {
       const res = await api.get(`/admin/webhook-events/${ev.id}`)
-      setPayloads(p => ({ ...p, [ev.id]: res.data.data.payload || {} }))
+      setPayloads(p => ({ ...p, [ev.id]: res.data.data.payload || 'none' }))
     } catch (_) {
       setPayloads(p => ({ ...p, [ev.id]: 'error' }))
     }
@@ -425,6 +425,7 @@ export default function AdminWebhooks() {
             <>
               {payloads[ev.id] === 'loading' ? <Spinner /> :
                payloads[ev.id] === 'error' ? <p className="text-xs text-red-600 py-2">Couldn't load the payload.</p> :
+               payloads[ev.id] === 'none' ? <p className="text-xs text-gray-500 py-2">No payload is stored for this event (it was cleared once finished, or this event type keeps none).</p> :
                <pre className="text-xs text-gray-700 overflow-x-auto py-2">{JSON.stringify(payloads[ev.id], null, 2)}</pre>}
               <p className="text-xs text-gray-400">Stored minimised: card, customer and IP details removed (Resend events keep only the recipient, bounce type and id).</p>
             </>

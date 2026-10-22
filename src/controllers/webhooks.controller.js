@@ -264,10 +264,27 @@ function minimalDisputeEvent(ev) {
 // (a refund note, a metadata value) made the inbox insert fail, the handler answer 500, and Paystack redeliver the same poison for ~72 hours.
 // bodyLimit already cleans ordinary request bodies this way; the stored copy of a webhook is cleaned the same way. Only what is STORED is changed.
 const cleanText = v => (typeof v === 'string' ? stripNul(v) : v)
+// ROUND-25 (B1): refund events were redacted by a denylist, so `refunded_by` (the merchant staff member's email), `customer_note` (free text
+// a buyer or admin typed) and `merchant_note` were kept for 400 days and shown in the admin payload viewer. Refunds now keep an ALLOWLIST,
+// like disputes: only what the handlers and record_refund_and_total read.
+const REFUND_KEEP = ['id', 'status', 'amount', 'currency', 'transaction_reference', 'refund_reference', 'reference', 'created_at', 'createdAt', 'expected_at']
+function minimalRefundEvent(ev) {
+  const d = ev.data && typeof ev.data === 'object' ? ev.data : {}
+  const data = {}
+  for (const k of REFUND_KEEP) if (isScalar(d[k])) data[k] = d[k]
+  if (d.refund_reference === null) data.refund_reference = null   // keeps refundIsAmbiguous() answering the same after a round trip
+  if (d.transaction && typeof d.transaction === 'object') {
+    const tx = {}
+    for (const k of DISPUTE_TX_KEEP) if (isScalar(d.transaction[k])) tx[k] = d.transaction[k]
+    data.transaction = tx
+  } else if (typeof d.transaction === 'string' && d.transaction) data.transaction = d.transaction
+  return { event: ev.event, data }
+}
 function redactEvent(event) {
   try {
     const copy = JSON.parse(JSON.stringify(event))
     if (typeof copy?.event === 'string' && copy.event.startsWith('charge.dispute')) return stripNul(minimalDisputeEvent(copy))
+    if (typeof copy?.event === 'string' && copy.event.startsWith('refund.')) return stripNul(minimalRefundEvent(copy))
     if (copy?.data && typeof copy.data === 'object') for (const k of STRIP_KEYS) delete copy.data[k]
     if (copy?.data?.transaction && typeof copy.data.transaction === 'object')
       for (const k of STRIP_KEYS) delete copy.data.transaction[k]
@@ -383,20 +400,25 @@ async function recordEvent(supabase, { eventKey, eventType, reference, payload, 
     .insert({ provider, event_key: eventKey, event_type: eventType, reference, payload: p })
     .select('id, attempts').single()
   let { data, error } = await insert(payload)
+  let payloadDropped = false
   if (error && payload != null && isTextRefused(error)) {
     // Last resort (round 24, B2): still refused after cleaning. Record the event without its body rather than refuse it for ever; the live
     // delivery is processed from memory, so only a later Replay is lost.
     console.error('webhook_events payload refused by the database — recording the event without it:', error.message)
     ;({ data, error } = await insert(null))
+    payloadDropped = true
   }
-  if (!error) return { mode: 'new', id: data?.id, attempts: data?.attempts || 1 }
+  // ROUND-25 (B2): `payloadMissing` = the caller meant to store a body and the row has none (the fallback above, or a row an earlier delivery
+  // wrote without one). A refund handler reads its amount from that stored body (record_refund_and_total), so it must not trust the local total.
+  if (!error) return { mode: 'new', id: data?.id, attempts: data?.attempts || 1, payloadMissing: payloadDropped }
 
   if (error.code === '23505') {
     const { data: existing, error: selErr } = await supabase.from('webhook_events')
-      .select('id, status, attempts').eq('provider', provider).eq('event_key', eventKey).maybeSingle()
+      .select(EXISTING_COLS).eq('provider', provider).eq('event_key', eventKey).maybeSingle()
     if (selErr) throw selErr
     if (!existing) return { mode: 'new', id: null, attempts: 1 }
-    if (['PROCESSED', 'IGNORED', 'HELD'].includes(existing.status)) return { mode: 'done', id: existing.id, attempts: existing.attempts || 1 }
+    const payloadMissing = payload != null && !existing.has_body && !existing.has_type
+    if (['PROCESSED', 'IGNORED', 'HELD'].includes(existing.status)) return { mode: 'done', id: existing.id, attempts: existing.attempts || 1, payloadMissing }
     const attempts = (existing.attempts || 1) + 1
     // Webhooks round 17 (B2): the bump used to be keyed on `id` alone, so a redelivery that read FAILED/RECEIVED a moment before another worker
     // (admin Replay, the hourly re-drive, a parallel delivery) finished the row wrote it BACK to RECEIVED — a finished row shown as in-flight
@@ -407,9 +429,14 @@ async function recordEvent(supabase, { eventKey, eventType, reference, payload, 
       // Nothing moved: either somebody finished the row (a duplicate delivery) or it is in a state this guard does not know. Only a row that is
       // positively finished is answered "done"; anything else is processed as before, so the guard can never turn a retry into a silent drop.
       const { data: now } = await supabase.from('webhook_events').select('status').eq('id', existing.id).maybeSingle()
-      if (now && ['PROCESSED', 'IGNORED', 'HELD'].includes(now.status)) return { mode: 'done', id: existing.id, attempts: existing.attempts || 1 }
+      if (now && ['PROCESSED', 'IGNORED', 'HELD'].includes(now.status)) return { mode: 'done', id: existing.id, attempts: existing.attempts || 1, payloadMissing }
     }
-    return { mode: 'retry', id: existing.id, attempts }
+    // Heal a row that was stored without its body: this delivery carries it (best effort; a refusal just leaves the flag set).
+    let healed = false
+    if (payloadMissing) {
+      try { const { error: hErr } = await supabase.from('webhook_events').update({ payload }).eq('id', existing.id).is('payload', null); healed = !hErr } catch (_) { healed = false }
+    }
+    return { mode: 'retry', id: existing.id, attempts, payloadMissing: payloadMissing && !healed }
   }
   if (isInboxMissing(error)) return { mode: 'unavailable', id: null, attempts: 0 }
   throw error
@@ -592,7 +619,7 @@ async function clearRefundFailed(supabase, payment) {
   } catch (err) { console.error('refund failure not cleared:', err && err.message); return false }
 }
 
-async function processRefund(c, supabase, event, eventId) {
+async function processRefund(c, supabase, event, eventId, { payloadMissing = false } = {}) {
   let payment = await fulfillment.findPaymentForEvent(supabase, event)
   const refundRef = event.data?.refund_reference || null
   const incident = payment?.paystack_ref || refundRef || fulfillment.referenceCandidates(event)[0] || null
@@ -663,6 +690,15 @@ async function processRefund(c, supabase, event, eventId) {
   // payment row, records this event's amount ONCE (unique (payment_id, event_key), so a replay or
   // redelivery never adds twice) and returns the persisted total.
   //
+  // ROUND-25 (G1): record_refund_and_total sums amounts without a currency, so a refund stated in another currency than the sale would count
+  // toward a "full refund". It is not actioned; the owner decides (Admin → Payments → Reverse).
+  const evCur = String(event.data?.currency || '').toUpperCase(), payCur = String(payment.currency || '').toUpperCase()
+  if (evCur && payCur && evCur !== payCur) {
+    alert(c, 'Paystack refund.processed in a different currency — NOT actioned',
+      `reference: ${payment.paystack_ref}\nscanId: ${payment.scan_id}\npaid in: ${payCur}\nrefund currency: ${evCur}\namount: ${event.data?.amount ?? '?'}\n\n` +
+      `The refund was not added to the payment's refund total. If it should reverse the sale, use Admin → Payments → Reverse.`, incident)
+    return { status: 'PROCESSED', note: `refund currency ${evCur} differs from payment ${payCur} — alerted` }
+  }
   const refunded = Number(event.data?.amount)
   const ambiguous = refundIsAmbiguous(event)
   let total
@@ -687,7 +723,7 @@ async function processRefund(c, supabase, event, eventId) {
     total = 0
   }
   // An event that was not recorded (ambiguous, or no inbox row) is at least this refund.
-  if ((ambiguous || !eventId) && Number.isFinite(refunded)) total = Math.max(total, refunded)
+  if ((ambiguous || !eventId || payloadMissing) && Number.isFinite(refunded)) total = Math.max(total, refunded)
 
   // Not yet a full refund by our own books: ask Paystack. Its list of PROCESSED refunds on the
   // transaction is authoritative and cannot double-count, so it covers an event we deliberately
@@ -703,7 +739,7 @@ async function processRefund(c, supabase, event, eventId) {
   // ROUND-7 (B4): an event that states no amount cannot be added to a local total either, so Paystack's list
   // is likewise the only authority for it (it used to be alerted as "partial/unknown" even when the list
   // proved the sale fully refunded, and a failed lookup closed it PROCESSED).
-  const remoteIsOnlyAuthority = ambiguous || !eventId || !Number.isFinite(refunded)
+  const remoteIsOnlyAuthority = ambiguous || !eventId || payloadMissing || !Number.isFinite(refunded)
   if (payment.amount_cents > 0 && total < payment.amount_cents) {
     const remote = await paystackRefundTotal(c.env, payment, { strict: remoteIsOnlyAuthority })
     if (remote != null) total = Math.max(total, remote)
@@ -911,9 +947,16 @@ async function processDispute(c, supabase, event) {
   const partialDispute = Number.isFinite(disputed) && disputed > 0 && payment && payment.amount_cents > 0 && disputed < payment.amount_cents
   let detail
   let auto = null
+  let otherDisputeOpen = false
   if (event.event === 'charge.dispute.resolve') {
+    // ROUND-25 (B3): a resolution for a dispute id other than the one the payment now tracks (a second dispute opened while this one was
+    // open) must not clear the hold — the newer dispute is still unanswered. The dispute sweep decides it when it resolves.
+    otherDisputeOpen = !!(payment && payment.status === 'DISPUTED' && payment.dispute_id && d.id != null && String(d.id).trim() !== '' && String(d.id).trim() !== String(payment.dispute_id))
     if (/declin/.test(resolution)) {
-      if (payment && payment.status === 'DISPUTED' && await fulfillment.clearDispute(supabase, payment)) {
+      if (otherDisputeOpen) {
+        auto = null
+        detail = `Resolution: DECLINED — you WON this dispute, but the payment is tracking a different, newer dispute (${payment.dispute_id}) that is still open, so it stays DISPUTED. Answer the newer one in Admin → Payments.`
+      } else if (payment && payment.status === 'DISPUTED' && await fulfillment.clearDispute(supabase, payment)) {
         auto = 'dispute won — payment back to SUCCESS'
         detail = `Resolution: DECLINED — you WON. The payment was moved back from DISPUTED to SUCCESS automatically (it counts as revenue again). Nothing else to do.`
       } else
@@ -971,7 +1014,7 @@ async function processDispute(c, supabase, event) {
     detail = `Nothing was marked — the payment is currently ${payment.status}, not SUCCESS, so it was left as-is.`
   }
 
-  if (event.event === 'charge.dispute.resolve' && payment && payment.status === 'DISPUTED' && !auto) await markDisputeAnswered(supabase, payment, 'resolved')
+  if (event.event === 'charge.dispute.resolve' && payment && payment.status === 'DISPUTED' && !auto && !otherDisputeOpen) await markDisputeAnswered(supabase, payment, 'resolved')
   if (event.event === 'charge.dispute.create') detail += disputeDeadlineLine(d)
   alert(c, `Paystack ${event.event}`, `A "${event.event}" event was received.\n\n${summary}${detail}`,
     `${payment?.paystack_ref || fulfillment.referenceCandidates(event)[0] || d.id || ''}:${event.event}`)
@@ -981,10 +1024,10 @@ async function processDispute(c, supabase, event) {
   return { status: 'PROCESSED', note: auto || (alreadyResolved ? 'dispute already resolved — not re-marked' : (marked ? 'marked DISPUTED' : undefined)) }
 }
 
-async function processEvent(c, supabase, event, eventId) {
+async function processEvent(c, supabase, event, eventId, opts = {}) {
   const type = event.event
   if (type === 'charge.success') return processChargeSuccess(c, supabase, event)
-  if (type.startsWith('refund.')) return processRefund(c, supabase, event, eventId)
+  if (type.startsWith('refund.')) return processRefund(c, supabase, event, eventId, opts)
   // ROUND-14: a LIVE dispute event used to reach the handler raw while Replay and the sweep (which read the stored / API-listed
   // item) went through minimalDisputeEvent, so the two spellings of the deadline (`due_at` / `dueAt`) were honoured on one path
   // and not the other. Every path now reads the same normalised shape.
@@ -1112,7 +1155,7 @@ async function handlePaystack(c) {
   let outcome
   const startedAt = Date.now()
   try {
-    outcome = await processEvent(c, supabase, event, inbox.id)
+    outcome = await processEvent(c, supabase, event, inbox.id, { payloadMissing: !!inbox.payloadMissing })
   } catch (err) {
     console.error(`[CRITICAL] webhook ${event.event} (${reference}) failed:`, err.message)
     await markEvent(supabase, inbox, 'FAILED', err.message, { ms: Date.now() - startedAt })
@@ -1166,6 +1209,7 @@ function isStuckReceived(row, now = Date.now()) {
 
 // has_event / has_type: whether a payload exists to replay (its top-level key — `event` for Paystack, `type` for
 // Resend) without shipping the payload itself in a list.
+const EXISTING_COLS = 'id, status, attempts, has_body:payload->>event, has_type:payload->>type'   // recordEvent: is there already a stored body? (a constant: the column lint reads literals)
 const LIST_COLS_BASE = 'id, provider, event_type, event_key, reference, status, attempts, error, received_at, processed_at, has_event:payload->>event, has_type:payload->>type'
 const LIST_COLS_NOTE = `${LIST_COLS_BASE}, note, replayed_by, replayed_at`
 const LIST_COLS_FULL = `${LIST_COLS_NOTE}, processing_ms`
@@ -1394,6 +1438,23 @@ async function scrubUnactionablePayloads(supabase) {
     console.error('webhook payload scrub error:', err.message)
     return false
   }
+}
+
+// ROUND-25 (B1): refund rows stored before refunds got an allowlist still hold refunded_by / customer_note / merchant_note. Rewrites a batch per run
+// through the same minimiser (best-effort, never throws, no migration; returns how many rows it rewrote).
+async function scrubRefundPayloads(supabase, { limit = 50 } = {}) {
+  let n = 0
+  try {
+    const { data, error } = await supabase.from('webhook_events').select('id, payload').eq('provider', 'paystack').like('event_type', 'refund.%')
+      .or('payload->data->>refunded_by.not.is.null,payload->data->>customer_note.not.is.null,payload->data->>merchant_note.not.is.null').limit(limit)
+    if (error) { console.error('refund payload scrub failed:', error.message); return 0 }
+    for (const row of data || []) {
+      if (!row.payload || typeof row.payload !== 'object') continue
+      const { error: upErr } = await supabase.from('webhook_events').update({ payload: stripNul(minimalRefundEvent(row.payload)) }).eq('id', row.id)
+      if (upErr) console.error('refund payload scrub update failed:', upErr.message); else n++
+    }
+  } catch (err) { console.error('refund payload scrub error:', err && err.message) }
+  return n
 }
 
 // Round 14 (B2/B5): retention. `webhook_events` was pruned by one rule — PROCESSED/IGNORED after 90 days — which (a) never touched a
@@ -1643,12 +1704,12 @@ async function getPaymentTimeline(c) {
   const reference = String(c.req.param('reference') || '').slice(0, 120)
   const cols = 'id, event_type, status, attempts, note, error, received_at, processed_at'
   const run = fields => supabase.from('webhook_events').select(fields).eq('reference', reference).eq('provider', 'paystack')
-    .order('received_at', { ascending: true }).limit(100)
+    .order('received_at', { ascending: false }).limit(100)   // round 25: the NEWEST 100 (a long history used to show the oldest), re-ordered below
   let { data, error } = await run(`${cols}, processing_ms`)
   if (error && isColumnMissing(error)) ({ data, error } = await run(cols))
   if (error && isColumnMissing(error)) ({ data, error } = await run('id, event_type, status, attempts, error, received_at, processed_at'))
   if (error) throw error
-  return c.json({ success: true, data: (data || []).map(r => ({
+  return c.json({ success: true, data: (data || []).slice().reverse().map(r => ({
     id: r.id, eventType: r.event_type, status: r.status, attempts: r.attempts,
     note: r.status === 'FAILED' ? null : (r.note || r.error || null), error: r.status === 'FAILED' ? (r.error || null) : null,
     receivedAt: r.received_at, processedAt: r.processed_at, processingMs: Number.isFinite(r.processing_ms) ? r.processing_ms : null,
@@ -2400,4 +2461,4 @@ async function getWebhookHealth(c) {
   return c.json({ success: true, data: await computeWebhookHealth(getSupabase(c.env)) })
 }
 
-module.exports = { markDisputeAnsweredOutside, buildSelfTest, getWebhookSelfTest, checkDisputeDeadlines, disputeWarnMs, workWasDelivered, STALE_COL_RETRY_MS, closeUnreadableStored, checkRetiredSecret, claimEvent, acceptPaymentDispute, contestPaymentDispute, submitDisputeEvidence, getPaymentTimeline, pruneWebhookEvents, recordDisputeId, SLOW_EVENT_MS, recordEvent, markEvent, updateEvent, storedKind, closeUnrunnableReceived, computeWebhookHealth, getWebhookHealth, checkWebhookDelivery, deliveryProblem, disputeDeadlineLine, recordDisputeDeadline, openDisputeSummary, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, dismissWebhookEvent, disputeEventProcessed, redriveStaleEvents, sweepDisputes, closeResolvedHeldEvents, scrubUnactionablePayloads, isActionableEvent, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }
+module.exports = { scrubRefundPayloads, minimalRefundEvent, markDisputeAnsweredOutside, buildSelfTest, getWebhookSelfTest, checkDisputeDeadlines, disputeWarnMs, workWasDelivered, STALE_COL_RETRY_MS, closeUnreadableStored, checkRetiredSecret, claimEvent, acceptPaymentDispute, contestPaymentDispute, submitDisputeEvidence, getPaymentTimeline, pruneWebhookEvents, recordDisputeId, SLOW_EVENT_MS, recordEvent, markEvent, updateEvent, storedKind, closeUnrunnableReceived, computeWebhookHealth, getWebhookHealth, checkWebhookDelivery, deliveryProblem, disputeDeadlineLine, recordDisputeDeadline, openDisputeSummary, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, dismissWebhookEvent, disputeEventProcessed, redriveStaleEvents, sweepDisputes, closeResolvedHeldEvents, scrubUnactionablePayloads, isActionableEvent, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }
