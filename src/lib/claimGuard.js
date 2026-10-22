@@ -176,9 +176,14 @@ const SCOPE_PHRASES = new RegExp(`\\b(?:` + [
   `mentor(?:ed|ing|s)?`, `coach(?:ed|ing)?`,
 ].join('|') + `)\\b`, 'gi')
 // Words that carry no claim of their own inside a matched phrase.
-const SCOPE_STOP = new Set(['across', 'multiple', 'several', 'many', 'various', 'numerous', 'all', 'the', 'a', 'an', 'of', 'as', 'to', 'key', 'ensuring', 'ensure', 'ensured', 'ensures', 'driving', 'drive', 'drives', 'drove', 'became', 'served', 'promoted', 'highly'])
+const SCOPE_STOP = new Set(['across', 'multiple', 'several', 'many', 'various', 'numerous', 'all', 'the', 'a', 'an', 'of', 'as', 'to', 'key', 'ensuring', 'ensure', 'ensured', 'ensures', 'driving', 'drive', 'drives', 'drove', 'became', 'served', 'promoted', 'highly', 'directors'])
 // The shared foldWord stem (5 letters from 7) makes "complex" and "compliance" the same word; a scope word is compared on its first six letters.
-const scopeStem = w => (w.length > 3 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w).slice(0, 6)
+// An -ing / -ed / -s ending is dropped first, so "coaching" and "coached" are one word.
+const scopeStem = w => {
+  let b = w
+  for (const suf of ['ing', 'ed', 'es', 's']) if (b.length - suf.length >= 4 && b.endsWith(suf) && !b.endsWith('ss')) { b = b.slice(0, -suf.length); break }
+  return b.slice(0, 6)
+}
 function scopeProblems(text, jobSource) {
   const have = new Set(wordsOf(jobSource).map(scopeStem))
   const out = []

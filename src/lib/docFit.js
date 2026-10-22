@@ -14,6 +14,11 @@ const CPL_BULLET = 98    // ...and per indented bullet line
 // the PDF capacity is set at the low, safe end: compacting a little early costs nothing, compacting too late leaves a spill.
 const CAPACITY_A4 = { docx: 58.5, pdf: 48 }
 const SQUEEZE_LIMIT = { docx: 1.08, pdf: 1.17 } // beyond this much overflow a second page is the honest answer
+// US Letter is 0.27in wider and 0.69in shorter than A4: the capacity above is scaled for the height, but the width saves wrapped lines, so a
+// compact Letter DOCX absorbs MORE overflow than A4 (measured: 18 sizes rendered on each paper, compact fitted one Letter page up to 1.146
+// of capacity, one A4 page only up to 1.072). At the A4 limit a Letter resume 9-15% over was left at normal density and spilled 5-9 lines
+// (a lone heading and a few bullets) onto page 2 although compact fits it on one page.
+const SQUEEZE_LIMIT_LETTER = { docx: 1.15 }   // 1.146 measured to fit; 1.165 measured to spill
 // Look 3 (the signature PDF skeleton). Measured like the figures above: resumes of many sizes rendered, real page counts against the estimate.
 const SIG = { header: 4.4, section: 3.0, entryHead: 2.3, entryGap: 0.9, projectHead: 1.7 }
 const CAPACITY_A4_SIG = { pdf: 48 }
@@ -61,7 +66,8 @@ function densityFor(data, paper = 'letter', target = 'pdf', look = 1) {
   const t = target === 'docx' ? 'docx' : 'pdf'
   const sig = Number(look) >= 3 && t === 'pdf'
   const load = estimateLoad(data, sig ? 3 : 1), cap = capacityFor(paper, t, sig ? 3 : 1)
-  return load > cap && load <= cap * (sig ? SQUEEZE_LIMIT_SIG.pdf : SQUEEZE_LIMIT[t]) ? 'compact' : 'normal'
+  const limit = sig ? SQUEEZE_LIMIT_SIG.pdf : (paper === 'letter' && SQUEEZE_LIMIT_LETTER[t]) || SQUEEZE_LIMIT[t]
+  return load > cap && load <= cap * limit ? 'compact' : 'normal'
 }
 
 /** How much room a short page is given, as a spacing multiplier: 1 once a page is mostly full, up to 1.3 for a nearly empty one. */

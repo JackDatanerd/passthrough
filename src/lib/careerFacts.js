@@ -163,19 +163,29 @@ function tenureClaimOk(n, facts, sourceNumbers) {
 // section headings at all (a pasted block), a school-name line counts as education unless it also names a job title.
 const EDU_HEADING = /^\s*(?:education(?:\s*(?:and|&)\s*(?:training|certifications?|qualifications))?|academic(?:\s+(?:background|qualifications|history))?|qualifications|education\s+history)\s*:?\s*$/i
 const OTHER_HEADING = /^\s*(?:(?:professional\s+)?summary|profile|(?:work|professional|relevant|employment|career)\s+(?:experience|history)|experience|employment|projects?|(?:technical\s+)?skills|certifications?|licen[sc]es|volunteer(?:ing)?(?:\s+experience)?|awards?|publications?|languages?|interests|references|additional\s+information)\s*:?\s*$/i
+// "Industry Experience", "Clinical Background", "Career Highlights", "Employment Record": a short line that is only a work-section noun phrase.
+const WORK_HEADING = /^\s*(?:[A-Za-z&/'’-]+\s+){0,3}(?:experience|history|background|highlights|record|appointments|employment|positions|internships?|career)\s*:?\s*$/i
 const DEGREE_WORDS = /\b(?:bachelor(?:['’]s)?|b\.?sc|bsc|b\.?a\.?\b|m\.?sc|msc|mba|phd|ph\.d|diploma|gpa|a-levels?|gcses?|coursework|dissertation|thesis|master['’]s|masters?\s+(?:of|degree|in)|graduated|graduation|undergraduate|postgraduate)\b/i
 const SCHOOL_WORDS = /\b(?:universit(?:y|é|à)|college|school|academy|institute|degree|graduate)\b/i
 // A job-title word: a line with a school word AND one of these is a post held at (or about) a school, not a place studied at.
 const TITLE_WORDS = /\b(?:teacher|lecturer|professor|tutor|instructor|trainee|engineer|analyst|manager|officer|assistant|developer|coordinator|administrator|consultant|director|specialist|associate|intern|supervisor|principal|head|dean|librarian|counsell?or|nurse|clerk|technician|accountant|designer|researcher|fellow)\b/i
 
+// Any other ALL-CAPS heading-like line also ends an education block ("PROFESSIONAL BACKGROUND", "TEACHING EXPERIENCE", "INTERNSHIPS"):
+// a heading list can never be complete, and a block that never ended dropped every job under an unlisted heading. An all-caps school
+// or degree line ("UNIVERSITY OF NAIROBI") is an entry, not a heading.
+const CAPS_HEADING = line => {
+  const t = String(line || '').trim()
+  return t.length >= 4 && t.length <= 48 && !/\d/.test(t) && !/[.,;:()@|]/.test(t.replace(/:\s*$/, '')) && /^[A-Z][A-Z &/'’-]+$/.test(t) && !SCHOOL_WORDS.test(t) && !DEGREE_WORDS.test(t)
+}
+
 function yearsFromText(text, now = new Date()) {
   const lines = String(text || '').split(/\r?\n/)
-  const sectioned = lines.some(l => EDU_HEADING.test(l) || OTHER_HEADING.test(l))
+  const sectioned = lines.some(l => EDU_HEADING.test(l) || OTHER_HEADING.test(l) || WORK_HEADING.test(l) || CAPS_HEADING(l))
   const spans = []
   let inEdu = false
   for (const line of lines) {
     if (EDU_HEADING.test(line)) { inEdu = true; continue }
-    if (OTHER_HEADING.test(line)) { inEdu = false; continue }
+    if (OTHER_HEADING.test(line) || WORK_HEADING.test(line) || CAPS_HEADING(line)) { inEdu = false; continue }
     if (inEdu || DEGREE_WORDS.test(line) || (!sectioned && SCHOOL_WORDS.test(line) && !TITLE_WORDS.test(line))) continue
     spans.push(...spansIn(line, now))
   }

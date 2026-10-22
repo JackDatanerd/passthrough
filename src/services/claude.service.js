@@ -1175,15 +1175,25 @@ const GENERIC_SKILL_WORDS = new Set(`management project projects data analysis a
   engineering testing security network networking cloud web mobile application applications programming modelling modeling automation
   documentation training writing presentation presentations problem solving critical thinking time budgeting accounting administration
   coordination relations relationship analytics optimization optimisation visualization visualisation integration engineering`.split(/\s+/).filter(Boolean))
+// A vendor that prefixes a product the resume already names ("Adobe Photoshop" for "Photoshop") is the same skill. Only the vendor word is
+// excused, and only when what follows is a product the resume has: "Google Analytics" for "Analytics" or "AutoCAD" for "CAD" stay rejected.
+const VENDOR_WORDS = new Set(['adobe', 'microsoft', 'ms', 'oracle', 'ibm', 'apple', 'atlassian', 'autodesk', 'sap'])
+// Same word, different ending: "budgeting" and "budget" (the shared stem needs 7 letters to cut, so these never met).
+const sameStemWord = (w, haveWords) => w.length >= 5 && haveWords.some(h => h.length >= 5 && (h.startsWith(w) || w.startsWith(h)) && !claimGuard.isTechTerm(w) && !claimGuard.isTechTerm(h))
 function unsupportedSkills(orig, rewritten) {
   const have = claimGuard.haveSet(sourceText(orig))
   const text = sourceText(orig)
+  const haveWords = claimGuard.wordsOf(text)
+  const joined = new Set(listOf(orig?.skills).filter(x => typeof x === 'string').map(x => x.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')))
   return listOf(rewritten.skills).filter(sk => {
     if (typeof sk !== 'string' || !sk.trim()) return false
-    const ws = wordsOf(sk).filter(w => !SKILL_FILLER.has(w))
+    let ws = wordsOf(sk).filter(w => !SKILL_FILLER.has(w))
     if (!ws.length) return false
+    // "Book-keeping" for "Bookkeeping": the same letters, spaced or hyphenated differently.
+    if (joined.has(sk.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ''))) return false
     if (supportedByAlias(sk, text)) return false
-    const unknown = ws.filter(w => !claimGuard.knownWord(have, w))
+    if (ws.length > 1 && VENDOR_WORDS.has(ws[0]) && ws.slice(1).every(w => claimGuard.knownWord(have, w))) ws = ws.slice(1)
+    const unknown = ws.filter(w => !claimGuard.knownWord(have, w) && !sameStemWord(w, haveWords))
     if (!unknown.length) return false
     // Nothing shared at all is always invention; otherwise only plain work-words may be new.
     if (unknown.length === ws.length) return true
@@ -1378,6 +1388,19 @@ function checkLetter(text, { resumeData, jdText, details, allowedNumbers, facts,
   if (own) hard.push(`it claims \"${own}\", which the resume does not say - keep the person's own level and say only what they did`)
   const tech = claimGuard.unknownTerms(text, claimGuard.haveSet(corpus)).filter(w => claimGuard.isTechTerm(w))
   if (tech.length) hard.push(`it names tools the resume and the posting never mention (${tech.slice(0, 4).join(', ')}) - remove them`)
+  // Settings, scale and roles the resume never describes ("high-volume", "across multiple regions", "as team lead", "senior leadership",
+  // "mentored", "cross-functional"): the same fabrication the resume guard blocks, in the page the employer reads first. One the
+  // posting itself uses is only soft (a letter may echo the employer's own words about THEIR team); one that appears nowhere - not in the
+  // resume, the posting or the applicant's details - is hard. A sentence about the future ("I would mentor...", "I can bring...") claims
+  // nothing about the past and is not judged.
+  const pastClaims = text.split(/(?<=[.!?])\s+/).filter(sn => !/\b(?:would|will|can|could|plan to|hope to|look forward|ready to|eager to|excited to)\b/i.test(sn)).join(' ')
+  const scopeAll = claimGuard.scopeProblems(pastClaims, source)
+  if (scopeAll.length) {
+    const nowhere = new Set(claimGuard.scopeProblems(pastClaims, corpus))
+    const hardScope = scopeAll.filter(p => nowhere.has(p)), softScope = scopeAll.filter(p => !nowhere.has(p))
+    if (hardScope.length) hard.push(`it adds a setting, scale or role nothing in the resume, the posting or the details supports (${hardScope.slice(0, 4).join(', ')}) - keep the scope the person gave`)
+    if (softScope.length) soft.push(`it uses ${softScope.slice(0, 3).join(', ')}, which the resume does not show - say it about the employer's team, not as something the person did`)
+  }
   // A letter NEVER names a weakness (product decision): it majors on strengths. Any statement of what the candidate lacks,
   // has not done or is new to is rejected, whatever the scorer found missing - a missing requirement is bridged with the
   // closest real strength (see the prompt), never confessed.
