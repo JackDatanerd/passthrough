@@ -1,0 +1,23 @@
+SECTION 4 (PARTNERS / REFERRAL) — ROUND 28 (independent pass on top of d7a3a8e)
+
+APPLY MIGRATION 0108 BEFORE DEPLOYING THE WORKER. Until it is applied, a sale moved while its usage bump is still pending can
+charge the wrong code, and a move onto a code at its limit is not refused. EXPECTED_SCHEMA_VERSION is now 108.
+
+BUGS
+B1  A sale moved to another partner's code between recordConversion's ledger insert and its usage bump was charged to the OLD
+    code (the caller passed the code id it had resolved earlier). increment_referral_code_usage now reads the code from the
+    locked ledger row; p_code_id is only the fallback when no ledger id is given. (0108)
+B2  adminReattributeSale skipped the self-referral rule: a sale could be credited to the partner who BOUGHT it (or to one of
+    their earlier addresses). It now refuses with 409 SELF_REFERRAL. A buyer it cannot resolve is not blocked.
+B3  reattribute_sale could push the target code past its usage limit. It now returns target_exhausted (409, TARGET_EXHAUSTED)
+    when a counted sale's slot would overdraw the target. An uncounted sale, or a code with no limit, still moves. (0108)
+
+FEATURE GAPS
+G1  Moving a sale used to change two partners' balances in silence (the old partner's sale simply vanished from their
+    dashboard). Both partners are now emailed: what was removed / what was added, the amount, no admin reason and no name of
+    the other partner. Best effort: a mail failure never undoes the move; the response carries emailed: { from, to }.
+    (email.service sendPartnerSaleMoved, under the partner_status_changed label like the other account notices)
+
+TESTS
+tests/migrations.0108.pglite.test.js (9, real Postgres via PGlite; B1's test fails without the fix) and
+tests/partners.round28.test.js (6).

@@ -553,6 +553,21 @@ async function sendPartnerCommissionReversed(env, supabase, email, name, commiss
   })
 }
 
+// Round 28: an admin moved one unpaid sale between partners (partners.controller adminReattributeSale). Both sides are told, under
+// the generic partner_status_changed label like the other account notices (lib/partnerMailTemplates). The admin's reason and the
+// other partner's identity are deliberately left out.
+async function sendPartnerSaleMoved(env, supabase, email, name, direction, commissionCents, currency) {
+  const amount = fmtMoney(commissionCents, currency)
+  const away = direction === 'away'
+  return send(env, supabase, email, away ? 'A sale was moved off your referral code' : 'A sale was credited to your referral code', 'partner_status_changed', {
+    NAME: name,
+    HEADING: away ? 'A sale was moved to another partner' : 'A sale was credited to you',
+    BODY: away
+      ? `after a check, one sale that was credited to your referral code was found to belong to another partner, so it has been moved. The ${amount} commission on it has been removed from your balance and no longer appears on your dashboard.`
+      : `after a check, one sale was moved to your referral code. ${amount} commission (at your current rate) has been added to your balance and appears on your dashboard.`
+  })
+}
+
 // Round 8: an admin posted a manual ledger adjustment (clawback, write-off or bonus). A balance must never
 // change silently, so the partner is told the amount and the reason the admin recorded.
 async function sendPartnerBalanceAdjusted(env, supabase, email, name, amountCents, currency, reason, dashboardUrl) {
@@ -1064,7 +1079,7 @@ module.exports = {
   sendOwnerAlert, sendOwnerNotice,
   sendPartnerPayoutDetailsRequest, sendPartnerApplicationReceived, sendPayoutSent, sendReferralCodeCreated,
   sendPayoutDetailsChanged, sendPartnerLinkRegenerated, sendPartnerEmailChanged, sendPartnerConversionEarned,
-  sendPartnerStatusChanged, sendPartnerCodeChanged, sendPartnerRateChanged, sendPartnerCommissionReversed,
+  sendPartnerStatusChanged, sendPartnerCodeChanged, sendPartnerRateChanged, sendPartnerCommissionReversed, sendPartnerSaleMoved,
   sendPartnerBalanceAdjusted, sendPartnerTermsUpdate, sendPartnerApplicationRejected,
   sendPartnerDashboardLinkRegenerated, sendPartnerPayoutVoided, sendPartnerLinksRecovery
 }

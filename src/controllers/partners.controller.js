@@ -3236,7 +3236,7 @@ async function adminReattributeSale(ctx) {
   const body = reattributeSaleSchema.parse(await ctx.req.json().catch(() => ({})))
   const supabase = getSupabase(ctx.env)
   const { data: row, error } = await supabase.from('commission_ledger')
-    .select('id, partner_id, referral_code_id, kind, reverses_ledger_id, payment_id, gross_amount_cents, payout_id')
+    .select('id, partner_id, referral_code_id, kind, reverses_ledger_id, payment_id, gross_amount_cents, commission_amount_cents, payout_id')
     .eq('id', ctx.req.param('ledgerId')).eq('partner_id', ctx.req.param('id')).maybeSingle()
   if (error) throw error
   if (!row) return ctx.json({ success: false, message: 'Sale not found for this partner.' }, 404)
@@ -3257,6 +3257,19 @@ async function adminReattributeSale(ctx) {
     return ctx.json({ success: false, message: 'That partner has no valid commission rate.' }, 409)
   const commissionCents = Math.round(row.gross_amount_cents * rate)
 
+  // Round 28: the buyer must not be the target partner (or an address they used before) - the same self-referral rule checkout and
+  // recordConversion apply, which a move would otherwise sidestep. A buyer we cannot resolve (no account email) is not blocked.
+  const { data: pay, error: payErr } = await supabase.from('payments').select('user_id, currency').eq('id', row.payment_id).maybeSingle()
+  if (payErr) throw payErr
+  let buyerEmail = null
+  if (pay?.user_id) {
+    const { data: buyer, error: buyerErr } = await supabase.from('users').select('email').eq('id', pay.user_id).maybeSingle()
+    if (buyerErr) throw buyerErr
+    buyerEmail = buyer?.email || null
+  }
+  if (referralService.isSelfReferral(target, buyerEmail))
+    return ctx.json({ success: false, code: 'SELF_REFERRAL', message: 'The buyer is that partner (or used their email), so the sale cannot be credited to them.' }, 409)
+
   const { data: outcome, error: rpcErr } = await supabase.rpc('reattribute_sale', {
     p_ledger_id: row.id, p_to_code_id: target.id, p_to_partner_id: target.partner_id, p_rate: rate, p_commission_cents: commissionCents
   })
@@ -3267,6 +3280,7 @@ async function adminReattributeSale(ctx) {
     not_a_sale:       [400, 'Only a sale can be moved.'],
     same_code:        [409, 'The sale already belongs to that code.'],
     target_not_found: [404, 'That code does not exist.'],
+    target_exhausted: [409, 'That code has reached its usage limit. Raise the limit first, or credit a different code.'],
     not_found:        [404, 'Sale not found for this partner.']
   }
   if (outcome !== 'ok') {
@@ -3276,7 +3290,25 @@ async function adminReattributeSale(ctx) {
   await logAdminAction(ctx, supabase, 'partner.sale_reattributed', 'partner', row.partner_id,
     { ledgerId: row.id, paymentId: row.payment_id, fromCodeId: row.referral_code_id, toCodeId: target.id, toPartnerId: target.partner_id,
       rate, commissionCents, reason: body.reason })
-  return ctx.json({ success: true, data: { toPartnerId: target.partner_id, toCodeId: target.id, commissionCents } })
+
+  // Round 28: a balance must never change silently. Both partners are told - the one who lost the sale (it also drops off their
+  // dashboard) and the one who gained it. The admin's reason stays internal: it may name the other partner or the buyer.
+  // Best-effort and awaited, so a mail failure is reported but never undoes the (already committed) move.
+  const emailed = { from: false, to: false }
+  try {
+    const { data: people } = await supabase.from('partners').select('id, name, email').in('id', [row.partner_id, target.partner_id])
+    const byId = new Map((people || []).map(p => [p.id, p]))
+    const currency = pay?.currency || c.activeCurrency(ctx.env)
+    const emailService = require('../services/email.service')
+    const from = byId.get(row.partner_id), to = byId.get(target.partner_id)
+    const [a, b] = await Promise.all([
+      from?.email ? emailService.sendPartnerSaleMoved(ctx.env, supabase, from.email, from.name, 'away', row.commission_amount_cents, currency).catch(() => false) : false,
+      to?.email ? emailService.sendPartnerSaleMoved(ctx.env, supabase, to.email, to.name, 'to', commissionCents, currency).catch(() => false) : false
+    ])
+    emailed.from = a === true || a === undefined
+    emailed.to = b === true || b === undefined
+  } catch (err) { console.error('adminReattributeSale notify:', err.message) }
+  return ctx.json({ success: true, emailed, data: { toPartnerId: target.partner_id, toCodeId: target.id, commissionCents } })
 }
 
 const reverseSaleSchema = z.object({ reason: z.string().trim().min(5, 'Give a reason (at least 5 characters).').max(300) })
