@@ -1,0 +1,8 @@
+Webhooks (section 8) round 26 - independent pass
+
+B1  sweepDisputes re-ran a charge.dispute.resolve for an OLDER dispute every hour while the payment tracked a newer, still-open
+    dispute (round 25 B3 made the live handler ignore it; the sweep still picked it, re-emailed the owner each run and used a
+    per-run slot). The sweep now loads payments.dispute_id (falls back if migration 0086 is absent) and skips a resolution for a
+    dispute the payment does not track.
+Feature gaps: none found.
+Files: src/controllers/webhooks.controller.js, tests/webhooks.round26.test.js (new). No migration.

@@ -153,6 +153,10 @@
 //       reversal sweep's skip marker.
 //     * G1: refund.failed stamps payments.refund_failed_at (Admin -> Payments shows it while the payment still holds the money); the full refund clears it.
 //
+// 16. ROUND-26 AUDIT (section 8, independent pass — no migration):
+//     * B1: sweepDisputes re-ran an already-handled charge.dispute.resolve for an OLDER dispute every hour while the payment tracked a newer,
+//       still-open one (re-emailing the owner and using a per-run slot); it now skips a resolution for a dispute the payment does not track.
+//
 // Idempotency lives in fulfillment.service (atomic status flip + scan claim),
 // not here — this file only decides WHAT happened and reports it.
 
@@ -2001,9 +2005,12 @@ async function sweepDisputes(env, ctx, supabase = getSupabase(env), { now = Date
     const refs = [...new Set(disputes.map(d => d.transaction.reference))]
     const statusOf = new Map()
     for (let i = 0; i < refs.length; i += 100) {
-      const { data, error } = await supabase.from('payments').select('paystack_ref, status, amount_cents').in('paystack_ref', refs.slice(i, i + 100))
+      // Webhooks round 26 (B1): dispute_id (migration 0086) says which dispute the payment tracks; a Worker deployed ahead of it behaves as before.
+      const load = cols => supabase.from('payments').select(cols).in('paystack_ref', refs.slice(i, i + 100))
+      let { data, error } = await load('paystack_ref, status, amount_cents, dispute_id')
+      if (error && isColumnMissing(error)) ({ data, error } = await load('paystack_ref, status, amount_cents'))
       if (error) { result.error = error.message; return result }
-      for (const p of data || []) statusOf.set(p.paystack_ref, { status: p.status, amount: p.amount_cents })
+      for (const p of data || []) statusOf.set(p.paystack_ref, { status: p.status, amount: p.amount_cents, disputeId: p.dispute_id != null ? String(p.dispute_id).trim() : '' })
     }
 
     const c = { env, executionCtx: ctx }
@@ -2024,6 +2031,9 @@ async function sweepDisputes(env, ctx, supabase = getSupabase(env), { now = Date
       // (left for a human, like a partial refund).
       if (type === 'charge.dispute.resolve') {
         if (!/accept|declin/.test(resolution)) continue
+        // Webhooks round 26 (B1): a resolution for a dispute the payment no longer tracks (a newer one is open) changes nothing in processDispute
+        // (round 25, B3), so the sweep must not pick it again every hour - each run re-emailed the owner until the newer dispute resolved.
+        if (st === 'DISPUTED' && known.disputeId && d.id != null && String(d.id).trim() !== '' && String(d.id).trim() !== known.disputeId) continue
         if (/declin/.test(resolution) && st !== 'DISPUTED') continue
         const disputed = Number(d.refund_amount)
         if (/accept/.test(resolution) && Number.isFinite(disputed) && disputed > 0 && known.amount > 0 && disputed < known.amount) {
