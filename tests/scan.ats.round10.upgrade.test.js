@@ -170,7 +170,7 @@ describe('upgrade wiring', () => {
     expect(src).toMatch(/\.\.\.\(upgradeRound \? \{ badge_upgraded_at: null, user_edited_resume_data: null \} : \{\}\)/)
   })
   it('an upgrade run rewrites the resume the person actually holds (their Badge-era edit)', () => {
-    expect(src).toMatch(/if \(upgradeRound\) \{\s*const held = scan\.userEditedResumeData \|\| scan\.rewrittenResumeData\s*if \(held\) originalData = held/)
+    expect(src).toMatch(/if \(upgradeRound\) \{\s*const held = scan\.rewrittenResumeData \|\| scan\.userEditedResumeData\s*if \(held\) originalData = held/)
   })
   it('the route is authenticated and uses the credit limiter', () => {
     const routes = readFileSync(new URL('../src/routes/scan.routes.js', import.meta.url), 'utf8')

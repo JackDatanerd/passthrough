@@ -229,30 +229,50 @@ function extractJson(raw) {
     // the paid rewrite that meant a lost attempt. Take the outermost balanced
     // {...} / [...] instead (string- and escape-aware, so braces inside values
     // don't end it early).
-    const balanced = firstBalancedJson(s)
-    if (balanced !== null) return JSON.parse(balanced)
+    // SCAN/ATS ROUND 17 (bug, reproduced): only the FIRST bracket was tried, so a preamble containing one
+    // ("Sure [1]: {...}" -> the array [1]; "(see [notes]): {...}" or "Result {draft}: {...}" -> a throw) lost
+    // the real object, and with it an AI score or a paid rewrite attempt. Every start position is tried in turn;
+    // every caller wants an OBJECT, so the first one that parses to an object wins, and an array is only the
+    // fallback when no object is there.
+    let arrayFallback
+    for (let from = 0; from < s.length;) {
+      const found = firstBalancedJson(s, from)
+      if (!found) break
+      try {
+        const v = JSON.parse(found.text)
+        if (v && typeof v === 'object' && !Array.isArray(v)) return v
+        if (arrayFallback === undefined) arrayFallback = v
+      } catch (_) { /* not JSON (a bracketed note) - keep looking */ }
+      from = found.start + 1
+    }
+    if (arrayFallback !== undefined) return arrayFallback
     throw new Error('Could not parse Claude response as JSON')
   }
 }
 
-function firstBalancedJson(s) {
-  const start = s.search(/[{[]/)
-  if (start === -1) return null
-  const open = s[start], close = open === '{' ? '}' : ']'
-  let depth = 0, inStr = false, esc = false
-  for (let i = start; i < s.length; i++) {
-    const ch = s[i]
-    if (inStr) {
-      if (esc) esc = false
-      else if (ch === '\\') esc = true
-      else if (ch === '"') inStr = false
-      continue
+function firstBalancedJson(s, from = 0) {
+  // A loop, not recursion: a long reply full of lone brackets must not be able to exhaust the stack.
+  for (let search = from; ;) {
+    const rel = s.slice(search).search(/[{[]/)
+    if (rel === -1) return null
+    const start = search + rel
+    const open = s[start], close = open === '{' ? '}' : ']'
+    let depth = 0, inStr = false, esc = false
+    for (let i = start; i < s.length; i++) {
+      const ch = s[i]
+      if (inStr) {
+        if (esc) esc = false
+        else if (ch === '\\') esc = true
+        else if (ch === '"') inStr = false
+        continue
+      }
+      if (ch === '"') inStr = true
+      else if (ch === open) depth++
+      else if (ch === close && --depth === 0) return { start, text: s.slice(start, i + 1) }
     }
-    if (ch === '"') inStr = true
-    else if (ch === open) depth++
-    else if (ch === close && --depth === 0) return s.slice(start, i + 1)
+    // Unbalanced from here (a lone bracket in prose): a later bracket may still open a complete value.
+    search = start + 1
   }
-  return null
 }
 
 // Parses `result.data` as JSON with fence-stripping, and on failure logs
@@ -1099,7 +1119,12 @@ function detectFabrication(orig, rewritten) {
   const origCerts = (orig.certifications || []).filter(x => typeof x === 'string').map(words)
   for (const cert of (rewritten.certifications || []).filter(x => typeof x === 'string')) {
     const cw = words(cert)
-    if (cw.size && !origCerts.some(ow => subset(cw, ow) || subset(ow, cw))) return true
+    // SCAN/ATS ROUND 17: a rewrite may EXPAND a short original ("PMP" -> "Project Management Professional (PMP)"), but when
+    // the original is already a full name the extra words are a new level ("... Architect" -> "... Architect Professional").
+    // Beyond the original's own words only neutral ones (certified, certification, ...) may be added to a name of 3+ words.
+    const NEUTRAL_CERT = new Set(['certified', 'certification', 'certificate', 'the', 'of', 'and', 'in', 'a', 'an'])
+    const expands = ow => subset(ow, cw) && (ow.size <= 2 || [...cw].filter(w => !ow.has(w)).every(w => NEUTRAL_CERT.has(w)))
+    if (cw.size && !origCerts.some(ow => subset(cw, ow) || expands(ow))) return true
   }
 
   // FEATURE GAP CLOSED (Scan/ATS pass): everything above guards names, titles,
@@ -1396,7 +1421,7 @@ function applyLetterFrame(text, { recipient, name, uk }) {
 // but does not parse is { letter: null }: retried, never delivered as raw JSON.
 function parseLetterReply(raw) {
   let text = String(raw || '').replace(/^```[a-z]*\n?|```$/gim, '').trim()
-  if (text.startsWith('{')) {
+  if (text.startsWith('{') || /\{\s*"(?:evidence|letter)"\s*:/.test(text)) {
     try {
       const j = extractJson(text)
       if (j && typeof j.letter === 'string') return { letter: j.letter.trim(), evidence: Array.isArray(j.evidence) ? j.evidence : [] }

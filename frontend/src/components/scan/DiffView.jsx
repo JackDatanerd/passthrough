@@ -177,6 +177,14 @@ function DiffContent({ diff, editedByUser = false }) {
         </p>
       )}
 
+      {diff.certifications.added.length > 0 && (
+        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2" data-testid="certs-added-warning">
+          {editedByUser
+            ? 'Certifications marked "added" below come from the rewrite or from your own edit. Only keep ones you actually hold.'
+            : 'Certifications marked "added" below were not in your original resume. Only keep ones you actually hold.'}
+        </p>
+      )}
+
       {diff.summary.changed && (
         <div>
           <h4 className="text-sm font-semibold text-gray-800 mb-2">Summary</h4>

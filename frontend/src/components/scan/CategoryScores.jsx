@@ -13,9 +13,14 @@ const CATS = [
 // only computes pass/fail on the overall score), so this stays a threshold
 // comparison — just a shared one instead of a third independent copy.
 export default function CategoryScores({ scan }) {
+  // A posting with nothing scoreable in it drops the keyword category (weight 0) and the number reported for it is
+  // then the re-weighted blend of the other three - labelled "Keyword Match" it read as a keyword result that was
+  // never measured. Say what it is instead.
+  const noKeywords = scan?.atsDetail?.weights?.keywords === 0
   return (
     <div className="flex flex-col gap-3">
-      {CATS.map(({ key, label }) => {
+      {CATS.map(({ key, label: rawLabel }) => {
+        const label = key === 'keywordScore' && noKeywords ? 'Keywords (not scored for this posting)' : rawLabel
         const val = scan?.[key] ?? 0
         const color = val >= ATS_PASS_THRESHOLD ? 'bg-green-500' : val >= 50 ? 'bg-amber-400' : 'bg-red-500'
         const text  = val >= ATS_PASS_THRESHOLD ? 'text-green-700' : val >= 50 ? 'text-amber-700' : 'text-red-700'

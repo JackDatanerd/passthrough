@@ -324,7 +324,7 @@ async function saveProfile(c) {
     return c.json({ success: false, message: 'Invalid source.' }, 400)
   let resumeToSave = scan.originalResumeData
   if (source === 'delivered') {
-    const delivered = scan.status === 'FIX_DELIVERED' ? (scan.userEditedResumeData || scan.rewrittenResumeData) : null
+    const delivered = scan.status === 'FIX_DELIVERED' ? (scan.rewrittenResumeData || scan.userEditedResumeData) : null   // rewritten = the delivered content; user_edited goes stale after a retry
     if (!delivered) return c.json({ success: false, message: 'This scan has no fixed version to save.' }, 400)
     resumeToSave = delivered
   }

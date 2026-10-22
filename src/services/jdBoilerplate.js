@@ -111,7 +111,10 @@ function stripFormFieldNoise(text) {
 const GENERIC_NOISE_PATTERNS = [
   /\bsimilar jobs\b/gi,                  // the widget heading (often flattened into a sentence by text extraction)
   /^[ \t]*similar job[ \t]*$/gim,        // singular only as a heading of its own: "similar job functions" is prose
-  /\brelated jobs?\b/gi,
+  // SCAN/ATS ROUND 17: plural only, or the singular as a heading of its own - "a related job function" / "in a related job"
+  // is requirement prose (same rule as "similar job" below), and stripping it left "a function".
+  /\brelated jobs\b/gi,
+  /^[ \t]*related job[ \t]*$/gim,
   /\byou (?:might|may) also like\b/gi,
   /\bmore jobs? (?:like this|from this employer)\b/gi,
   /\bshare this job\b/gi,

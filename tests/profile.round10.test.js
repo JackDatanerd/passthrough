@@ -74,10 +74,15 @@ describe('saving the fixed version as the profile', () => {
   const delivered = { name: 'Ada', skills: ['Fixed'] }
   const edited = { name: 'Ada', skills: ['Edited by hand'] }
   it('uses the delivered resume (the person\'s own edits to it first) of a FIX_DELIVERED scan', async () => {
-    t = setup(q => q.table === 'scans' ? { data: scanRow({ status: 'FIX_DELIVERED', rewritten_resume_data: delivered, user_edited_resume_data: edited }), error: null } : q.op === 'rpc' ? { data: true, error: null } : undefined)
+    t = setup(q => q.table === 'scans' ? { data: scanRow({ status: 'FIX_DELIVERED', rewritten_resume_data: edited, user_edited_resume_data: edited }), error: null } : q.op === 'rpc' ? { data: true, error: null } : undefined)
     const res = await t.mod.saveProfile(t.c({ body: { scanId: ID1, source: 'delivered' } }))
     expect(res.status).toBe(200)
-    expect(t.db.calls.find(c => c.op === 'rpc').args.p_profile.resumeData).toEqual(edited)
+    expect(t.db.calls.find(c => c.op === 'rpc').args.p_profile.resumeData).toEqual(edited)   // an owner's edit writes BOTH columns
+    t.restore()
+    // Round 16: after edit -> Try Again the newer rewrite is the delivered content; the stale edit must not win.
+    t = setup(q => q.table === 'scans' ? { data: scanRow({ status: 'FIX_DELIVERED', rewritten_resume_data: delivered, user_edited_resume_data: edited }), error: null } : q.op === 'rpc' ? { data: true, error: null } : undefined)
+    await t.mod.saveProfile(t.c({ body: { scanId: ID1, source: 'delivered' } }))
+    expect(t.db.calls.find(c => c.op === 'rpc').args.p_profile.resumeData).toEqual(delivered)
     t.restore()
     t = setup(q => q.table === 'scans' ? { data: scanRow({ status: 'FIX_DELIVERED', rewritten_resume_data: delivered }), error: null } : q.op === 'rpc' ? { data: true, error: null } : undefined)
     await t.mod.saveProfile(t.c({ body: { scanId: ID1, source: 'delivered' } }))

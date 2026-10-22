@@ -279,11 +279,14 @@ async function createScan(ctx) {
     if (!source) return ctx.json({ success: false, message: 'That scan could not be found.' }, 404)
     // A rescan keeps the page size its source was set to, unless the form picked one.
     if (!paperRaw && source.paperSize) paperSize = source.paperSize
-    // The improved version: a delivered, still-live paid resume (the owner's own edits win) is scanned against the new
+    // SCAN/ATS ROUND 17 (bug): rewritten_resume_data IS the delivered content - an owner's edit writes it too - while
+    // user_edited_resume_data is only the fabrication baseline and goes stale once a retry delivers a newer rewrite
+    // (edit -> Try Again), so preferring it here brought back content the person no longer holds.
+    // The improved version: a delivered, still-live paid resume is scanned against the new
     // job instead of the original upload. Only the structured data is reused - no file is re-parsed.
     const wantDelivered = String(fields.rescanVersion || '') === 'delivered'
     const deliveredData = wantDelivered && source.status === 'FIX_DELIVERED' && source.fixPurchased
-      ? (source.userEditedResumeData || source.rewrittenResumeData || null) : null
+      ? (source.rewrittenResumeData || source.userEditedResumeData || null) : null
     if (wantDelivered && !deliveredData)
       return ctx.json({ success: false, message: 'That scan has no improved version to reuse.' }, 400)
     if (wantDelivered && !(await purchaseIsLive(supabase, source)))
@@ -3164,7 +3167,7 @@ async function generateFixRun(env, supabase, scanId, leaseToken = null) {
     // SCAN/ATS ROUND 10: a Badge -> Fix upgrade rewrites the resume the person actually holds. If they edited the
     // credential-only delivery, that edit IS their resume now - not the upload it was made from.
     if (upgradeRound) {
-      const held = scan.userEditedResumeData || scan.rewrittenResumeData
+      const held = scan.rewrittenResumeData || scan.userEditedResumeData
       if (held) originalData = held
     }
     const isRetry = scan.fixRetryCount > 0

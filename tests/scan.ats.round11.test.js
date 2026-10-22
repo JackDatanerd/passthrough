@@ -135,7 +135,8 @@ describe('gap - rescan the improved (delivered) version', () => {
 
   it('scans the owner\'s edit when there is one, else the delivered rewrite - never the original upload, and never re-parses a file', async () => {
     console.error = () => {}
-    t = setup({ user_edited_resume_data: EDITED })
+    // As stored in production: an owner's edit writes BOTH columns (round 16 - rewritten_resume_data is the delivered content).
+    t = setup({ user_edited_resume_data: EDITED, rewritten_resume_data: EDITED })
     const res = await t.mod.createScan(ctxOf({ jobDescriptionText: validJd, sourceScanId: SRC, rescanVersion: 'delivered' }))
     expect(res.body.success).toBe(true)
     expect(t.inserts[0]).toMatchObject({ input_mode: 'saved_profile', original_resume_data: EDITED })

@@ -1,0 +1,23 @@
+Scan / ATS (section 2) round 17 - independent pass
+
+B1  extractJson tried only the FIRST bracket in a reply, so a preamble such as "Sure [1]: {...}" returned the array [1] and
+    "(see [notes]): {...}" / "Result {draft}: {...}" threw. That cost an AI score (rule-only, held under the credential bar)
+    or a paid rewrite attempt. Every bracket is tried in turn (loop, not recursion); the first that parses to an object wins.
+    parseLetterReply also reads a reply with a sentence before its {"evidence","letter"} JSON as JSON.
+B2  scoreSections only counted a heading that was a short line on its own, so "Education: BSc ..., 2014 - 2018" and
+    "Skills: Node.js, TypeScript, ..." (label + content on one line) were reported missing: sections 58 instead of 100, and the
+    rewrite was told to add sections the resume had. The label before the first colon / spaced dash is now a heading candidate
+    (one word, or only heading vocabulary, so "Skills Engineer - Acme" is not a Skills section).
+B3  After an owner edit then Try Again, user_edited_resume_data (the fabrication baseline) is left stale while
+    rewritten_resume_data holds the delivered content. "Rescan with the improved version" (scan.controller) and "save the fixed
+    version as a profile" (profile.controller) read user_edited first and brought back pre-retry content. Both now read
+    rewritten_resume_data first (the Badge-upgrade baseline too).
+Smaller: jdBoilerplate no longer strips "related job" prose (plural / own-line heading only); a certification may no longer gain
+    a level ("... Architect" -> "... Architect Professional") though acronym expansion ("PMP" -> "Project Management
+    Professional") is still allowed; CategoryScores names the keyword row honestly when the posting had nothing to score;
+    DiffView warns on added certifications as it already did for skills.
+Left as is (deliberate): "die" in the German stop list (a "die casting" posting loses that one keyword; German postings gain far more).
+Feature gaps: none found.
+Files: src/services/claude.service.js, src/services/ats.service.js, src/services/jdBoilerplate.js, src/controllers/scan.controller.js,
+       src/controllers/profile.controller.js, frontend/src/components/scan/CategoryScores.jsx, frontend/src/components/scan/DiffView.jsx,
+       tests/scan.ats.round16.test.js (new). No migration.

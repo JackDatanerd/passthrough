@@ -839,8 +839,27 @@ function scoreSections(resumeText) {
     .filter(l => l && l.length <= 50 && !/[.!?]$/.test(l) && !/^\d/.test(l) && !/\byears?\b/i.test(l))
     .map(l => l.normalize('NFD').replace(/\p{M}+/gu, '').toLowerCase().replace(/[^a-z& ]+/g, ' ').replace(/\s+/g, ' ').trim())
     .filter(l => l && l.split(' ').length <= 6)
+  // SCAN/ATS ROUND 17 (bug, reproduced): a heading had to be a short line on its own, so the compact layout
+  // "Education: BSc Computer Science, University of Nairobi, 2014 - 2018" / "Skills: Node.js, TypeScript, ..." (the
+  // label and its content on one line, very common) was reported as MISSING both sections: sections 58 instead of 100,
+  // and the rewrite was told to add sections the resume already had. The label before the first colon (or spaced
+  // dash) of a line is a heading candidate too - when it is one word, or made only of heading vocabulary, so a job
+  // line such as "Skills Engineer - Acme" is still not a Skills section. (countQuantifiedFigures already reads these
+  // label lines through SKILLS_LABEL_LINE.)
+  const LABEL_RE = /^([^:\u2013\u2014]{2,40}?)\s*(?::|\s[\u2013\u2014-]\s)\s*\S/
+  const labelHeadings = []
+  for (const raw of rawLines) {
+    const t = raw.trim()
+    if (!t || BULLET_LEAD.test(t)) continue
+    const m = LABEL_RE.exec(t)
+    if (!m || /\d/.test(m[1])) continue
+    const folded = m[1].normalize('NFD').replace(/\p{M}+/gu, '').toLowerCase().replace(/[^a-z& ]+/g, ' ').replace(/\s+/g, ' ').trim()
+    const words = folded.split(' ').filter(Boolean)
+    if (words.length && words.length <= 4 && (words.length === 1 || words.every(w => HEADING_WORDS.has(w)))) labelHeadings.push(folded)
+  }
+  const allHeadings = headings.concat(labelHeadings)
   const hasSection = patterns => structured
-    ? headings.some(h => patterns.some(pt => new RegExp(`(?:^| )${pt}(?: |$)`).test(h)))
+    ? allHeadings.some(h => patterns.some(pt => new RegExp(`(?:^| )${pt}(?: |$)`).test(h)))
     : patterns.some(pt => lower.includes(pt))
 
   const foundReq = required.filter(s => s.patterns ? hasSection(s.patterns) : hasEmail)
