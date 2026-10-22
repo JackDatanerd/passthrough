@@ -93,6 +93,47 @@ function unlockScroll() {
 // only the most-recently-opened (visually topmost) Modal ever responds to
 // Escape or Tab, and closing it correctly hands control back to whichever
 // Modal is now on top.
+
+// While a dialog is open everything outside it is made `inert`, so a screen-reader's virtual cursor, a tap, or a stray Tab cannot
+// reach the page underneath (aria-modal alone is ignored by some assistive tech). The toast stack (its Undo / Dismiss buttons stay
+// reachable, see the focus trap below) and the polite announcer are kept live: for each of them every ANCESTOR stays active and
+// only the siblings off that path go inert. Reference-counted, so stacked dialogs release in any order; nodes that were already
+// inert before are left alone.
+const inertCounts = new Map()
+function inertOutside(keep) {
+  const path = new Set()
+  keep.forEach(el => { for (let n = el; n && n !== document.documentElement; n = n.parentElement) path.add(n) })
+  const marked = []
+  path.forEach(node => {
+    if (node === document.body) return
+    const parent = node.parentElement
+    if (!parent) return
+    Array.from(parent.children).forEach(sib => {
+      if (path.has(sib) || sib.tagName === 'SCRIPT' || sib.hasAttribute('data-toast-stack') || sib.hasAttribute('data-announcer')) return
+      marked.push(sib)
+    })
+  })
+  // The children of <body> itself.
+  Array.from(document.body.children).forEach(sib => {
+    if (!path.has(sib) && sib.tagName !== 'SCRIPT' && !sib.hasAttribute('data-announcer')) marked.push(sib)
+  })
+  const mine = []
+  new Set(marked).forEach(el => {
+    const n = inertCounts.get(el)
+    if (n) { inertCounts.set(el, n + 1); mine.push(el); return }
+    if (el.hasAttribute('inert')) return
+    el.setAttribute('inert', '')
+    inertCounts.set(el, 1)
+    mine.push(el)
+  })
+  return () => mine.forEach(el => {
+    const n = (inertCounts.get(el) || 1) - 1
+    if (n > 0) { inertCounts.set(el, n); return }
+    inertCounts.delete(el)
+    el.removeAttribute('inert')
+  })
+}
+
 let modalStack = []
 let nextModalId = 0
 
@@ -143,6 +184,9 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
     const dialog = dialogRef.current
     const previouslyFocused = triggerRef.current
     lockScroll()
+    const wrapper = dialog && Array.from(document.body.children).find(c => c.contains(dialog))
+    const stack = document.querySelector('[data-toast-stack]')
+    const releaseInert = wrapper ? inertOutside(stack ? [wrapper, stack] : [wrapper]) : () => {}
 
     const id = stackId.current
     // Kept in id order, not in the order the effects happened to run (see stackId).
@@ -204,6 +248,7 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
       document.removeEventListener('keydown', onKeyDown)
       modalStack = modalStack.filter(x => x !== id)
       unlockScroll()
+      releaseInert()
       // <body> / <html> count as "no opener": that is what document.activeElement is when the opener could not hold focus (a button
       // clicked in Safari or Firefox on a Mac, a dialog opened from a timer or a request). Focusing it does nothing, and it used to
       // satisfy this test, so the <main> fallback below never ran and a keyboard user was left at the top of the document.

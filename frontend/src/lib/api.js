@@ -298,7 +298,7 @@ api.interceptors.response.use(
     // its own message is displayed instead of silently bouncing the admin away, and a 403 that is
     // about anything else never moves the person. The message match covers a server not yet
     // sending codes.
-    if (status === 403 && !verdict && window.location.pathname.startsWith('/admin')
+    if (status === 403 && !verdict && /^\/admin(\/|$)/i.test(window.location.pathname)
         && (code === 'ADMIN_REQUIRED' || (!code && err.response?.data?.message === 'Admin access required'))) {
       setFlash(FLASH_ADMIN_DENIED)
       window.location.replace('/dashboard')

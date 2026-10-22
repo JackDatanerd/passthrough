@@ -27,7 +27,8 @@ const ROUTES = [
 // carried no noindex of its own — the only thing keeping it out of search was a header the
 // link-preview Function adds, and only when its API call succeeded in time. public/_headers now
 // sends X-Robots-Tag for /v/* too.
-const PRIVATE = /^\/(scan|dashboard|admin|partner|payment|reset-password|verify-email|v)(\/|$)/
+// Case-insensitive like the router, so "/Dashboard" is private too.
+const PRIVATE = /^\/(scan|dashboard|admin|partner|payment|reset-password|verify-email|v)(\/|$)/i
 
 export function titleFor(pathname) {
   const hit = ROUTES.find(([re]) => re.test(pathname))

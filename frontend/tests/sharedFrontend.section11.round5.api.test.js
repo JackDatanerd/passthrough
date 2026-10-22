@@ -40,7 +40,7 @@ describe('humanizeField (BUG: array-item paths were labelled by the index alone)
   it('names the list and the item instead of "3:" / "0:"', () => {
     expect(humanizeField('extraRoleCategories.1')).toBe('Extra role categories (item 2)')
     expect(humanizeField('ids.0')).toBe('Ids (item 1)')
-    expect(humanizeField('experience.1.title')).toBe('Title')
+    expect(humanizeField('experience.1.title')).toBe('Title (experience item 2)')   // round 24: the item the field belongs to
     expect(humanizeField('newPassword')).toBe('New password')
     expect(humanizeField('0')).toBe('')
     expect(humanizeField('')).toBe('')

@@ -34,7 +34,8 @@ export function classifyAuthFailure({ status, code, hadToken, url }) {
 
 // Pages that require a session — only these get a forced redirect to /login.
 export function isProtectedPath(pathname) {
-  return /^\/(dashboard|admin)(\/|$)/.test(pathname || '')
+  // Case-insensitive: the router matches paths that way, so "/Dashboard" is a protected page too.
+  return /^\/(dashboard|admin)(\/|$)/i.test(pathname || '')
 }
 
 // Where a tab should go when ANOTHER tab signed the browser out (the shared token was removed
@@ -52,7 +53,7 @@ export function signedOutElsewhereTarget(pathname, search) {
 export function safeNext(next) {
   if (typeof next !== 'string') return null
   if (!next.startsWith('/') || next.startsWith('//') || next.startsWith('/\\')) return null
-  if (/^\/login(\/|\?|$)/.test(next)) return null   // never bounce back into the login page
+  if (/^\/login(\/|\?|#|$)/i.test(next)) return null   // never bounce back into the login page
   // AUDIT FIX (Auth section round 1, bug B1): only \r and \n were blocked, but
   // a tab (and other control/whitespace characters) survives here and is then
   // stripped by the URL parser that later resolves this value — so

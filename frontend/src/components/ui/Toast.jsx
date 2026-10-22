@@ -25,6 +25,11 @@ function normalizeMessage(m) {
   try { return String(m) } catch (_) { return '' }
 }
 
+// Whether the primary input can hover at all (false on a phone or tablet).
+function canHover() {
+  return typeof window === 'undefined' || typeof window.matchMedia !== 'function' || window.matchMedia('(hover: hover)').matches
+}
+
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([])
   // The list lives in a ref and is mirrored into state: show/remove read and write it synchronously, so
@@ -35,6 +40,7 @@ export function ToastProvider({ children }) {
   const nextId = useRef(0)
   const timers = useRef(new Map())
   const paused = useRef(false)
+  const lastTouch = useRef(-Infinity)
   const stackRef = useRef(null)
   const resumeRef = useRef(() => {})
 
@@ -61,7 +67,9 @@ export function ToastProvider({ children }) {
     // focus really is still in the stack.
     else if (paused.current) setTimeout(() => {
       const el = stackRef.current
-      if (paused.current && el && !el.matches(':hover') && !el.contains(document.activeElement)) resumeRef.current()
+      // A touch screen keeps `:hover` matched on whatever was last tapped, so it says nothing about a pointer there.
+      const hovered = !!el && canHover() && el.matches(':hover')
+      if (paused.current && el && !hovered && !el.contains(document.activeElement)) resumeRef.current()
     }, 0)
   }, [clearTimer, commit])
 
@@ -158,7 +166,10 @@ export function ToastProvider({ children }) {
         style={{ bottom: 'calc(1rem + var(--bottom-inset, 0px))', right: 'calc(1rem + var(--scroll-lock-gap, 0px))' }}
         aria-live="polite"
         aria-atomic="false"
-        onMouseEnter={pause}
+        // A tap on a touch screen is followed by compatibility mouse events (mouseenter, never a mouseleave), which left the stack
+        // paused so no toast expired until the person tapped elsewhere. A mouseenter right after a touch is not a hover.
+        onTouchStart={() => { lastTouch.current = Date.now() }}
+        onMouseEnter={() => { if (Date.now() - lastTouch.current > 1000) pause() }}
         onMouseLeave={resume}
         onFocus={pause}
         // Focus moving between two buttons inside the stack is not "leaving" it.

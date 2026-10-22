@@ -20,13 +20,22 @@ const GENERIC = 'Something went wrong. Please try again.'
 export function humanizeField(field) {
   if (!field) return ''
   const parts = String(field).split('.').filter(p => p !== '')
+  const spell = word => {
+    const spaced = String(word).replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').trim().toLowerCase()
+    return spaced.charAt(0).toUpperCase() + spaced.slice(1)
+  }
   let index = null
   while (parts.length && /^\d+$/.test(parts[parts.length - 1])) index = Number(parts.pop())
   const last = parts.pop()
   if (!last) return ''
-  const spaced = last.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').trim().toLowerCase()
-  const label = spaced.charAt(0).toUpperCase() + spaced.slice(1)
-  return index === null ? label : `${label} (item ${index + 1})`
+  const label = spell(last)
+  if (index !== null) return `${label} (item ${index + 1})`
+  // "experience.2.bullets.1.text" used to read just "Text". An index earlier in the path says which item the field belongs to:
+  // "Text (bullets item 2)", named after the nearest list.
+  for (let i = parts.length - 1; i >= 1; i--) {
+    if (/^\d+$/.test(parts[i]) && !/^\d+$/.test(parts[i - 1])) return `${label} (${spell(parts[i - 1]).toLowerCase()} item ${Number(parts[i]) + 1})`
+  }
+  return label
 }
 
 // True for a request that was aborted on purpose (AbortController / axios cancel).
@@ -97,6 +106,8 @@ export function getErrorMessage(err, fallback = GENERIC) {
       return waitSentence(err, '') ? 'Too many requests.' + waitSentence(err, '') : base
     }
     if (res.status === 413) return 'That file is too large.'
+    // A 503 that says how long it will be (maintenance, overload) tells the person, not just "a problem".
+    if (res.status === 503 && getRetryAfterSeconds(err)) return `The service is briefly unavailable. Try again in ${formatWait(getRetryAfterSeconds(err))}.`
     if (res.status >= 500) return 'The server had a problem. Please try again in a moment.'
     return fallback
   }
@@ -134,7 +145,11 @@ export function shouldRetryRequest({ method, status, hasResponse, retryAfterSeco
   // A request the caller aborted on purpose is not a transient failure.
   if (cancelled) return { retry: false }
   if (!hasResponse) return { retry: true, delayMs: 800 }                       // network blip / timeout
-  if (status === 502 || status === 503 || status === 504) return { retry: true, delayMs: 800 }
+  if (status === 502 || status === 503 || status === 504) {
+    // A server that says how long to wait (a brief 503) is asked once, after that time, when it is short enough to wait for.
+    if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 && retryAfterSeconds <= 5) return { retry: true, delayMs: Math.ceil(retryAfterSeconds * 1000) }
+    return { retry: true, delayMs: 800 }
+  }
   if (status === 429 && Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 && retryAfterSeconds <= 5)
     return { retry: true, delayMs: Math.ceil(retryAfterSeconds * 1000) }        // only when the server says how long
   return { retry: false }

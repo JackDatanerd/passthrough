@@ -14,7 +14,10 @@ export function previewOf(text, limit = PREVIEW_CHARS) {
   const chars = Array.from(String(text ?? ''))
   if (chars.length <= limit) return { shown: chars.join(''), truncated: false }
   const cut = chars.slice(0, limit).join('')
-  const atWord = cut.replace(/\s+\S*$/, '')              // drop a trailing partial word
+  // Drop a trailing partial word, but only when the cut really fell inside one: when the next character is whitespace the last
+  // word is complete and stays (cutting "aaaa bbbb cccc" at 9 gave "aaaa", losing a word that fit).
+  const endsWord = /\s/.test(chars[limit])
+  const atWord = endsWord ? cut : cut.replace(/\s+\S*$/, '')
   return { shown: (atWord || cut).replace(/\s+$/, ''), truncated: true }
 }
 
