@@ -63,9 +63,11 @@ export function StoryForm({ scanId, onDone, onCancel, interview, initial, submit
 }
 
 function Question({ item, onAnswered }) {
-  const [step, setStep] = useState('ask')        // ask | interview | story
+  const [step, setStep] = useState('ask')        // ask | saved
   const [count, setCount] = useState('')
   const [days, setDays] = useState('')
+  const [detailsSaved, setDetailsSaved] = useState(false)
+  const [showStory, setShowStory] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
@@ -88,8 +90,15 @@ function Question({ item, onAnswered }) {
   async function answer(outcome) {
     if (await send(outcome)) onAnswered('Thank you — that genuinely helps.')
   }
-  async function saveInterview() {
-    if (await send('INTERVIEW', interviewDetails())) setStep('story')
+  // "Yes" is saved the moment it is tapped: the answer is what the homepage number is built from, so it must count even if the person
+  // never touches the optional parts below. The card stays on screen (the parent reloads only when they finish), so those parts are
+  // still there for anyone who wants them.
+  async function yes() {
+    if (await send('INTERVIEW')) setStep('saved')
+  }
+  async function saveDetails() {
+    setDetailsSaved(false)
+    if (await send('INTERVIEW', interviewDetails())) setDetailsSaved(true)
   }
 
   return (
@@ -101,34 +110,45 @@ function Question({ item, onAnswered }) {
         <>
           <p className="font-semibold text-gray-900 mb-3">Did it lead to an interview?</p>
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" disabled={busy} onClick={() => setStep('interview')}>Yes, I got an interview</Button>
+            <Button size="sm" disabled={busy} onClick={yes}>Yes, I got an interview</Button>
             <Button size="sm" variant="secondary" disabled={busy} onClick={() => answer('NO_INTERVIEW')}>Not yet</Button>
             <Button size="sm" variant="secondary" disabled={busy} onClick={() => answer('STILL_APPLYING')}>Still applying</Button>
           </div>
         </>
       )}
-      {step === 'interview' && (
-        <div className="flex flex-col gap-3">
-          <p className="font-semibold text-gray-900">Great to hear! Two optional details:</p>
-          <div className="grid sm:grid-cols-2 gap-3">
-            <Input label="How many interviews?" type="number" min={1} max={99} inputMode="numeric" value={count} onChange={e => setCount(e.target.value)} />
-            <Input label="Days after you received the resume" type="number" min={0} max={365} inputMode="numeric" value={days} onChange={e => setDays(e.target.value)} />
+      {step === 'saved' && (
+        <div className="flex flex-col gap-4">
+          <p role="status" className="font-semibold text-green-700">✓ Saved. Great to hear, and thank you.</p>
+
+          <div className="flex flex-col gap-3">
+            <p className="text-sm font-medium text-gray-900">Optional: a little more detail</p>
+            <div className="grid sm:grid-cols-2 gap-3">
+              <Input label="How many interviews?" type="number" min={1} max={99} inputMode="numeric" value={count} onChange={e => { setCount(e.target.value); setDetailsSaved(false) }} />
+              <Input label="Days after you received the resume" type="number" min={0} max={365} inputMode="numeric" value={days} onChange={e => { setDays(e.target.value); setDetailsSaved(false) }} />
+            </div>
+            <div className="flex items-center gap-3">
+              <Button size="sm" variant="secondary" loading={busy && !showStory} disabled={count === '' && days === ''} onClick={saveDetails}>Save details</Button>
+              <span aria-live="polite" className="text-sm text-green-700">{detailsSaved ? 'Details saved.' : ''}</span>
+            </div>
           </div>
-          <div className="flex gap-2">
-            <Button size="sm" loading={busy} onClick={saveInterview}>Continue</Button>
-            <Button size="sm" variant="ghost" disabled={busy} onClick={() => setStep('ask')}>Back</Button>
+
+          {!showStory ? (
+            <div>
+              <p className="text-sm font-medium text-gray-900">Would you share your story?</p>
+              <p className="text-sm text-gray-500 mt-1">Other applicants find real stories more convincing than anything we could write. It is optional, reviewed before it appears, and you can take it down at any time.</p>
+              <Button size="sm" variant="secondary" className="mt-2" onClick={() => setShowStory(true)}>Share my story</Button>
+            </div>
+          ) : (
+            <StoryForm scanId={item.scanId} interview={interviewDetails()}
+              onDone={onAnswered} onCancel={() => setShowStory(false)} />
+          )}
+
+          <div>
+            <Button size="sm" disabled={busy} onClick={() => onAnswered('Thank you — that genuinely helps.')}>Done</Button>
           </div>
         </div>
       )}
-      {step === 'story' && (
-        <div>
-          <p className="font-semibold text-gray-900">Thank you! Would you share your story?</p>
-          <p className="text-sm text-gray-500 mt-1">Other applicants find real stories more convincing than anything we could write. It is optional, reviewed before it appears, and you can take it down any time.</p>
-          <StoryForm scanId={item.scanId} interview={interviewDetails()}
-            onDone={onAnswered} onCancel={() => onAnswered('Thank you — that genuinely helps.')} />
-        </div>
-      )}
-      {error && step !== 'story' && <p role="alert" className="text-sm text-red-600 mt-2">{error}</p>}
+      {error && !showStory && <p role="alert" className="text-sm text-red-600 mt-2">{error}</p>}
     </div>
   )
 }

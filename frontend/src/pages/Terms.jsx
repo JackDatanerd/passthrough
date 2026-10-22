@@ -1,7 +1,7 @@
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 
-const LAST_UPDATED = 'July 24, 2026'
+const LAST_UPDATED = 'October 21, 2026'
 
 function Section({ title, children }) {
   return (
@@ -67,6 +67,15 @@ export default function Terms() {
             <strong>Verified Credential only:</strong> issues a verification badge and public link
             for your existing resume content, without an AI rewrite. Only available if your resume
             already scores at or above the Verified threshold.
+          </p>
+          <p>
+            <strong>Welcome code:</strong> when you verify your email address we may add one
+            personal discount code to your account for the Full fix + Verified credential. It works
+            once, only on your own account, only for the Full fix, and only until the expiry date
+            shown with it. One code applies to a purchase, so it can't be combined with another
+            code, and it can't be transferred, exchanged for cash, or used after it expires. We may
+            refuse or withdraw a code that has been obtained or used through multiple accounts or
+            other misuse.
           </p>
           <p>
             Payments are processed by Paystack. We do not store your card details — Paystack handles

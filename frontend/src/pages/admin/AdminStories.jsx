@@ -5,6 +5,7 @@ import Button from '../../components/ui/Button'
 import Spinner from '../../components/ui/Spinner'
 import Pagination from '../../components/ui/Pagination'
 import Select from '../../components/ui/Select'
+import ExpandableText, { previewOf } from '../../components/ui/ExpandableText'
 import { useToast } from '../../components/ui/Toast'
 import { formatDateTime } from '../../lib/utils'
 import { roleLabel } from '../../lib/roleCategories'
@@ -26,6 +27,9 @@ export default function AdminStories() {
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState(null)
+  // Which stories' full text this reviewer has opened: scanId -> the exact text that was opened. It stays "read" if they collapse it
+  // again, but a story its author edits while it is on screen counts as unread again (the text no longer matches).
+  const [read, setRead] = useState({})
   const begin = useLatestRequest()
 
   const load = useCallback(async () => {
@@ -59,6 +63,10 @@ export default function AdminStories() {
     }
   }
 
+  // A long story shows as a preview, and approving publishes the WHOLE text: it cannot be approved until its full text has been opened
+  // here. Rejecting or taking down never needs a read.
+  const unread = s => previewOf(s.text).truncated && read[s.scanId] !== s.text
+
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   return (
     <div className="flex flex-col gap-4">
@@ -89,11 +97,15 @@ export default function AdminStories() {
                 <span className="text-xs text-gray-400 ml-auto">{formatDateTime(s.answeredAt)}</span>
               </div>
               <p className="font-medium text-gray-900">“{s.quote}”</p>
-              <p className="text-gray-700 mt-2 whitespace-pre-line">{s.text}</p>
+              <ExpandableText text={s.text} className="text-gray-700 mt-2 whitespace-pre-line"
+                onToggle={open => { if (open) setRead(r => ({ ...r, [s.scanId]: s.text })) }} />
               <div className="mt-3 flex gap-2">
-                {s.status !== 'APPROVED' && <Button size="sm" loading={busyId === s.scanId} onClick={() => moderate(s.scanId, 'approve')}>Approve</Button>}
+                {s.status !== 'APPROVED' && <Button size="sm" loading={busyId === s.scanId} disabled={unread(s)} onClick={() => moderate(s.scanId, 'approve')}>Approve</Button>}
                 {s.status !== 'REJECTED' && <Button size="sm" variant="danger" disabled={busyId === s.scanId} onClick={() => moderate(s.scanId, 'reject')}>{s.status === 'APPROVED' ? 'Take down' : 'Reject'}</Button>}
               </div>
+              {s.status !== 'APPROVED' && unread(s) && (
+                <p className="mt-2 text-xs text-amber-800" data-testid="read-to-approve">Open the full story to approve it. Approving publishes all of it.</p>
+              )}
             </article>
           ))}
         </div>

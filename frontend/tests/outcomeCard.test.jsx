@@ -66,37 +66,95 @@ describe('answering', () => {
   })
 })
 
-describe('an interview, and an optional story', () => {
-  async function toStoryStep() {
+describe('an interview: one tap, then optional extras', () => {
+  async function tapYes() {
     load({ pending: [pending()], stories: [] })
     render(<OutcomeCard />)
     fireEvent.click(await screen.findByRole('button', { name: 'Yes, I got an interview' }))
+    await screen.findByText(/Saved\. Great to hear/)
+  }
+  async function toStoryForm() {
+    await tapYes()
     fireEvent.change(screen.getByLabelText('How many interviews?'), { target: { value: '2' } })
     fireEvent.change(screen.getByLabelText('Days after you received the resume'), { target: { value: '6' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
-    await screen.findByText(/Would you share your story/)
+    fireEvent.click(screen.getByRole('button', { name: 'Share my story' }))
+    await screen.findByLabelText('Your story')
   }
-  it('saves the interview (with its details) BEFORE asking for a story — the answer counts even if they walk away', async () => {
-    await toStoryStep()
+
+  it('"Yes" is saved the moment it is tapped, with nothing else filled in: the answer counts even if they walk away', async () => {
+    await tapYes()
     expect(api.put).toHaveBeenCalledTimes(1)
-    expect(api.put).toHaveBeenCalledWith('/outcomes', { scanId: SCAN, outcome: 'INTERVIEW', interviewCount: 2, interviewAfterDays: 6 })
+    expect(api.put).toHaveBeenCalledWith('/outcomes', { scanId: SCAN, outcome: 'INTERVIEW' })
+    expect(screen.getByRole('status')).toHaveTextContent(/Saved/)
   })
-  it('the details are optional: blank fields are not sent as zeros', async () => {
+
+  it('the card stays on screen after the tap (the list is not reloaded until they finish), so the optional parts are still there', async () => {
+    await tapYes()
+    expect(api.get).toHaveBeenCalledTimes(1)
+    expect(screen.getByLabelText('How many interviews?')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Share my story' })).toBeEnabled()
+  })
+
+  it('"Done" finishes: a thank-you, and the list is read again', async () => {
+    await tapYes()
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+    await waitFor(() => expect(api.get).toHaveBeenCalledTimes(2))
+    expect(api.put).toHaveBeenCalledTimes(1)                      // nothing more was sent
+    expect(await screen.findByText(/genuinely helps/)).toBeInTheDocument()
+  })
+
+  it('the details are optional and separate: "Save details" is off until a field has a value, and blank fields are never sent as zeros', async () => {
+    await tapYes()
+    const save = screen.getByRole('button', { name: 'Save details' })
+    expect(save).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('How many interviews?'), { target: { value: '3' } })
+    expect(save).toBeEnabled()
+    fireEvent.click(save)
+    await waitFor(() => expect(api.put).toHaveBeenLastCalledWith('/outcomes', { scanId: SCAN, outcome: 'INTERVIEW', interviewCount: 3 }))
+    expect(await screen.findByText('Details saved.')).toBeInTheDocument()
+  })
+
+  it('saves both details when both are given', async () => {
+    await tapYes()
+    fireEvent.change(screen.getByLabelText('How many interviews?'), { target: { value: '2' } })
+    fireEvent.change(screen.getByLabelText('Days after you received the resume'), { target: { value: '6' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save details' }))
+    await waitFor(() => expect(api.put).toHaveBeenLastCalledWith('/outcomes', { scanId: SCAN, outcome: 'INTERVIEW', interviewCount: 2, interviewAfterDays: 6 }))
+  })
+
+  it('if the tap cannot be saved, the server\'s reason is shown and the question stays open (nothing pretends it worked)', async () => {
     load({ pending: [pending()], stories: [] })
+    api.put.mockRejectedValue({ response: { data: { message: 'You can report an outcome once your fixed resume has been delivered.' } } })
     render(<OutcomeCard />)
     fireEvent.click(await screen.findByRole('button', { name: 'Yes, I got an interview' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
-    await screen.findByText(/Would you share your story/)
-    expect(api.put).toHaveBeenCalledWith('/outcomes', { scanId: SCAN, outcome: 'INTERVIEW' })
+    expect(await screen.findByRole('alert')).toHaveTextContent(/once your fixed resume has been delivered/)
+    expect(screen.getByRole('button', { name: 'Yes, I got an interview' })).toBeEnabled()
+    expect(screen.queryByText(/Saved\. Great to hear/)).toBeNull()
   })
-  it('"Not now" ends the flow with no story request', async () => {
-    await toStoryStep()
+
+  it('if only the optional details fail, the answer stays saved and the failure is shown', async () => {
+    await tapYes()
+    api.put.mockRejectedValueOnce({ response: { data: { message: 'Interview count must be between 1 and 99.' } } })
+    fireEvent.change(screen.getByLabelText('How many interviews?'), { target: { value: '500' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save details' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/between 1 and 99/)
+    expect(screen.getByRole('status')).toHaveTextContent(/Saved/)
+    expect(screen.queryByText('Details saved.')).toBeNull()
+  })
+
+  it('the story is only offered, never forced: "Share my story" opens the form and "Not now" closes it without ending the flow', async () => {
+    await tapYes()
+    expect(screen.queryByLabelText('Your story')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Share my story' }))
+    expect(await screen.findByLabelText('Your story')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Not now' }))
-    expect(await screen.findByRole('status')).toHaveTextContent(/genuinely helps/)
+    expect(screen.queryByLabelText('Your story')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Done' })).toBeInTheDocument()
     expect(api.put).toHaveBeenCalledTimes(1)
   })
-  it('Submit stays disabled until the consent box is ticked; the story is sent with consent, name, headline, text and the credential choice', async () => {
-    await toStoryStep()
+
+  it('Submit stays disabled until the consent box is ticked; the story is sent with the details, consent, name, headline, text and the credential choice', async () => {
+    await toStoryForm()
     const submit = screen.getByRole('button', { name: 'Submit story' })
     expect(submit).toBeDisabled()
     fireEvent.change(screen.getByLabelText('Name to show'), { target: { value: 'Amara O.' } })
@@ -106,6 +164,7 @@ describe('an interview, and an optional story', () => {
     expect(submit).toBeDisabled()   // still no consent
     fireEvent.click(screen.getByLabelText(/happy for Passthrough to publish/))
     expect(submit).toBeEnabled()
+    load({ pending: [], stories: [] })   // once answered, the server no longer lists this scan as pending
     fireEvent.click(submit)
     await waitFor(() => expect(api.put).toHaveBeenLastCalledWith('/outcomes', {
       scanId: SCAN, outcome: 'INTERVIEW', interviewCount: 2, interviewAfterDays: 6,
@@ -113,8 +172,9 @@ describe('an interview, and an optional story', () => {
     }))
     expect(await screen.findByRole('status')).toHaveTextContent(/not public until we approve/)
   })
+
   it('surfaces a story validation message from the server (e.g. links are not allowed)', async () => {
-    await toStoryStep()
+    await toStoryForm()
     api.put.mockRejectedValueOnce({ response: { data: { message: 'Please leave links and contact details out of your story.' } } })
     fireEvent.click(screen.getByLabelText(/happy for Passthrough to publish/))
     fireEvent.click(screen.getByRole('button', { name: 'Submit story' }))

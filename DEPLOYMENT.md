@@ -716,6 +716,30 @@ Each action is written to the admin audit log as `lead.auto_suppressed` (no acto
       `PROMO_ACTIVE="true"`; with it `false` nothing warns, because nothing is wrong.
       Set `PROMO_ACTIVE=false` instead if you don't want a promo at launch.
 
+### Launch pricing, cover letters and welcome codes (migrations 0104 and 0105)
+- [ ] Migrations `0104_cover_letter_limit` and `0105_welcome_codes` are applied, and `GET /api/admin/health`
+      shows the schema `ok` (the Worker now expects schema version 105). The Worker is safe either side of them (before 0104 the cover-letter limit is simply
+      not enforced; before 0105 nobody gets a welcome code and the offer endpoint answers `{ offer: null }`),
+      but apply both BEFORE announcing the launch.
+- [ ] The promo is on with a REAL end: `PROMO_ACTIVE="true"` and `PROMO_ENDS_AT` is the date you mean (it ships
+      as 2026-11-22). At that instant checkout reverts to $49 / $39 / $39 by itself. Decide now whether to
+      extend it (change the date, redeploy) or let it lapse, and put the date in your calendar.
+- [ ] Admin -> Partners lists **Passthrough welcome codes (system)** as ACTIVE at 0%. Do not edit, pause or
+      delete it: pausing it stops every welcome code from applying. It never gets email (conversion notices
+      are off and its address is `@system.invalid`).
+- [ ] Welcome code, end to end (use a throwaway address): register -> verify the email -> the "Your 30% welcome
+      code" email arrives -> sign in, open a scan result -> the offer shows "Welcome price applied" and the
+      Full fix price is lower -> a second account that types the same code gets the normal price.
+- [ ] One test purchase of each tier (Paystack test mode): the **Full fix** uses the welcome code and the
+      receipt shows the discounted amount; **Credential only** and **Fix only** charge normal prices and do NOT
+      use up the code (it still shows on the next visit).
+- [ ] Cover letter: a delivered scan shows the "Bonus" panel right under the downloads with "N of M letters
+      left" (Credential 2, Fix only 3, Full fix 5); the last letter disables "Write a new one".
+- [ ] A long story (over ~220 characters) shows as a preview on **My Story** and in **Admin -> Stories**, and
+      the admin Approve button stays disabled until the full text has been opened.
+- [ ] Answering "Yes" to the interview question saves immediately (check the dashboard no longer asks again
+      after one tap, even if the optional details and story are skipped).
+
 ### Infrastructure
 - [ ] R2 bucket created: `passthrough-resumes`
 - [ ] Both queues created: `passthrough-fix-jobs` and `passthrough-fix-jobs-dlq` (Section 3)

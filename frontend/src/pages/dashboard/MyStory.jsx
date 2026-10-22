@@ -6,6 +6,7 @@ import OutcomeCard, { StoryForm } from '../../components/account/OutcomeCard'
 import Button from '../../components/ui/Button'
 import Spinner from '../../components/ui/Spinner'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
+import ExpandableText from '../../components/ui/ExpandableText'
 import { roleLabel } from '../../lib/roleCategories'
 import { formatDate } from '../../lib/utils'
 
@@ -68,7 +69,8 @@ function StoryCard({ story, onChanged, onTakeDown }) {
         </div>
       ) : (
         <>
-          {story.text && <p className="text-sm text-gray-700 whitespace-pre-line">{story.text}</p>}
+          {/* A long story shows as a preview; the whole text is one click away. Editing (above) always shows all of it. */}
+          <ExpandableText text={story.text} className="text-sm text-gray-700 whitespace-pre-line" />
           {detail.length > 0 && <p className="text-xs text-gray-500">{detail.join(' · ')}</p>}
           <p className="text-xs text-gray-500">
             {story.showCredential ? 'Your Verified link is shown beside the story.' : 'Your Verified link is not shown.'}
