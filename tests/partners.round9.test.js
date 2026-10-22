@@ -12,7 +12,7 @@ let t
 afterEach(() => t?.restore())
 
 const ctxOf = (over = {}) => ({
-  env: { FRONTEND_URL: 'https://usepassthrough.com', ...(over.env || {}) },
+  env: { FRONTEND_URL: 'https://usepassthrough.com', JWT_SECRET: 'test-link-secret-0123456789abcdef0123', ...(over.env || {}) },
   get: k => (k === 'user' ? { id: 'admin-1' } : undefined),
   req: {
     param: k => (over.params || {})[k ?? 'id'] ?? A,

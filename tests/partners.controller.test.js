@@ -24,7 +24,7 @@ function setup(opts = {}) {
       sendPartnerDashboardLinkRegenerated: async () => true,
     },
   })
-  const env = { FRONTEND_URL: 'https://usepassthrough.com' }
+  const env = { FRONTEND_URL: 'https://usepassthrough.com', JWT_SECRET: 'test-link-secret-0123456789abcdef0123' }
   const c = () => ({
     env,
     req: { param: () => 'p1' },
@@ -276,10 +276,12 @@ describe('getPartnerDashboard', () => {
     expect(q.orders).toEqual([
       ['paid_at',    { foreignTable: 'payouts', ascending: false }],
       ['created_at', { foreignTable: 'referral_codes', ascending: false }],
-      ['created_at', { foreignTable: 'commission_ledger', ascending: false }],
-      // Round 8: same tiebreak as /conversions so rows sharing a timestamp page consistently.
-      ['id',         { foreignTable: 'commission_ledger', ascending: true }],
     ])
+    // Round 27: the ledger is no longer embedded; it is read in keyset pages (id asc, 1000 a page) and sorted newest-first with
+    // the same id tiebreak as /conversions in code.
+    const ledgerCall = db.calls.find(call => call.table === 'commission_ledger')
+    expect(ledgerCall.orders).toEqual([['id', { ascending: true }]])
+    expect(ledgerCall.limit ?? ledgerCall.range ?? null).not.toBeNull()
     restore()
   })
 
@@ -322,7 +324,7 @@ describe('getPartnerDashboard', () => {
       payouts: [],
     })
     const r = await mod.getPartnerDashboard(c)
-    expect(r.body.data.conversions[1]).toMatchObject({ code: 'COACHK10', isReversal: true, reversalReason: 'refunded', commissionAmountCents: -580 })
+    expect(r.body.data.conversions[0]).toMatchObject({ code: 'COACHK10', isReversal: true, reversalReason: 'refunded', commissionAmountCents: -580 })
     restore()
   })
 
@@ -423,7 +425,7 @@ describe('adminCreatePartner', () => {
       'services/email.service.js': { sendPartnerPayoutDetailsRequest: async (...a) => { state.emailed.push(a); if (opts.emailThrows) throw new Error('mail down') } },
       'lib/crypto.js': { randomToken: () => 'tok-fixed', sha256: async s => 'h:' + s },
     })
-    const c = { env: { FRONTEND_URL: 'https://usepassthrough.com' }, req: { json: async () => opts.body ?? { name: 'Coach K', email: 'k@x.co' } }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: { FRONTEND_URL: 'https://usepassthrough.com', JWT_SECRET: 'test-link-secret-0123456789abcdef0123' }, req: { json: async () => opts.body ?? { name: 'Coach K', email: 'k@x.co' } }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     return { mod, restore, state, c, db }
   }
 
@@ -465,7 +467,7 @@ describe('adminCreatePartner', () => {
       'services/email.service.js': { sendPartnerPayoutDetailsRequest: async () => {} },
       'lib/crypto.js': { randomToken: () => 'tok-fixed', sha256: async s => 'h:' + s },
     })
-    const c = { env: { FRONTEND_URL: 'https://usepassthrough.com' }, req: { json: async () => ({ name: 'Coach K2', email: 'K@X.CO' }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: { FRONTEND_URL: 'https://usepassthrough.com', JWT_SECRET: 'test-link-secret-0123456789abcdef0123' }, req: { json: async () => ({ name: 'Coach K2', email: 'K@X.CO' }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     const res = await mod.adminCreatePartner(c)
     expect(res.status).toBe(400)
     expect(res.body.success).toBe(false)
@@ -490,7 +492,7 @@ describe('adminCreatePartner', () => {
       'services/email.service.js': { sendPartnerPayoutDetailsRequest: async () => {} },
       'lib/crypto.js': { randomToken: () => 'tok-fixed', sha256: async s => 'h:' + s },
     })
-    const c = { env: { FRONTEND_URL: 'https://usepassthrough.com' }, req: { json: async () => ({ name: 'Coach', email: 'john_smith@x.co' }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: { FRONTEND_URL: 'https://usepassthrough.com', JWT_SECRET: 'test-link-secret-0123456789abcdef0123' }, req: { json: async () => ({ name: 'Coach', email: 'john_smith@x.co' }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     await mod.adminCreatePartner(c)
     expect(seen[0]).toBe('john\\_smith@x.co')
     restore()
@@ -516,7 +518,7 @@ describe('adminUpdatePartner', () => {
         sendPartnerRateChanged:     async (...a) => state.notifications.push({ type: 'rateChanged', to: a[2], from: a[4], toRate: a[5] }),
       },
     })
-    const c = (over = {}) => ({ env: { FRONTEND_URL: 'https://usepassthrough.com' }, req: { param: () => 'p1', json: async () => over.body ?? {} }, header: () => {}, json: (body, status = 200) => ({ body, status }) })
+    const c = (over = {}) => ({ env: { FRONTEND_URL: 'https://usepassthrough.com', JWT_SECRET: 'test-link-secret-0123456789abcdef0123' }, req: { param: () => 'p1', json: async () => over.body ?? {} }, header: () => {}, json: (body, status = 200) => ({ body, status }) })
     return { mod, restore, state, c }
   }
 
@@ -813,12 +815,16 @@ describe('adminGetPartner', () => {
   it('surfaces each payout\'s point-in-time payoutDetailsSnapshot', async () => {
     t = setupGet({
       id: 'p1', name: 'Coach K', payouts: [
-        { id: 'po1', partner_id: 'p1', amount_cents: 5000, currency: 'USD', payout_method: 'BANK', status: 'PAID', created_at: new Date().toISOString(), payout_details_snapshot: { bankName: 'Old Bank', accountNumber: '0001' } },
+        { id: 'po1', partner_id: 'p1', amount_cents: 5000, currency: 'USD', payout_method: 'BANK', status: 'PAID', created_at: new Date().toISOString(), payout_details_snapshot: { bankName: 'Old Bank', accountNumber: '12345678' } },
       ],
       referral_codes: [], commission_ledger: [],
     })
     const res = await t.mod.adminGetPartner(t.c)
-    expect(res.body.data.payouts[0].payoutDetailsSnapshot).toEqual({ bankName: 'Old Bank', accountNumber: '0001' })
+    // Round 27: the detail view carries the MASKED snapshot; the full one comes from the step-up gated reveal endpoint.
+    const snap = res.body.data.payouts[0].payoutDetailsSnapshot
+    expect(snap.bankName).toBe('Old Bank')
+    expect(JSON.stringify(snap)).not.toContain('12345678')
+    expect(JSON.stringify(snap)).toContain('5678')
   })
 
   it('orders payouts/referral_codes/commission_ledger newest-first', async () => {
@@ -828,10 +834,8 @@ describe('adminGetPartner', () => {
     expect(call.orders).toEqual([
       ['paid_at', { foreignTable: 'payouts', ascending: false }],
       ['created_at', { foreignTable: 'referral_codes', ascending: false }],
-      ['created_at', { foreignTable: 'commission_ledger', ascending: false }],
-      // Round 8: same tiebreak as /conversions, so rows sharing a timestamp order deterministically.
-      ['id',         { foreignTable: 'commission_ledger', ascending: true }],
     ])
+    expect(t.db.calls.find(c => c.table === 'commission_ledger').orders).toEqual([['id', { ascending: true }]])   // round 27: paged, not embedded
   })
 
   // AUDIT FIX (Section 3/4 pass, bug): same currency-drift gap as
@@ -863,7 +867,7 @@ describe('adminCreateReferralCode', () => {
       'config/supabase.js': { getSupabase: () => db },
       'services/email.service.js': { sendReferralCodeCreated: async (...a) => state.emailed.push(a) },
     })
-    const c = { env: { FRONTEND_URL: 'https://usepassthrough.com' }, req: { param: () => 'p1', json: async () => opts.body ?? { code: 'coach20', tierPrices: { FIX: 1900 } } }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: { FRONTEND_URL: 'https://usepassthrough.com', JWT_SECRET: 'test-link-secret-0123456789abcdef0123' }, req: { param: () => 'p1', json: async () => opts.body ?? { code: 'coach20', tierPrices: { FIX: 1900 } } }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     return { mod, restore, state, c }
   }
 
@@ -914,7 +918,7 @@ describe('adminCreateReferralCode', () => {
       'config/supabase.js': { getSupabase: () => db },
       'services/email.service.js': { sendReferralCodeCreated: async () => { throw new Error('mail down') } },
     })
-    const c = { env: { FRONTEND_URL: 'https://usepassthrough.com' }, req: { param: () => 'p1', json: async () => ({ code: 'coach20', tierPrices: { FIX: 1900 } }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: { FRONTEND_URL: 'https://usepassthrough.com', JWT_SECRET: 'test-link-secret-0123456789abcdef0123' }, req: { param: () => 'p1', json: async () => ({ code: 'coach20', tierPrices: { FIX: 1900 } }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     const res = await mod.adminCreateReferralCode(c)
     expect(res.body.success).toBe(true)
     restore()
@@ -995,7 +999,7 @@ describe('getPartnerByToken', () => {
   function setupToken(opts = {}) {
     const db = createFakeSupabase(q => (q.table === 'partners' ? { data: opts.partner ?? null, error: null } : undefined))
     const { mod, restore } = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
-    const c = { env: {}, req: { query: () => opts.token }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: { JWT_SECRET: 'test-link-secret-0123456789abcdef0123', FRONTEND_URL: 'https://usepassthrough.com' }, req: { query: () => opts.token }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     return { mod, restore, c }
   }
 
@@ -1225,7 +1229,7 @@ describe('partner admin actions — audit trail', () => {
       },
     })
     const c = (over = {}) => ({
-      env: { FRONTEND_URL: 'https://usepassthrough.com' },
+      env: { FRONTEND_URL: 'https://usepassthrough.com', JWT_SECRET: 'test-link-secret-0123456789abcdef0123' },
       get: k => (k === 'user' ? { id: 'admin-1' } : undefined),
       req: { param: () => 'p1', json: async () => over.body ?? {} },
       header: () => {}, json: (body, status = 200) => ({ body, status }),

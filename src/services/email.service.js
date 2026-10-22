@@ -533,7 +533,8 @@ async function sendPartnerEmailChanged(env, supabase, to, name, oldEmail, newEma
 
 // AUDIT FIX (feature gap): the one account-affecting partner change with no
 // proactive notification at all — see partners.controller.js's
-// adminUpdatePartner. `status` is only ever 'ACTIVE' or 'PAUSED'.
+// adminUpdatePartner. (Logged under the generic 'partner_status_changed' label like six other partner notices; see
+// lib/partnerMailTemplates.js before giving any of them its own label.)
 async function sendPartnerRateChanged(env, supabase, email, name, oldRate, newRate) {
   const pct = r => `${+(Number(r) * 100).toFixed(2)}%`
   return send(env, supabase, email, 'Your Passthrough commission rate has changed', 'partner_status_changed', {

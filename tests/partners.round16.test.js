@@ -13,7 +13,7 @@ let t
 afterEach(() => t?.restore())
 
 const ctxOf = (over = {}) => ({
-  env: { FRONTEND_URL: 'https://usepassthrough.com', PAYSTACK_CURRENCY: 'USD' },
+  env: { FRONTEND_URL: 'https://usepassthrough.com', JWT_SECRET: 'test-link-secret-0123456789abcdef0123', PAYSTACK_CURRENCY: 'USD' },
   get: () => ({ id: 'admin-1' }),
   req: {
     param: () => over.param ?? 'p1', query: () => undefined,

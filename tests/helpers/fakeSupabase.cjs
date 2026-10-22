@@ -13,12 +13,20 @@
 
 function createFakeSupabase(resolver = () => undefined) {
   const calls = []
+  let embeddedLedger = null
 
   function from(table) {
     const q = { table, op: 'select', filters: [], orders: [], patch: null, values: null, cols: null, single: false, maybe: false, returning: false }
     const run = () => {
       calls.push(q)
-      return Promise.resolve(resolver(q)).then(r => r ?? { data: null, error: null })
+      return Promise.resolve(resolver(q)).then(r => {
+        // Round 27: the partner's ledger is read with its own paged query instead of an embedded sub-select. A fixture that still
+        // describes the partner row WITH an embedded commission_ledger array answers that query too (unless the resolver does).
+        if (q.table === 'partners' && q.op === 'select' && r && r.data && Array.isArray(r.data.commission_ledger)) embeddedLedger = r.data.commission_ledger
+        if (r === undefined && q.table === 'commission_ledger' && q.op === 'select' && embeddedLedger && q.filters.some(f => f[0] === 'eq' && f[1] === 'partner_id'))
+          return { data: embeddedLedger, error: null }
+        return r ?? { data: null, error: null }
+      })
     }
     const api = {
       select(cols, opts) { q.cols = cols ?? '*'; q.selectOpts = opts || null; q.returning = true; return api },

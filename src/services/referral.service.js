@@ -31,6 +31,7 @@
 // predates this migration, or a reservation that outlived its TTL before
 // being consumed).
 const c = require('../config/constants')
+const partnerLinks = require('../lib/partnerLinks')
 const { normalizeSub } = require('../lib/referralSub')
 
 async function lookupCode(supabase, rawCode) {
@@ -38,7 +39,7 @@ async function lookupCode(supabase, rawCode) {
   const code = String(rawCode).trim().toUpperCase()
   if (!code) return null
   const { data, error } = await supabase
-    .from('referral_codes').select('*, partners(status, email, previous_emails)').eq('code', code).maybeSingle()
+    .from('referral_codes').select('*, partners(status, email, previous_emails, commission_rate)').eq('code', code).maybeSingle()
   if (error) throw error
   return data
 }
@@ -381,7 +382,7 @@ async function recordConversionInner(supabase, payment, env, opts = {}) {
     if (!codeRow) return { ok: true, recorded: false, reason: 'code-not-found' }
 
     const partnerRes = await withOneRetry(() => supabase
-      .from('partners').select('name, email, commission_rate, dashboard_token, notify_conversions').eq('id', codeRow.partner_id).maybeSingle())
+      .from('partners').select(`name, email, commission_rate, notify_conversions, ${partnerLinks.DASHBOARD_LINK_COLUMNS}`).eq('id', codeRow.partner_id).maybeSingle())
     if (partnerRes.error) {
       console.error('recordConversion partner lookup:', partnerRes.error.message)
       return { ok: false, recorded: false, reason: 'partner-lookup', error: partnerRes.error.message }
@@ -398,9 +399,20 @@ async function recordConversionInner(supabase, payment, env, opts = {}) {
     // Number(null) is 0, which would silently record a $0 commission for a
     // partner whose rate is simply missing — treat null/undefined as invalid,
     // and anything above 100% (commission larger than the sale) as invalid too.
-    const commissionRate = partner.commission_rate == null ? NaN : Number(partner.commission_rate)
+    // Round 27 (gap): the rate the partner had when the buyer CHECKED OUT, not whatever it is when this row is finally written.
+    // A rate change in between (or a reconcile retry days later) used to pay the new rate on an old sale. Payments made before
+    // migration 0107 carry no stamp, and a database that predates it has no column: both fall back to the current rate.
+    let stampedRate = null
+    if (payment.id) {
+      try {
+        const { data: stamp } = await supabase.from('payments').select('referral_commission_rate').eq('id', payment.id).maybeSingle()
+        if (stamp && stamp.referral_commission_rate != null) stampedRate = Number(stamp.referral_commission_rate)
+      } catch (_) { /* column missing: use the current rate */ }
+    }
+    const rateSource = stampedRate != null && Number.isFinite(stampedRate) ? stampedRate : partner.commission_rate
+    const commissionRate = rateSource == null ? NaN : Number(rateSource)
     if (!Number.isFinite(commissionRate) || commissionRate < 0 || commissionRate > 1)
-      return { ok: false, recorded: false, reason: 'bad-commission-rate', error: `commission_rate=${partner.commission_rate}` }
+      return { ok: false, recorded: false, reason: 'bad-commission-rate', error: `commission_rate=${rateSource}` }
     const commissionAmountCents = Math.round(payment.amount_cents * commissionRate)
 
     // usage_counted:false marks "row written, counter not bumped yet". The RPC
@@ -738,13 +750,13 @@ async function notifyConversionFailure(env, payment, result, source) {
 // token (no dashboard link to send them yet) must never turn an already-
 // successful commission record into a failure response.
 async function notifyPartnerConversion(env, supabase, partner, codeRow, commissionAmountCents, currency) {
-  if (!partner?.email || !partner?.dashboard_token) return
+  if (!partner?.email) return
   // Round 5: a partner can turn the per-sale email off (partners.notify_conversions).
   // Reversal / payout / account emails are never affected by it.
   if (partner.notify_conversions === false) return
   try {
     const emailService = require('./email.service')
-    const dashboardUrl = `${env.FRONTEND_URL}/partner/dashboard?token=${partner.dashboard_token}`
+    const dashboardUrl = await partnerLinks.dashboardUrlOf(env, partner)
     await emailService.sendPartnerConversionEarned(env, supabase, partner.email, partner.name,
       codeRow.code, commissionAmountCents, currency || c.CURRENCY, dashboardUrl)
   } catch (_) {}
@@ -756,10 +768,10 @@ async function notifyPartnerConversion(env, supabase, partner, codeRow, commissi
 async function notifyPartnerReversal(env, supabase, partnerId, commissionCents, currency) {
   try {
     const { data: partner } = await supabase.from('partners')
-      .select('name, email, dashboard_token, status').eq('id', partnerId).maybeSingle()
-    if (!partner?.email || !partner?.dashboard_token) return false
+        .select(`name, email, status, ${partnerLinks.DASHBOARD_LINK_COLUMNS}`).eq('id', partnerId).maybeSingle()
+    if (!partner?.email) return false
     const emailService = require('./email.service')
-    const dashboardUrl = `${env.FRONTEND_URL}/partner/dashboard?token=${partner.dashboard_token}`
+    const dashboardUrl = await partnerLinks.dashboardUrlOf(env, partner)
     const ok = await emailService.sendPartnerCommissionReversed(env, supabase, partner.email, partner.name,
       commissionCents, currency || c.activeCurrency(env), dashboardUrl)
     return ok === true || ok === undefined

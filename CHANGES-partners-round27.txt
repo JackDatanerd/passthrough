@@ -1,0 +1,19 @@
+Section 4 (Partners / Referral) round 27
+Migration 0107_partners_section4_round27.sql (apply BEFORE deploying the Worker; EXPECTED_SCHEMA_VERSION 107).
+B1  Partner dashboard links are no longer stored. A link is derived as <partner id>.<HMAC(PARTNER_LINK_SECRET || JWT_SECRET, id:version)>; partners.dashboard_token_version
+    is the counter (bumping it revokes the link). Partners created before 0107 keep their stored token until it rotates; POST /partners/dashboard-links/convert rotates them
+    in batches of 25 (and emails each partner the new link, restoring the old one if the email fails) - run it until remaining is 0.
+    Set PARTNER_LINK_SECRET so rotating JWT_SECRET does not also kill every emailed dashboard link.
+B2  The unpaid-ledger loader and the two sum helpers page by primary key (id > last) instead of offsets: a payout recorded mid-scan no longer shifts the pages and skips rows
+    (wrong readiness / overview totals, false "more payouts are now ready" alert).
+B3  Partner mail labels have ONE list (lib/partnerMailTemplates.js) shared by the erasure purge and a test that fails if a partner-facing email uses an unlisted label.
+G1  GET /partners/:id returns the MASKED account number, tax ID and payout snapshots. GET /partners/:id/payout-details (step-up) returns the full values and writes
+    partner.details_viewed first - if that audit row cannot be written nothing is revealed. PartnerDetail has "Show full details" / "Show full account".
+G2  The partner's commission rate is stamped on the payment at checkout (payments.referral_commission_rate); recordConversion pays that rate. Payments without a stamp (made
+    before 0107, or a database without the column) use the current rate as before; checkout falls back to the pre-0107 insert if the column is missing.
+G3  The dashboard and admin detail read the ledger in keyset pages (loadLedgerForPartner) instead of one embedded sub-select (unbounded, and silently cut wherever PostgREST caps rows).
+G4  The partner dashboard shows what each code has earned (net of refunds).
+G5  POST /partners/:id/ledger/:ledgerId/reattribute (step-up) moves one UNPAID, un-reversed sale to another partner's code in one transaction (reattribute_sale): ledger row, payment
+    row and both codes' usage counters, at the target partner's current rate; audited as partner.sale_reattributed. PartnerDetail has a "Move" action next to "Reverse".
+Not changed: the buyer's users.referred_by_code stays on the old code; the dashboard still computes every stat in the Worker from the full (now paged) ledger - SQL aggregates would be a
+bigger change; a paid sale is reversed + adjusted, not moved.

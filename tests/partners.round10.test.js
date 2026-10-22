@@ -12,7 +12,7 @@ afterEach(() => t?.restore())
 const read = rel => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8')
 
 const ctxOf = (over = {}) => ({
-  env: { FRONTEND_URL: 'https://usepassthrough.com', PAYSTACK_CURRENCY: 'USD', ...(over.env || {}) },
+  env: { FRONTEND_URL: 'https://usepassthrough.com', JWT_SECRET: 'test-link-secret-0123456789abcdef0123', PAYSTACK_CURRENCY: 'USD', ...(over.env || {}) },
   get: k => (k === 'user' ? (over.user || { id: 'admin-1', email: 'a@x.co' }) : undefined),
   req: {
     param: k => (over.params || {})[k ?? 'id'] ?? 'p1',
@@ -149,17 +149,20 @@ describe('partner self-serve link reset', () => {
     expect(res.status).toBe(200)
     expect(JSON.stringify(res.body)).not.toMatch(/token=/)
     expect(updates).toHaveLength(1)
-    expect(updates[0].patch.dashboard_token).toBeTruthy()
+    // Round 27: the dashboard link is derived, so rotating it clears the legacy stored token and bumps the version.
+    expect(updates[0].patch.dashboard_token).toBeNull()
+    expect(updates[0].patch.dashboard_token_version).toBe(1)
     expect(updates[0].patch.payout_token_hash).toMatch(/^[0-9a-f]{64}$/)
     expect(updates[0].patch.payout_details_token).toBeNull()
-    expect(updates[0].filters.some(f => f[0] === 'eq' && f[1] === 'dashboard_token' && f[2] === 'dtok')).toBe(true)   // guarded on the presented token
+    expect(updates[0].filters.some(f => f[0] === 'eq' && f[1] === 'dashboard_token' && f[2] === 'dtok')).toBe(true)   // guarded on the stored token it replaced
+    expect(updates[0].filters.some(f => f[0] === 'eq' && f[1] === 'dashboard_token_version' && f[2] === 0)).toBe(true)
   })
   it('undoes the swap when the email cannot be sent (nobody is locked out)', async () => {
     const { mod, updates } = setup(false)
     const res = await mod.resetMyPartnerLinks(ctxOf({ headers: { 'x-partner-token': 'dtok' } }))
     expect(res.status).toBe(502)
     expect(updates).toHaveLength(2)
-    expect(updates[1].patch).toEqual({ dashboard_token: 'dtok', payout_token_hash: require('node:crypto').createHash('sha256').update('ptok').digest('hex') })
+    expect(updates[1].patch).toEqual({ dashboard_token: 'dtok', dashboard_token_version: 0, payout_token_hash: require('node:crypto').createHash('sha256').update('ptok').digest('hex') })
   })
   it('an unknown token is a plain 404', async () => {
     const { mod } = setup(true)

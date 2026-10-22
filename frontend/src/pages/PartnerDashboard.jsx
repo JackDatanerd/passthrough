@@ -215,6 +215,10 @@ function CodeCard({ code, partnerActive, partnerStatus, currency }) {
         {code.clicks || 0} clicks{code.signups != null ? ` · ${code.signups} sign-up${code.signups === 1 ? '' : 's'} (last ${ATTRIBUTION_WINDOW_DAYS} days)` : ''} · {code.usesSoFar || 0} redemption{code.usesSoFar === 1 ? '' : 's'}
         {code.usageLimit ? ` (limit ${code.usageLimit})` : ''}
         {code.stats?.conversionRate != null && ` · ${formatRate(code.stats.conversionRate)} of clicks bought`}
+        {/* Round 27: what this one code has earned (net of refunds), so a partner with several codes can see which ones pay. */}
+        {code.stats?.commissionCents != null && (code.stats.conversions > 0 || code.stats.commissionCents !== 0) && (
+          <span data-testid="code-earned">{` · earned ${fmtCents(code.stats.commissionCents, currency)}`}</span>
+        )}
       </div>
       <p className="text-xs text-gray-400 mt-2">
         {live ? (

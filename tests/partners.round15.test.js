@@ -9,7 +9,7 @@ let t
 afterEach(() => t?.restore())
 
 const ctxOf = (over = {}) => ({
-  env: { FRONTEND_URL: 'https://usepassthrough.com', PAYSTACK_CURRENCY: 'USD', OWNER_ALERT_EMAIL: 'owner@x.co' },
+  env: { FRONTEND_URL: 'https://usepassthrough.com', JWT_SECRET: 'test-link-secret-0123456789abcdef0123', PAYSTACK_CURRENCY: 'USD', OWNER_ALERT_EMAIL: 'owner@x.co' },
   get: () => ({ id: 'admin-1' }),
   req: { param: () => 'p1', query: () => undefined, json: async () => over.body ?? {}, header: () => undefined },
   header: () => {}, json: (body, status = 200) => ({ body, status }),

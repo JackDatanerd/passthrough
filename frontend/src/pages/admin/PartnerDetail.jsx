@@ -39,15 +39,42 @@ function PayoutDetailsFields({ method, details }) {
   )
 }
 
+// Round 27: the detail view only carries the MASKED account number and tax ID. The full values come from a step-up gated endpoint that
+// writes a partner.details_viewed audit entry, so reading a partner's account leaves the same trace as exporting it.
+function RevealDetailsButton({ partnerId, onRevealed, label = 'Show full details' }) {
+  const { execute, loading, error } = useApi()
+  async function reveal() {
+    try {
+      const data = await execute(() => api.get(`/partners/${partnerId}/payout-details`), { fallback: 'Could not load the full details.' })
+      onRevealed(data.data || data)   // execute() returns the response body; the values sit under .data
+    } catch (_) { /* error already captured by useApi */ }
+  }
+  return (
+    <span className="inline-flex items-center gap-2">
+      <button type="button" className="text-xs text-brand-600 hover:underline disabled:opacity-50" disabled={loading} onClick={reveal} data-testid="reveal-details">
+        {loading ? 'Loading…' : label}
+      </button>
+      {error && <span role="alert" className="text-xs text-red-600">{error}</span>}
+    </span>
+  )
+}
+
 function PayoutDetailsSummary({ partner }) {
+  const [revealed, setRevealed] = useState(null)
   if (!partner.payoutMethod) {
     return <span className="text-sm text-gray-400 italic">Not submitted yet</span>
   }
+  const details = revealed ? revealed.payoutDetails : partner.payoutDetails
+  const taxCountry = revealed ? revealed.taxCountry : partner.taxCountry
+  const taxId = revealed ? revealed.taxId : partner.taxId
   return (
     <>
-      <PayoutDetailsFields method={partner.payoutMethod} details={partner.payoutDetails} />
-      {(partner.taxCountry || partner.taxId) && (
-        <div className="text-xs text-gray-500 mt-1" data-testid="partner-tax">Tax: {partner.taxCountry || '—'}{partner.taxId ? ` · ${partner.taxId}` : ''}</div>
+      <PayoutDetailsFields method={partner.payoutMethod} details={details} />
+      {(taxCountry || taxId) && (
+        <div className="text-xs text-gray-500 mt-1" data-testid="partner-tax">Tax: {taxCountry || '—'}{taxId ? ` · ${taxId}` : ''}</div>
+      )}
+      {partner.detailsMasked && !revealed && (
+        <div className="mt-1"><RevealDetailsButton partnerId={partner.id} onRevealed={setRevealed} /></div>
       )}
     </>
   )
@@ -110,6 +137,7 @@ function VoidPayoutModal({ partner, payout, onClose, onVoided }) {
 function PayoutRow({ payout, partner, onChanged }) {
   const [open, setOpen] = useState(false)
   const [voiding, setVoiding] = useState(false)
+  const [snapshotRevealed, setSnapshotRevealed] = useState(null)
   const hasSnapshot = payout.payoutDetailsSnapshot && Object.keys(payout.payoutDetailsSnapshot).length > 0
   const voided = !!payout.voidedAt
   return (
@@ -156,7 +184,10 @@ function PayoutRow({ payout, partner, onChanged }) {
           <div className="text-xs uppercase tracking-wide text-gray-400 mb-1">
             Account this payout was sent to
           </div>
-          <PayoutDetailsFields method={payout.payoutMethod} details={payout.payoutDetailsSnapshot} />
+          <PayoutDetailsFields method={payout.payoutMethod} details={snapshotRevealed || payout.payoutDetailsSnapshot} />
+          {!snapshotRevealed && partner.detailsMasked && (
+            <div className="mt-1"><RevealDetailsButton partnerId={partner.id} label="Show full account" onRevealed={d => setSnapshotRevealed((d.snapshots || {})[payout.id] || null)} /></div>
+          )}
         </div>
       )}
       {voiding && <VoidPayoutModal partner={partner} payout={payout} onClose={() => setVoiding(false)} onVoided={onChanged} />}
@@ -952,9 +983,49 @@ function ReverseSaleModal({ partner, sale, onClose, onDone }) {
   )
 }
 
+// Round 27 (feature gap): a sale credited to the wrong partner (wrong code typed, a shared code, a merged account) used to mean
+// reverse + a hand-written adjustment. This moves one UNPAID sale to another partner's code in a single step, at THEIR current rate.
+function MoveSaleModal({ partner, sale, onClose, onDone }) {
+  const toast = useToast()
+  const { execute, loading, error } = useApi()
+  const [toCode, setToCode] = useState('')
+  const [reason, setReason] = useState('')
+  async function submit() {
+    if (!toCode.trim()) return execute(() => Promise.reject(new Error('Enter the code that should get this sale.')), { fallback: 'Enter the code that should get this sale.' }).catch(() => {})
+    if (reason.trim().length < 5) return execute(() => Promise.reject(new Error('Say why (at least 5 characters). It is kept in the audit log.')), { fallback: 'Say why (at least 5 characters). It is kept in the audit log.' }).catch(() => {})
+    try {
+      await execute(() => api.post(`/partners/${partner.id}/ledger/${sale.id}/reattribute`, { toCode: toCode.trim().toUpperCase(), reason: reason.trim() }),
+        { fallback: 'Failed to move the sale.' })
+      toast({ message: 'Sale moved.', type: 'success' })
+      onDone()
+      onClose()
+    } catch (_) { /* error already captured by useApi */ }
+  }
+  return (
+    <Modal open onClose={onClose} title="Move this sale to another partner" dismissible={!loading}>
+      <Form onSubmit={submit} className="flex flex-col gap-4">
+        <p className="text-sm text-gray-600">
+          Moves the <strong>{formatCents(sale.commissionAmountCents, sale.currency || partner.currency)}</strong> commission on payment{' '}
+          <span className="font-mono text-xs">{sale.paymentRef || '—'}</span> to the partner who owns the code below, recalculated at that
+          partner's current rate. Neither partner is emailed, and the buyer's later purchases stay attributed to their old code. A sale that is already in a payout cannot be moved — reverse it and add an adjustment instead.
+        </p>
+        <Input label="Code that should get the sale" value={toCode} onChange={e => setToCode(e.target.value)} placeholder="e.g. ANN20" maxLength={40} />
+        <Textarea showCount label="Reason (audit log only)" rows={3} maxLength={300} value={reason}
+          onChange={e => setReason(e.target.value)} placeholder="e.g. Buyer used Ann's link but typed Bob's code at checkout" />
+        {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+        <div className="flex gap-2 justify-end">
+          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button type="submit" loading={loading}>Move sale</Button>
+        </div>
+      </Form>
+    </Modal>
+  )
+}
+
 function ConversionsTab({ partner, onChanged }) {
   const ledger = partner.commissionLedger || []
   const [reversing, setReversing] = useState(null)
+  const [moving, setMoving] = useState(null)
   const reversedIds = new Set(ledger.filter(l => l.reversesLedgerId).map(l => l.reversesLedgerId))
   const removed = String(partner.email || '').endsWith('@removed.invalid')
   if (ledger.length === 0) return <EmptyState className="text-gray-400 italic">No conversions or adjustments yet.</EmptyState>
@@ -1036,7 +1107,10 @@ function ConversionsTab({ partner, onChanged }) {
           key: 'actions',
           header: '',
           cell: l => (l.kind === 'ADJUSTMENT' || l.reversesLedgerId || reversedIds.has(l.id) || removed || !onChanged) ? null : (
-            <button type="button" className="text-xs text-red-600 hover:underline" onClick={() => setReversing(l)}>Reverse</button>
+            <span className="inline-flex gap-3">
+              <button type="button" className="text-xs text-red-600 hover:underline" onClick={() => setReversing(l)}>Reverse</button>
+              {!l.payoutId && <button type="button" className="text-xs text-brand-600 hover:underline" onClick={() => setMoving(l)}>Move</button>}
+            </span>
           ),
         },
         {
@@ -1062,6 +1136,7 @@ function ConversionsTab({ partner, onChanged }) {
       rowKey={l => l.id}
     />
     {reversing && <ReverseSaleModal partner={partner} sale={reversing} onClose={() => setReversing(null)} onDone={() => onChanged && onChanged()} />}
+    {moving && <MoveSaleModal partner={partner} sale={moving} onClose={() => setMoving(null)} onDone={() => onChanged && onChanged()} />}
     </div>
   )
 }

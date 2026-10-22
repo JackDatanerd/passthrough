@@ -24,7 +24,7 @@ describe('removed-partner addresses', () => {
       'middleware/rateLimiter.js': { hitQuota: async (...a) => { quota.push(a); return true }, refundQuota: async () => {} },
     })
     const db = { from: () => ({ insert: async row => { logs.push(row); return { error: null } } }) }
-    const env = { FRONTEND_URL: 'https://usepassthrough.com', EMAIL_FROM: 'P <hello@usepassthrough.com>', RATE_LIMIT_KV: {} }
+    const env = { FRONTEND_URL: 'https://usepassthrough.com', JWT_SECRET: 'test-link-secret-0123456789abcdef0123', EMAIL_FROM: 'P <hello@usepassthrough.com>', RATE_LIMIT_KV: {} }
     const ok = await t.mod.sendPartnerCommissionReversed(env, db, 'partner-p1@removed.invalid', 'Removed partner', 500, 'USD', 'https://d')
     expect(ok).toBe(false)
     expect(sent).toHaveLength(0)
@@ -39,7 +39,7 @@ describe('removed-partner addresses', () => {
       'middleware/rateLimiter.js': { hitQuota: async () => true, refundQuota: async () => {} },
     })
     const db = { from: () => ({ insert: async () => ({ error: null }) }) }
-    const env = { FRONTEND_URL: 'https://usepassthrough.com', EMAIL_FROM: 'P <hello@usepassthrough.com>', RATE_LIMIT_KV: {} }
+    const env = { FRONTEND_URL: 'https://usepassthrough.com', JWT_SECRET: 'test-link-secret-0123456789abcdef0123', EMAIL_FROM: 'P <hello@usepassthrough.com>', RATE_LIMIT_KV: {} }
     expect(await t.mod.sendPartnerCommissionReversed(env, db, 'k@x.co', 'K', 500, 'USD', 'https://d')).toBe(true)
     expect(sent).toHaveLength(1)
   })

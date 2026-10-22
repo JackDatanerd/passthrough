@@ -155,7 +155,7 @@ describe('getPartnerDashboard — new fields', () => {
       { id: 'r', referral_code_id: 'rc1', reverses_ledger_id: 'b', gross_amount_cents: -2900, commission_amount_cents: -580, created_at: '2026-09-03T00:00:00Z' },
     ] })
     const d = (await t.mod.getPartnerDashboard(ctxOf({}, { query: { token: 'x' } }))).body.data
-    expect(d.referralCodes[0].stats).toEqual({ conversions: 1, conversionRate: 0.1 })
+    expect(d.referralCodes[0].stats).toEqual({ conversions: 1, conversionRate: 0.1, commissionCents: 580 })   // round 27: earnings per code, net of the refund
   })
   it('sets Cache-Control: no-store on token responses', async () => {
     t = setupDash(base)
@@ -181,13 +181,13 @@ describe('adminCreateReferralCode — paused partner', () => {
   }
   it('creates the code but does NOT email "your code is ready" to a PAUSED partner', async () => {
     t = setupCode('PAUSED')
-    const r = await t.mod.adminCreateReferralCode(ctxOf({ FRONTEND_URL: 'https://x' }, { body: { code: 'coach20', tierPrices: { FIX: 1900 } } }))
+    const r = await t.mod.adminCreateReferralCode(ctxOf({ FRONTEND_URL: 'https://x', JWT_SECRET: 'test-link-secret-0123456789abcdef0123' }, { body: { code: 'coach20', tierPrices: { FIX: 1900 } } }))
     expect(r.body).toMatchObject({ success: true, notified: false, partnerPaused: true })
     expect(t.st.mails).toBe(0)
   })
   it('still emails an ACTIVE partner', async () => {
     t = setupCode('ACTIVE')
-    const r = await t.mod.adminCreateReferralCode(ctxOf({ FRONTEND_URL: 'https://x' }, { body: { code: 'coach20', tierPrices: { FIX: 1900 } } }))
+    const r = await t.mod.adminCreateReferralCode(ctxOf({ FRONTEND_URL: 'https://x', JWT_SECRET: 'test-link-secret-0123456789abcdef0123' }, { body: { code: 'coach20', tierPrices: { FIX: 1900 } } }))
     expect(r.body.notified).toBe(true)
     expect(t.st.mails).toBe(1)
   })
@@ -251,7 +251,7 @@ describe('partner applications', () => {
   })
   it('approve: claims PENDING atomically and creates the partner', async () => {
     t = setupApp()
-    const r = await t.mod.adminApproveApplication(ctxOf({ FRONTEND_URL: 'https://x' }, { params: { id: 'a1' } }))
+    const r = await t.mod.adminApproveApplication(ctxOf({ FRONTEND_URL: 'https://x', JWT_SECRET: 'test-link-secret-0123456789abcdef0123' }, { params: { id: 'a1' } }))
     expect(r.body.success).toBe(true)
     expect(t.st.created[0]).toMatchObject({ name: 'Ann', email: 'ann@x.co' })
   })

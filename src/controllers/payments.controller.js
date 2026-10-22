@@ -438,7 +438,7 @@ async function initializePayment(c2) {
   // reason — whatever code priced THIS reference is what its commission
   // ledger entry (see referral.service.js's recordConversion) will reflect,
   // regardless of what happens to the code afterward.
-  const { error: insertErr } = await supabase.from('payments').insert({
+  const paymentRow = {
     amount_cents:          amount,
     currency:              c.activeCurrency(c2.env),
     status:                'PENDING',
@@ -455,8 +455,18 @@ async function initializePayment(c2) {
     // Round 10 (0076): kept only when a code actually priced this checkout.
     ...(finalPriced.referralCode && parsed.data.referralSource ? { referral_source: parsed.data.referralSource } : {}),
     // Round 16 (0093): the channel tag rides along only with a code that really priced this checkout.
-    ...(finalPriced.referralCode && parsed.data.referralSub ? { referral_sub: parsed.data.referralSub } : {})
-  })
+    ...(finalPriced.referralCode && parsed.data.referralSub ? { referral_sub: parsed.data.referralSub } : {}),
+    // Round 27 (0107): the partner's commission rate AT CHECKOUT, so a later rate change or a late reconcile retry still pays the
+    // rate this sale was made under (recordConversion reads it back).
+    ...(Number.isFinite(Number(finalPriced.referralCode?.partners?.commission_rate)) && finalPriced.referralCode?.partners?.commission_rate != null
+      ? { referral_commission_rate: Number(finalPriced.referralCode.partners.commission_rate) } : {})
+  }
+  let { error: insertErr } = await supabase.from('payments').insert(paymentRow)
+  // A database that has not applied migration 0107 yet has no such column: insert the pre-0107 row instead of failing checkout.
+  if (insertErr && insertErr.code === '42703' && /referral_commission_rate/.test(insertErr.message || '')) {
+    delete paymentRow.referral_commission_rate
+    ;({ error: insertErr } = await supabase.from('payments').insert(paymentRow))
+  }
   // AUDIT FIX (bug): Paystack has ALREADY been successfully initialized for
   // this reference at this point — every other critical failure in this
   // function (Paystack init itself failing, an amount mismatch at verify

@@ -9,7 +9,7 @@ let t
 afterEach(() => t?.restore())
 
 const ctxOf = (over = {}) => ({
-  env: { FRONTEND_URL: 'https://usepassthrough.com', ...(over.env || {}) },
+  env: { FRONTEND_URL: 'https://usepassthrough.com', JWT_SECRET: 'test-link-secret-0123456789abcdef0123', ...(over.env || {}) },
   get: k => (k === 'user' ? { id: 'admin-1' } : undefined),
   req: {
     param: k => (over.params || {})[k ?? 'id'] ?? A,
@@ -247,7 +247,8 @@ describe('adminAnonymizePartner', () => {
     })
     expect(t.st.partnerPatch.payout_details_token).toBeNull()   // stored hashed since 0087
     expect(t.st.partnerPatch.payout_token_hash).toMatch(/^[0-9a-f]{64}$/)
-    expect(t.st.partnerPatch.dashboard_token).toMatch(/\S{16,}/)
+    expect(t.st.partnerPatch.dashboard_token).toBeNull()   // round 27: link revoked by bumping the derivation version
+    expect(t.st.partnerPatch.dashboard_token_version).toBeGreaterThan(0)
     expect(t.st.partnerPatch.payout_token_hash).not.toBe(t.st.partnerPatch.dashboard_token)
     expect(t.st.codePatch).toEqual({ active: false })
     expect(t.st.audits[0]).toMatchObject({ action: 'partner.anonymized' })
@@ -323,7 +324,7 @@ describe('routes and templates', () => {
   })
   it('the recovery email template exists and carries only the dashboard link', () => {
     const { render } = require('../src/templates/emails.js')
-    const html = render('partner_links_recovery', { NAME: 'K', DASHBOARD_URL: 'https://d.test/x', FRONTEND_URL: 'https://usepassthrough.com' })
+    const html = render('partner_links_recovery', { NAME: 'K', DASHBOARD_URL: 'https://d.test/x', FRONTEND_URL: 'https://usepassthrough.com', JWT_SECRET: 'test-link-secret-0123456789abcdef0123' })
     expect(html).toContain('https://d.test/x')
     expect(html).not.toContain('{{')
   })

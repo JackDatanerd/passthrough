@@ -66,7 +66,7 @@ describe('recordPayoutCore — atomic settlement RPC', () => {
     commission_rate: 0.1, payout_method: 'BANK', payout_details: { bankName: 'B', accountName: 'N', accountNumber: '1234567890' },
     payout_details_submitted_at: '2020-01-01T00:00:00.000Z', currency: 'USD' }
   const ctxOf = body => ({
-    env: { FRONTEND_URL: 'https://usepassthrough.com', PAYSTACK_CURRENCY: 'USD' },
+    env: { FRONTEND_URL: 'https://usepassthrough.com', JWT_SECRET: 'test-link-secret-0123456789abcdef0123', PAYSTACK_CURRENCY: 'USD' },
     get: () => ({ id: 'admin-1', email: 'a@x.co' }),
     req: { param: () => 'p1', query: () => undefined, json: async () => body, header: () => undefined },
     header: () => {}, json: (b, status = 200) => ({ body: b, status }), executionCtx: { waitUntil: () => {} },

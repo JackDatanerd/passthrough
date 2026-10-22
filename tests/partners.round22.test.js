@@ -9,7 +9,7 @@ let t
 afterEach(() => t?.restore())
 
 const ctxOf = (body = {}) => ({
-  env: { FRONTEND_URL: 'https://usepassthrough.com' },
+  env: { FRONTEND_URL: 'https://usepassthrough.com', JWT_SECRET: 'test-link-secret-0123456789abcdef0123' },
   get: () => ({ id: 'admin-1' }),
   req: { param: () => 'p1', json: async () => body, query: () => undefined },
   header: () => {}, json: (b, status = 200) => ({ body: b, status }),
@@ -79,7 +79,8 @@ describe('adminUpdatePartner — email change reports link delivery (round 22)',
     expect(res.body.success).toBe(true)
     expect(res.body.linksEmailed).toBe(false)
     expect(res.body.payoutUrl).toMatch(/\/partner\/payout-details\?token=[0-9a-f]{20,}$/)
-    expect(res.body.dashboardUrl).toMatch(/\/partner\/dashboard\?token=[0-9a-f]{20,}$/)
+    // Round 27: dashboard links are derived (<partner id>.<HMAC>), nothing is stored.
+    expect(res.body.dashboardUrl).toMatch(/\/partner\/dashboard\?token=[^.]+\.[0-9a-f]{128}$/)
   })
   it('no email change: the response carries no link fields at all', async () => {
     t = load()

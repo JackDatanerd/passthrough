@@ -41,7 +41,7 @@ describe('lookup — asserts WHAT was queried', () => {
   it('asks for the owning partner\'s status in the same query', async () => {
     const db = dbReturning(codeRow())
     await resolvePrice(db, 'FIX', {}, 'coach20')
-    expect(db.calls[0].cols).toContain('partners(status, email, previous_emails)')
+    expect(db.calls[0].cols).toContain('partners(status, email, previous_emails, commission_rate)')
   })
   it('surfaces a database error instead of silently charging the wrong price', async () => {
     const db = createFakeSupabase(() => ({ data: null, error: new Error('db down') }))
@@ -266,7 +266,7 @@ describe('recordConversion', () => {
         if (q.table === 'payments') return { data: { status: 'SUCCESS' }, error: null }
         return { error: null }
       })
-      const env = { FRONTEND_URL: 'https://x', RATE_LIMIT_KV: { get: async () => null, put: async () => {} } }
+      const env = { FRONTEND_URL: 'https://x', JWT_SECRET: 'test-link-secret-0123456789abcdef0123', RATE_LIMIT_KV: { get: async () => null, put: async () => {} } }
       const r = await recordConversion(d, payment, env, { adminRetry: true })
       expect(r).toEqual({ ok: true, recorded: true })
       expect(mails).toHaveLength(1)
@@ -295,7 +295,7 @@ describe('recordConversion', () => {
           if (q.table === 'payments') return { data: { status: paymentStatus }, error: null }
           return { error: null }
         })
-        const env = { FRONTEND_URL: 'https://x', RATE_LIMIT_KV: { get: async () => null, put: async () => {} } }
+        const env = { FRONTEND_URL: 'https://x', JWT_SECRET: 'test-link-secret-0123456789abcdef0123', RATE_LIMIT_KV: { get: async () => null, put: async () => {} } }
         const r = await recordConversion(d, payment, env, opts)
         return { r, mails, alerts, limitMails }
       } finally { [emailSvc.sendPartnerConversionEarned, emailSvc.sendOwnerAlert, emailSvc.sendPartnerCodeLimitReached] = orig }

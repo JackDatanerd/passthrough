@@ -63,6 +63,7 @@ router.get(  '/payouts',                   admin, c.adminListPayouts)
 router.get(  '/ledger',                    admin, c.adminListLedger)
 // Round 23: full payout details of everyone payable now, for the payout-run CSV (step-up: the one bulk read of account numbers).
 router.get(  '/payout-export',             admin, admin.stepUp, c.adminPayoutRunExport)
+router.post( '/dashboard-links/convert',   admin, admin.stepUp, c.adminConvertLegacyDashboardLinks)
 // Round 18: paid sales that used a code but have no commission row (declared before '/:id').
 router.get(  '/unrecorded-commissions',     admin, c.adminListUnrecordedCommissions)
 // Round 6: record a whole payout run in one call (each item runs the single-payout checks).
@@ -88,6 +89,7 @@ router.patch('/:id',                       admin, partnerMoneyEdit, validateUuid
 router.post( '/:id/resend-link',           admin, admin.stepUp, validateUuidParam(), c.adminResendPayoutLink)
 router.post( '/:id/regenerate-link',       admin, admin.stepUp, validateUuidParam(), c.adminRegeneratePayoutLink)
 router.get(  '/:id/links',                 admin, admin.stepUp, validateUuidParam(), c.adminGetPartnerLinks)
+router.get(  '/:id/payout-details',         admin, admin.stepUp, validateUuidParam(), c.adminRevealPayoutDetails)
 router.post( '/:id/payouts',               admin, admin.stepUp, validateUuidParam(), c.adminRecordPayout)
 router.post( '/:id/payouts/:payoutId/void', admin, admin.stepUp, validateUuidParam(), validateUuidParam('payoutId'), c.adminVoidPayout)
 router.post( '/:id/anonymize',            admin, admin.stepUp, validateUuidParam(), c.adminAnonymizePartner)
@@ -96,6 +98,7 @@ router.post( '/:id/anonymize',            admin, admin.stepUp, validateUuidParam
 router.post( '/:id/adjustments',          admin, admin.stepUp, validateUuidParam(), c.adminAdjustLedger)
 // Round 18: reject one sale (negative ledger row, like a refund, without touching the buyer's payment).
 router.post( '/:id/ledger/:ledgerId/reverse', admin, admin.stepUp, validateUuidParam(), validateUuidParam('ledgerId'), c.adminReverseSale)
+router.post( '/:id/ledger/:ledgerId/reattribute', admin, admin.stepUp, validateUuidParam(), validateUuidParam('ledgerId'), c.adminReattributeSale)
 // STEP-UP (round 10): a code's tier prices decide what a buyer pays and what the partner earns on it, so setting or changing
 // them is a money decision like the commission rate above. Switching a code off / changing its limit or expiry stays one click.
 // Round 23: renaming a code changes every link already shared, so it takes the same step-up.

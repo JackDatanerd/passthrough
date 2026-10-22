@@ -14,7 +14,7 @@ afterEach(() => { t?.restore?.(); t = null })
 const DAY = 86400000
 const daysAgo = n => new Date(Date.now() - n * DAY).toISOString()
 const ctxOf = (body = {}, over = {}) => ({
-  env: { FRONTEND_URL: 'https://app.test', ...(over.env || {}) },
+  env: { FRONTEND_URL: 'https://app.test', JWT_SECRET: 'test-link-secret-0123456789abcdef0123', ...(over.env || {}) },
   req: { param: k => (over.params || {})[k] ?? 'p1', query: k => (over.query || {})[k], json: async () => body, header: () => over.ua ?? 'Mozilla/5.0' },
   header: () => {}, json: (b, status = 200) => ({ body: b, status }),
 })
@@ -304,12 +304,11 @@ describe('G2/G3/B7 — applications: approve with rate + first code, reject with
     const res = await t.mod.adminApproveApplication(ctxOf(approveBody, { params: { id: 'a1' } }))
     expect(res.body.success).toBe(true)
     expect(t.st.created[0]).toMatchObject({ commission_rate: 0.3, website: 'https://ann.test', audience: 'newsletter' })
-    expect(t.st.created[0].dashboard_token).toBeTruthy()
-    expect(t.st.created[0].dashboard_token).not.toBe(t.st.created[0].payout_details_token)
+    expect(t.st.created[0].dashboard_token).toBeUndefined()   // round 27: the dashboard link is derived, never stored
     expect(t.st.codes[0]).toMatchObject({ partner_id: 'newp', code: 'ANN20' })
     expect(res.body.codeCreated.code).toBe('ANN20')
-    // the code email carries the READ-ONLY token
-    expect(t.st.codeEmails[0][5]).toContain(`token=${t.st.created[0].dashboard_token}`)
+    // the code email carries the READ-ONLY link (round 27: derived <partner id>.<HMAC>, nothing stored)
+    expect(t.st.codeEmails[0][5]).toMatch(/\/partner\/dashboard\?token=[^.]+\.[0-9a-f]{128}$/)
   })
   it('approval with no body still works exactly as before', async () => {
     app()
@@ -366,7 +365,8 @@ describe('G6 — the partner list no longer embeds history', () => {
     const pq = db.calls.find(q => q.table === 'partners'), lq = db.calls.find(q => q.table === 'commission_ledger')
     expect(pq.cols).toBe('*')
     expect(lq.filters.some(f => f[0] === 'is' && f[1] === 'payout_id' && f[2] === null)).toBe(true)
-    expect(lq.range).toEqual([0, 999])
+    expect(lq.limit).toBe(1000)   // round 27: keyset paging (id > last), not offsets
+    expect(lq.range).toBeUndefined()
     expect(res.body.data[0].readyToPayCents).toBe(500)
   })
 })

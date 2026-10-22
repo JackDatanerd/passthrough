@@ -14,7 +14,7 @@ let t
 afterEach(() => t?.restore())
 
 const ctxOf = (over = {}) => ({
-  env: { FRONTEND_URL: 'https://usepassthrough.com', ...(over.env || {}) },
+  env: { FRONTEND_URL: 'https://usepassthrough.com', JWT_SECRET: 'test-link-secret-0123456789abcdef0123', ...(over.env || {}) },
   get: k => (k === 'user' ? { id: 'admin-1' } : undefined),
   req: {
     param: k => (over.params || {})[k ?? 'id'] ?? 'p1',
@@ -142,7 +142,7 @@ describe('payout currency', () => {
       { id: 'b', commission_amount_cents: 10, gross_amount_cents: 100, currency: 'KES', payout_id: null, created_at: new Date().toISOString(), payments: { status: 'SUCCESS' } },
     ] }
     t.restore()
-    t = setup({ partner: row })
+    t = setup({ partner: row, ledgerSelect: () => ({ data: row.commission_ledger, error: null }) })   // round 27: the ledger is its own (paged) query
     const res = await t.mod.adminGetPartner(ctxOf({ env: { PAYSTACK_CURRENCY: 'USD' } }))
     expect(res.body.data.mixedCurrency).toBe(true)
     expect(res.body.data.unpaidCurrencies.sort()).toEqual(['KES', 'USD'])
