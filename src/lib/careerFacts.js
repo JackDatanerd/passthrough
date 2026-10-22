@@ -29,10 +29,16 @@ const isOngoing = text => ONGOING.test(String(text || '')) || /(?:19|20)\d{2}\s*
 const MONTH_RE = '(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\.?'
 const monthOf = s => ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'].indexOf(String(s || '').slice(0, 3).toLowerCase())
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-// 06/2019 and 2019-06 -> "Jun 2019" (only a real month 1-12, only beside a four-digit year).
+// 06/2019 -> "Jun 2019". The ISO form 2019-06 is read as a month only as an end of a range whose other end is also a month (2019-06 to
+// 2022-08, or 2019-06 - Present): alone, "2008-09" or "2010-11" is a school year (2008 to 2009), not September 2008.
+const ISO = '((?:19|20)\\d{2})\\s*[/-]\\s*(0[1-9]|1[0-2])(?!\\d)'
+const ISO_PAIR = new RegExp(`\\b${ISO}\\s*(?:-|–|—|to|until|till)\\s*(?:${ISO}|(?=present|current|now|today|ongoing|date))`, 'gi')
 const numericMonthsToNames = t => String(t || '')
   .replace(/\b(0?[1-9]|1[0-2])\s*[/.]\s*((?:19|20)\d{2})\b/g, (_, mm, y) => `${MONTH_ABBR[+mm - 1]} ${y}`)
-  .replace(/\b((?:19|20)\d{2})\s*[/-]\s*(0[1-9]|1[0-2])(?!\d)/g, (_, y, mm) => `${MONTH_ABBR[+mm - 1]} ${y}`)
+  .replace(ISO_PAIR, (all, y1, m1, y2, m2) => {
+    const sep = all.slice(all.search(/\s*(?:-|–|—|to|until|till)\s*(?:(?:19|20)\d{2}|present|current|now|today|ongoing|date)/i)).replace(/(?:(?:19|20)\d{2})\s*[/-]\s*(?:0[1-9]|1[0-2]).*$/, '')
+    return `${MONTH_ABBR[+m1 - 1]} ${y1} to ` + (y2 ? `${MONTH_ABBR[+m2 - 1]} ${y2}` : '')
+  })
 const POINT = `(?:${MONTH_RE}\\s+)?((?:19|20)\\d{2})`
 const SPAN_RE = new RegExp(`\\b${POINT}\\s*(?:-|–|—|to|until|till)\\s*(?:(?:${MONTH_RE})\\s+)?((?:19|20)\\d{2}(?!\\d)|\\d{2}(?!\\d)|present|current|currently|now|today|ongoing|date)`, 'gi')
 
@@ -97,9 +103,11 @@ function careerFacts(resumeData, now = new Date()) {
     if (last === null || end > last) last = end
     if (end >= start) {
       roleYears.push(end - start)
-      // A month-precise range is measured in months; anything else keeps the year arithmetic.
-      const precise = spansIn(job?.dates, now).find(sp => sp.months)
-      spans.push(precise || { startYear: start, endYear: end, months: null })
+      // Every range the entry names counts (a role listed as "2019-2020; 2021-Present" is two stints); a month-precise one is measured
+      // in months, anything else keeps the year arithmetic.
+      const found = spansIn(job?.dates, now)
+      if (found.length > 1) spans.push(...found)
+      else spans.push(found[0] || { startYear: start, endYear: end, months: null })
     }
   }
   if (first === null) return { years: null, firstYear: null, lastYear: null, ongoing, roleYears, span: null }
@@ -149,12 +157,26 @@ function tenureClaimOk(n, facts, sourceNumbers) {
 // empty quote was accepted as proof. This counts it instead: every date range in the text that is not on an
 // education line, merged into a union of year intervals (overlapping jobs count once, gaps are not counted), with an
 // open range ending at the current year. Year granularity only; null when the text carries no usable range.
-const EDU_LINE = /\b(?:universit(?:y|é|à)|college|school|academy|institute|bachelor|master|msc|bsc|b\.?sc|m\.?sc|mba|phd|ph\.d|diploma|degree|gpa|graduat\w*|a-levels?|gcses?|high school|coursework|dissertation|thesis)\b/i
+// Which lines are EDUCATION, not work. A line used to be skipped on any education word, which also dropped real jobs: "Scrum Master",
+// "Graduate Trainee", "Lecturer - University of Nairobi", "Teacher - ... High School", "Degree Controls Ltd". Now: everything under an
+// EDUCATION heading, plus any line with a degree word only an education entry has (BSc, MBA, diploma, "Bachelor's", GPA). With no
+// section headings at all (a pasted block), a school-name line counts as education unless it also names a job title.
+const EDU_HEADING = /^\s*(?:education(?:\s*(?:and|&)\s*(?:training|certifications?|qualifications))?|academic(?:\s+(?:background|qualifications|history))?|qualifications|education\s+history)\s*:?\s*$/i
+const OTHER_HEADING = /^\s*(?:(?:professional\s+)?summary|profile|(?:work|professional|relevant|employment|career)\s+(?:experience|history)|experience|employment|projects?|(?:technical\s+)?skills|certifications?|licen[sc]es|volunteer(?:ing)?(?:\s+experience)?|awards?|publications?|languages?|interests|references|additional\s+information)\s*:?\s*$/i
+const DEGREE_WORDS = /\b(?:bachelor(?:['’]s)?|b\.?sc|bsc|b\.?a\.?\b|m\.?sc|msc|mba|phd|ph\.d|diploma|gpa|a-levels?|gcses?|coursework|dissertation|thesis|master['’]s|masters?\s+(?:of|degree|in)|graduated|graduation|undergraduate|postgraduate)\b/i
+const SCHOOL_WORDS = /\b(?:universit(?:y|é|à)|college|school|academy|institute|degree|graduate)\b/i
+// A job-title word: a line with a school word AND one of these is a post held at (or about) a school, not a place studied at.
+const TITLE_WORDS = /\b(?:teacher|lecturer|professor|tutor|instructor|trainee|engineer|analyst|manager|officer|assistant|developer|coordinator|administrator|consultant|director|specialist|associate|intern|supervisor|principal|head|dean|librarian|counsell?or|nurse|clerk|technician|accountant|designer|researcher|fellow)\b/i
 
 function yearsFromText(text, now = new Date()) {
+  const lines = String(text || '').split(/\r?\n/)
+  const sectioned = lines.some(l => EDU_HEADING.test(l) || OTHER_HEADING.test(l))
   const spans = []
-  for (const line of String(text || '').split(/\r?\n/)) {
-    if (EDU_LINE.test(line)) continue
+  let inEdu = false
+  for (const line of lines) {
+    if (EDU_HEADING.test(line)) { inEdu = true; continue }
+    if (OTHER_HEADING.test(line)) { inEdu = false; continue }
+    if (inEdu || DEGREE_WORDS.test(line) || (!sectioned && SCHOOL_WORDS.test(line) && !TITLE_WORDS.test(line))) continue
     spans.push(...spansIn(line, now))
   }
   return workedYears(spans)

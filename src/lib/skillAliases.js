@@ -101,4 +101,13 @@ function pairAcronyms(skills, jdText) {
   return out
 }
 
-module.exports = { pairAcronyms, ACRONYM_PAIRS, isAllowedRename, squash, noSpace, versionsOf }
+// True when `skill` is a known synonym (a table group, ACRONYM_PAIRS aside) of something the text already says: "Microsoft Excel" when
+// the resume says "MS Excel", "PostgreSQL" when it says "Postgres". Used by the skill-invention guard.
+function supportedByAlias(skill, text) {
+  const g = GROUP_OF.get(squash(skill)) ?? GROUP_OF.get(noSpace(skill))
+  if (g === undefined) return false
+  const hay = String(text || '')
+  return GROUPS[g].some(name => wholeWord(hay, name))
+}
+
+module.exports = { supportedByAlias, pairAcronyms, ACRONYM_PAIRS, isAllowedRename, squash, noSpace, versionsOf }

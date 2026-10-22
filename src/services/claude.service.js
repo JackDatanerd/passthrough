@@ -2,7 +2,7 @@
 // function takes `env` (the Worker's bindings object) as its first parameter
 // instead of reading ANTHROPIC_API_KEY/ANTHROPIC_MODEL from a global.
 
-const { pairAcronyms } = require('../lib/skillAliases')
+const { pairAcronyms, supportedByAlias } = require('../lib/skillAliases')
 const { careerFacts, tenureClaims, withoutTenureClaims, tenureClaimOk } = require('../lib/careerFacts')
 const { isUkSpelling } = require('./design.service')
 const { SCORE_SYSTEM, REQUIREMENTS_SYSTEM, buildScoreUser, buildRequirementsUser } = require('../prompts/score')
@@ -1139,17 +1139,30 @@ function sourceText(r) {
 }
 
 const SKILL_FILLER = new Set(['and', 'or', 'the', 'of', 'for', 'with', 'in', 'on', 'to', 'a', 'an', 'skills', 'tools', 'basic', 'advanced', 'general', 'strong'])
-// Skills in `rewritten` sharing NOT ONE word with anything in the original text.
-// Deliberately lenient on wording (a rewrite may tidy "node" into "Node.js", or
-// "management" into "Project Management") and strict on invention: a tool or
-// technology that appears nowhere in the person's own resume is not a skill of
-// theirs.
+// Skills in `rewritten` the person's own text does not support. A skill is supported when EVERY word in it is one the resume says, or the
+// words it adds are plain modifiers of the work itself ("management" -> "Project Management", "data" -> "Data Analysis"), or it is a
+// known synonym of something the resume says ("Microsoft Excel" for "MS Excel"). It used to need only ONE shared word, which let
+// "Python Django", "SQL Server", "React Native" and "Advanced Excel VBA" through on the strength of Python, SQL, React and Excel: a
+// different product or an unnamed framework is not a skill the person listed.
+const GENERIC_SKILL_WORDS = new Set(`management project projects data analysis analytics analyst development design software system systems
+  reporting report planning strategy strategic communication communications research support service services customer customers business
+  digital online technical team leadership operations process processes quality content social media sales marketing financial finance
+  engineering testing security network networking cloud web mobile application applications programming modelling modeling automation
+  documentation training writing presentation presentations problem solving critical thinking time budgeting accounting administration
+  coordination relations relationship analytics optimization optimisation visualization visualisation integration engineering`.split(/\s+/).filter(Boolean))
 function unsupportedSkills(orig, rewritten) {
   const have = claimGuard.haveSet(sourceText(orig))
+  const text = sourceText(orig)
   return listOf(rewritten.skills).filter(sk => {
     if (typeof sk !== 'string' || !sk.trim()) return false
     const ws = wordsOf(sk).filter(w => !SKILL_FILLER.has(w))
-    return ws.length > 0 && !ws.some(w => claimGuard.knownWord(have, w))
+    if (!ws.length) return false
+    if (supportedByAlias(sk, text)) return false
+    const unknown = ws.filter(w => !claimGuard.knownWord(have, w))
+    if (!unknown.length) return false
+    // Nothing shared at all is always invention; otherwise only plain work-words may be new.
+    if (unknown.length === ws.length) return true
+    return unknown.some(w => !GENERIC_SKILL_WORDS.has(w))
   })
 }
 

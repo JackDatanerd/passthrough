@@ -154,6 +154,45 @@ function unknownTerms(text, have) {
   return [...found]
 }
 
+
+// ── scope and context ("high-volume", "across multiple regions", "as team lead", "senior stakeholders") ──────────────────────────────
+// The commonest way a polished line stops being true is not a tool or a number but a SETTING the person never described: the work
+// becomes high-volume, cross-functional, enterprise-wide, done for senior leadership, or done as the team lead. The prompt forbids
+// it (example (b): do NOT add "high-volume"), and nothing checked it. A phrase below is judged by its words: it is fine only when
+// every content word of it is one the person's own text for that role already says (so "stakeholders" they wrote allows "key
+// stakeholders", but never "senior stakeholders"). Deliberately a list of PHRASES, never single generic words.
+const SCOPE_PHRASES = new RegExp(`\\b(?:` + [
+  `high[- ]volume`, `high[- ]stakes`, `high[- ]pressure`, `large[- ]scale`, `mission[- ]critical`, `business[- ]critical`,
+  `(?:enterprise|company|organi[sz]ation|nation|country|region|worldwide|firm)[- ]wide`, `enterprise[- ](?:level|grade)`,
+  `global(?:ly)?`, `worldwide`, `international(?:ly)?`, `multi[- ]?(?:regional|national|site|country|market|million|billion)`,
+  `across\\s+(?:multiple|several|many|various|numerous|\\d+|all|the)\\s+(?:regions?|countries|markets|sites|offices|locations|business units|departments|teams|functions|products|branches|clients)`,
+  `(?:multiple|several|many)\\s+(?:regions|countries|markets|sites|offices|locations|business units|departments|branches)`,
+  `(?:senior|executive)\\s+(?:leadership|management|stakeholders?|executives?|leaders?|staff|team)`, `c[- ]?suite`, `c[- ]?level`, `board(?:\\s+of\\s+directors)?`,
+  `cross[- ]functional(?:ly)?`, `fast[- ]paced`, `(?:highly\\s+)?regulated`, `complex`, `world[- ]class`, `best[- ]in[- ]class`, `cutting[- ]edge`, `state[- ]of[- ]the[- ]art`,
+  `ensur(?:e|ed|es|ing)\\s+(?:compliance|accuracy|quality|consistency|alignment|data integrity)`, `compliance`,
+  `driv(?:e|es|ing)\\s+(?:\\w+\\s+){0,2}(?:growth|satisfaction|engagement|adoption|efficiency|revenue|retention|results|performance)`, `drove\\s+(?:\\w+\\s+){0,2}(?:growth|satisfaction|engagement|adoption|efficiency|revenue|retention|results|performance)`,
+  `(?:team|tech|technical|project|squad|shift|section|desk|floor|product)\\s+(?:lead|leader|captain)`,
+  `(?:as|became|promoted\\s+to|served\\s+as)\\s+(?:the\\s+|a\\s+|an\\s+)?(?:lead|head|manager|supervisor)`,
+  `mentor(?:ed|ing|s)?`, `coach(?:ed|ing)?`,
+].join('|') + `)\\b`, 'gi')
+// Words that carry no claim of their own inside a matched phrase.
+const SCOPE_STOP = new Set(['across', 'multiple', 'several', 'many', 'various', 'numerous', 'all', 'the', 'a', 'an', 'of', 'as', 'to', 'key', 'ensuring', 'ensure', 'ensured', 'ensures', 'driving', 'drive', 'drives', 'drove', 'became', 'served', 'promoted', 'highly'])
+// The shared foldWord stem (5 letters from 7) makes "complex" and "compliance" the same word; a scope word is compared on its first six letters.
+const scopeStem = w => (w.length > 3 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w).slice(0, 6)
+function scopeProblems(text, jobSource) {
+  const have = new Set(wordsOf(jobSource).map(scopeStem))
+  const out = []
+  for (const m of String(text || '').matchAll(SCOPE_PHRASES)) {
+    const words = wordsOf(m[0]).filter(w => !SCOPE_STOP.has(w))
+    if (!words.length) continue
+    // "regulated" / "regulations", "mentor" / "mentored": the stem decides, as everywhere else.
+    if (words.every(w => have.has(scopeStem(w)))) continue
+    const phrase = m[0].toLowerCase()
+    if (!out.includes(phrase)) out.push(phrase)
+  }
+  return out
+}
+
 // ── seniority words in a summary ───────────────────────────────────────────────────────────────────────────────────
 const RANK_WORDS = /\b(?:senior|principal|head of|director|chief|executive|vp|vice president|expert|veteran|leader|leadership|(?:team|tech|technical|project|engineering)\s+lead)\b/gi
 function rankProblems(text, have) {
@@ -193,6 +232,7 @@ function findClaimProblems(original, rewritten, { source = '', renames = [] } = 
     const own = ownershipProblem(t, js.text, js.title)
     if (own) problems.push(`${where}: \"${own}\" claims leadership or ownership the resume does not state - keep the person's own level (\"${clip(t)}\")`)
     for (const o of outcomeProblems(t, js.text)) problems.push(`${where}: states ${o} that the resume does not - keep the result the input gives, or none (\"${clip(t)}\")`)
+    for (const sc of scopeProblems(t, js.text)) problems.push(`${where}: adds \"${sc}\", a setting, scale or role the resume never describes - keep the scope the person gave (\"${clip(t)}\")`)
     const names = unknownTerms(t, have)
     if (names.length) problems.push(`${where}: names ${names.slice(0, 4).join(', ')}, which the resume never mentions - never add a tool, method or name (\"${clip(t)}\")`)
     if (summary) {
@@ -235,6 +275,6 @@ function letterOwnershipProblem(text, source, titles = '') {
 module.exports = {
   SKILL_ALIASES, foldWord, pluralFold, wordsOf, haveSet, isTechTerm, knownWord,
   OWNERSHIP, RANK_TITLE, hasOwnership, ownershipHits, ownershipProblem, letterOwnershipProblem,
-  outcomeProblems, unknownTerms, rankProblems, findClaimProblems,
+  outcomeProblems, scopeProblems, unknownTerms, rankProblems, findClaimProblems,
   withoutHorizons, confessions, TECH_TERMS,
 }

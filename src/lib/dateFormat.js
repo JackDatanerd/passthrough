@@ -10,12 +10,14 @@ const monthIndex = s => MONTHS.findIndex(m => String(s).toLowerCase().startsWith
 const OPEN = /^(?:present|current|currently|now|ongoing|today|to date|till date|until now|date)$/i
 
 // One date point -> { y, m } (m is 0-11 or null) or null when it is not a plain date.
-function parsePoint(raw) {
+// `iso` allows the YYYY-MM form ("2020-01"), which is ONLY safe inside a range whose other end is also a month ("2020-01 – 2022-06"):
+// on its own, or beside a bare year, "2008-09" or "2010-11" is a school year (2008 to 2009), not September 2008.
+function parsePoint(raw, { iso = false } = {}) {
   const s = String(raw).trim().replace(/\s+/g, ' ')
   let m
   if ((m = new RegExp(`^(${MONTH_NAME})\\.?,?\\s+((?:19|20)\\d{2})$`, 'i').exec(s))) return { y: +m[2], m: monthIndex(m[1]) }
   if ((m = /^(0?[1-9]|1[0-2])\s*[/.]\s*((?:19|20)\d{2})$/.exec(s))) return { y: +m[2], m: +m[1] - 1 }
-  if ((m = /^((?:19|20)\d{2})\s*[/-]\s*(0[1-9]|1[0-2])$/.exec(s))) return { y: +m[1], m: +m[2] - 1 }
+  if (iso && (m = /^((?:19|20)\d{2})\s*[/-]\s*(0[1-9]|1[0-2])$/.exec(s))) return { y: +m[1], m: +m[2] - 1, iso: true }
   if ((m = /^((?:19|20)\d{2})$/.exec(s))) return { y: +m[1], m: null }
   return null
 }
@@ -37,7 +39,7 @@ function canonDates(value) {
   const whole = parsePoint(s)
   if (whole) return show(whole)
   for (const [l, r] of splits(s)) {
-    const a = parsePoint(l)
+    const a = parsePoint(l, { iso: true })
     if (!a) continue
     const right = r.trim()
     if (OPEN.test(right)) return `${show(a)} – Present`
@@ -47,8 +49,11 @@ function canonDates(value) {
       if (y >= a.y) return `${a.y} – ${y}`
       continue
     }
-    const b = parsePoint(right)
-    if (b) return `${show(a)} – ${show(b)}`
+    const b = parsePoint(right, { iso: true })
+    if (!b) continue
+    // An ISO-style end ("2008-09") beside a bare year or no month is a school year, not a month: leave it exactly as written.
+    if ((a.iso && b.m == null) || (b.iso && a.m == null)) continue
+    return `${show(a)} – ${show(b)}`
   }
   return value
 }

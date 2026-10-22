@@ -189,7 +189,7 @@ describe('prompts are consistent with their own guards (static checks)', () => {
     expect(feedbackFor(null)).toBe('')
   })
   it('prompt versions are per prompt, so a change in one can be told apart from a change in another', () => {
-    expect(claude.PROMPT_VERSION).toBe('docgen-rewrite6.score4.extract4')
+    expect(claude.PROMPT_VERSION).toBe('docgen-rewrite7.score4.extract4')
     expect(claude.LETTER_PROMPT_VERSION).toBe('docgen-letter5')
   })
 })
