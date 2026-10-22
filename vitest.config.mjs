@@ -29,6 +29,11 @@ export default defineConfig({
   resolve: { dedupe: ['react', 'react-dom', 'react-router', 'react-router-dom'] },
   test: {
     environment: 'node',
+    // Twelve test files start an in-process Postgres (PGlite, WebAssembly). Cold, on a busy CI runner, that alone can pass vitest's
+    // default 5 seconds, which made the Worker job fail at random on whichever of them ran slowest. A timeout only bounds a test that
+    // is STUCK, so a generous one costs nothing when everything is healthy.
+    testTimeout: 30000,
+    hookTimeout: 120000,
     // Registers jest-dom matchers + RTL cleanup for the jsdom component tests —
     // see frontend/tests/setup.js for why this was a real (silent) gap.
     setupFiles: ['./frontend/tests/setup.js'],

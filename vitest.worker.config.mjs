@@ -6,6 +6,11 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
   test: {
     environment: 'node',
+    // Twelve test files start an in-process Postgres (PGlite, WebAssembly). Cold, on a busy CI runner, that alone can pass vitest's
+    // default 5 seconds, which made the Worker job fail at random on whichever of them ran slowest. A timeout only bounds a test that
+    // is STUCK, so a generous one costs nothing when everything is healthy.
+    testTimeout: 30000,
+    hookTimeout: 120000,
     pool: 'forks',          // tests seed require.cache — real child processes, not threads
     include: ['tests/**/*.test.js'],
     exclude: ['**/node_modules/**', 'frontend/**', '.wrangler/**'],
