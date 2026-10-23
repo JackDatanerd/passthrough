@@ -556,6 +556,24 @@ export default function AdminPartners() {
       setConfirmTerms(false)
     }
   }
+  // Round 33: partners still on a stored (legacy) dashboard link. The endpoint existed since round 8 with no button; it rotates each one to a
+  // derived link and emails it. Ids that failed in this session are skipped so a few bounced addresses cannot block the rest.
+  const legacyLinkCount = partners.filter(p => p.legacyDashboardLink).length
+  const [confirmConvert, setConfirmConvert] = useState(false)
+  const failedConvertIds = useRef(new Set())
+  async function convertLegacyLinks() {
+    try {
+      const res = await api.post('/partners/dashboard-links/convert', { skipIds: [...failedConvertIds.current] })
+      const d = res.data
+      for (const id of d.failedIds || []) failedConvertIds.current.add(id)
+      toast({ message: `Converted ${d.converted} dashboard link(s)${d.failed ? `, ${d.failed} failed` : ''}${d.remaining ? ` - ${d.remaining} still to go, run it again.` : '.'}`, type: d.failed ? 'error' : 'success' })
+      load()
+    } catch (err) {
+      toast({ message: err?.response?.data?.message || 'The links could not be converted. Try again.', type: 'error' })
+    } finally {
+      setConfirmConvert(false)
+    }
+  }
   const totalAccruing   = partners.reduce((sum, p) => sum + (p.currentCycleAccruedCents || 0), 0)
 
   return (
@@ -580,6 +598,11 @@ export default function AdminPartners() {
               Send terms notice ({termsOutstanding})
             </Button>
           )}
+          {legacyLinkCount > 0 && (
+            <Button variant="secondary" onClick={() => setConfirmConvert(true)}>
+              Convert legacy links ({legacyLinkCount})
+            </Button>
+          )}
           <Button onClick={() => setShowAdd(true)}>Add partner</Button>
         </div>
       </div>
@@ -593,6 +616,10 @@ export default function AdminPartners() {
       <ConfirmDialog open={confirmTerms} danger={false} title="Send terms notice?"
         message={`Email the ${termsOutstanding} partner${termsOutstanding === 1 ? '' : 's'} (active or paused) who haven't accepted the current partner terms. Each gets one email per terms version (up to 40 per run).`}
         confirmLabel="Send notice" onConfirm={sendTermsNotice} onCancel={() => setConfirmTerms(false)} />
+
+      <ConfirmDialog open={confirmConvert} danger={false} title="Convert legacy dashboard links?"
+        message={`${legacyLinkCount} partner${legacyLinkCount === 1 ? ' is' : 's are'} still on an older stored dashboard link. Each gets a new link by email and the old one stops working (up to 25 per run).`}
+        confirmLabel="Convert and email" onConfirm={convertLegacyLinks} onCancel={() => setConfirmConvert(false)} />
 
       {showRun && <PayoutRunModal partners={partners} holdHours={holdHours} onClose={() => setShowRun(false)} onDone={load} />}
       <ApplicationsPanel onApproved={load} />

@@ -833,6 +833,7 @@ async function adminListPartners(ctx) {
     camel.mixedCurrency            = new Set(ledger.map(l => String(l.currency || camel.currency).toUpperCase())).size > 1
     camel.termsCurrent             = row.terms_version === PARTNER_TERMS_VERSION
     camel.termsNoticePending       = row.terms_version !== PARTNER_TERMS_VERSION && row.terms_notified_version !== PARTNER_TERMS_VERSION
+    camel.legacyDashboardLink      = !!row.dashboard_token && !isRemovedEmail(row.email)   // round 33: still on a stored link (admin "Convert")
     return camel
   })
   // Round 6: the payout-details hold the server enforces, so the "Record payout run" screen flags the same partners.
@@ -2774,20 +2775,31 @@ async function sumPagedBy(makeQuery, column, groupColumn) {
 async function adminPartnersOverview(ctx) {
   const supabase = getSupabase(ctx.env)
   const head = (table, apply) => apply(supabase.from(table).select('id', { count: 'exact', head: true }))
-  const [partnersRes, activeRes, pendingAppsRes, paidOutCents, unpaidByPartner, earnedCents] = await Promise.all([
+  // Round 33: the money totals used to page through EVERY payout and ledger row on each load (twice over the ledger); past ~500k rows that
+  // exceeds the Worker's subrequest budget. One SQL function (migration 0112) returns them. A database that has not had 0112 yet (or a
+  // fake that answers nothing) falls back to the old scan, so deploying the Worker first never breaks this page.
+  const totalsCall = supabase.rpc('partners_overview_totals', { p_exclude_partner: WELCOME_PARTNER_ID }).then(r => r, e => ({ data: null, error: e }))
+  const [partnersRes, activeRes, pendingAppsRes, totalsRes] = await Promise.all([
     head('partners', q => q.neq('id', WELCOME_PARTNER_ID)),
     head('partners', q => q.eq('status', 'ACTIVE').neq('id', WELCOME_PARTNER_ID)),
     head('partner_applications', q => q.eq('status', 'PENDING')),
-    sumPaged(() => supabase.from('payouts').select('id, amount_cents').is('voided_at', null), 'amount_cents'),
-    sumPagedBy(() => supabase.from('commission_ledger').select('id, partner_id, commission_amount_cents').is('payout_id', null).neq('partner_id', WELCOME_PARTNER_ID), 'commission_amount_cents', 'partner_id'),
-    sumPaged(() => supabase.from('commission_ledger').select('id, commission_amount_cents').neq('partner_id', WELCOME_PARTNER_ID), 'commission_amount_cents')
+    totalsCall
   ])
   for (const r of [partnersRes, activeRes, pendingAppsRes]) if (r.error) throw r.error
-  // Round 10: one partner's refund credit used to be subtracted from the OTHER partners' balances, so "Owed to
-  // partners" came out lower than the sum of what individual partners are actually owed. A negative balance is that
-  // partner's own credit (carried to their next sales) — it is reported separately, never netted across partners.
-  let owedCents = 0, creditCents = 0
-  for (const v of unpaidByPartner.values()) { if (v > 0) owedCents += v; else creditCents += -v }
+  let paidOutCents, owedCents = 0, creditCents = 0, earnedCents
+  const t = totalsRes && !totalsRes.error && totalsRes.data && typeof totalsRes.data === 'object' ? totalsRes.data : null
+  if (t) {
+    paidOutCents = Number(t.paid_out_cents) || 0; earnedCents = Number(t.lifetime_commission_cents) || 0
+    owedCents = Number(t.owed_cents) || 0; creditCents = Number(t.credit_cents) || 0
+  } else {
+    const [paid, unpaidByPartner, earned] = await Promise.all([
+      sumPaged(() => supabase.from('payouts').select('id, amount_cents').is('voided_at', null), 'amount_cents'),
+      sumPagedBy(() => supabase.from('commission_ledger').select('id, partner_id, commission_amount_cents').is('payout_id', null).neq('partner_id', WELCOME_PARTNER_ID), 'commission_amount_cents', 'partner_id'),
+      sumPaged(() => supabase.from('commission_ledger').select('id, commission_amount_cents').neq('partner_id', WELCOME_PARTNER_ID), 'commission_amount_cents')
+    ])
+    paidOutCents = paid; earnedCents = earned
+    for (const v of unpaidByPartner.values()) { if (v > 0) owedCents += v; else creditCents += -v }
+  }
   return ctx.json({ success: true, data: {
     partners: partnersRes.count ?? 0, activePartners: activeRes.count ?? 0, pendingApplications: pendingAppsRes.count ?? 0,
     paidOutCents, owedCents, creditCents, lifetimeCommissionCents: earnedCents,
@@ -3225,14 +3237,20 @@ async function adminListLedger(ctx) {
 // new link in the same step; if that email fails the old link is restored and the partner is reported back as failed. Batched
 // like the terms notice: run it until `remaining` is 0.
 const CONVERT_BATCH = 25
+// Round 33: like the terms notice, the caller passes the ids that failed earlier in its session so a few permanently failing addresses
+// (bounced / suppressed) cannot hold the front of every batch and block everyone behind them.
+const convertLinksSchema = z.object({ skipIds: z.array(z.string().uuid()).max(500).optional() })
 async function adminConvertLegacyDashboardLinks(ctx) {
   const supabase = getSupabase(ctx.env)
-  const { data, count, error } = await supabase.from('partners')
+  const convertBody = convertLinksSchema.parse(await (typeof ctx.req.json === 'function' ? ctx.req.json().catch(() => ({})) : {}) || {})
+  const convertSkip = convertBody.skipIds || []
+  let convertQ = supabase.from('partners')
     .select('id, name, email, dashboard_token, dashboard_token_version', { count: 'exact' })
     .not('dashboard_token', 'is', null)
     .not('email', 'ilike', `%@${REMOVED_EMAIL_DOMAIN}`)
     .neq('id', WELCOME_PARTNER_ID)
-    .order('created_at', { ascending: true }).limit(CONVERT_BATCH)
+  if (convertSkip.length) convertQ = convertQ.not('id', 'in', `(${convertSkip.join(',')})`)
+  const { data, count, error } = await convertQ.order('created_at', { ascending: true }).limit(CONVERT_BATCH)
   if (error) throw error
   let converted = 0
   const failedIds = []

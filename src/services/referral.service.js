@@ -600,6 +600,8 @@ async function onceKey(env, key, ttlSeconds) {
   return true
 }
 async function afterConversionNotices(supabase, env, codeRow, partner) {
+  // Round 33: a welcome code has usage_limit 1, so every redemption read as "limit reached" and mailed welcome-codes@system.invalid.
+  if (codeRow && codeRow.partner_id === c.WELCOME_PARTNER_ID) return
   try {
     const threshold = velocityThreshold(env)
     if (threshold > 0) {
@@ -758,6 +760,7 @@ async function notifyConversionFailure(env, payment, result, source) {
 // successful commission record into a failure response.
 async function notifyPartnerConversion(env, supabase, partner, codeRow, commissionAmountCents, currency) {
   if (!partner?.email) return
+  if (codeRow && codeRow.partner_id === c.WELCOME_PARTNER_ID) return
   // Round 5: a partner can turn the per-sale email off (partners.notify_conversions).
   // Reversal / payout / account emails are never affected by it.
   if (partner.notify_conversions === false) return
@@ -773,6 +776,8 @@ async function notifyPartnerConversion(env, supabase, partner, codeRow, commissi
 // shows it, but they shouldn't have to notice). Best-effort, never throws; only
 // the live reversal paths pass `env`.
 async function notifyPartnerReversal(env, supabase, partnerId, commissionCents, currency) {
+  // Round 33: refunds of welcome-code sales are the system partner's 0-cent rows; there is nobody to tell.
+  if (String(partnerId || '').toLowerCase() === c.WELCOME_PARTNER_ID) return false
   try {
     const { data: partner } = await supabase.from('partners')
         .select(`name, email, status, ${partnerLinks.DASHBOARD_LINK_COLUMNS}`).eq('id', partnerId).maybeSingle()

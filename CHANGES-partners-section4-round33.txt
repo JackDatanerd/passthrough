@@ -1,0 +1,9 @@
+Partners / Referral program, section 4 round 33 (migration 0112)
+
+- Welcome-code redemptions no longer mail the system partner "code limit reached" (welcome codes have usage_limit 1), and refunds of
+  welcome-code sales no longer mail it a reversal notice; its conversion notice is skipped too.
+- Admin overview: the four money totals come from one SQL function, partners_overview_totals (0112), instead of paging through every payout
+  and ledger row twice per load. Falls back to the old scan if the function is missing (deploy order cannot break the page).
+- Legacy dashboard-link converter: POST /partners/dashboard-links/convert takes skipIds (ids that already failed) so permanent failures cannot
+  hold the front of every batch; the partner list flags partners still on a stored link (legacyDashboardLink); AdminPartners gets a
+  "Convert legacy links (N)" button with the same confirm/progress/skip behaviour as the terms notice.

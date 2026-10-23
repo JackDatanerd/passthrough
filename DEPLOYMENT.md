@@ -1185,3 +1185,6 @@ Operator notes for the newest migrations. Apply each migration before deploying 
 # Set a dedicated PARTNER_LINK_SECRET (`wrangler secret put PARTNER_LINK_SECRET`). Without it partner dashboard links are derived from
 # JWT_SECRET, and rotating JWT_SECRET would invalidate every dashboard link already emailed. Setting it NOW changes the derived links,
 # so do it together with a "reset links" for partners, or keep the value equal to the current JWT_SECRET.
+
+# PARTNERS ROUND 33 (migration 0112): adds partners_overview_totals(uuid) for the admin Partners overview strip. Apply 0112 BEFORE or WITH the
+# Worker (the Worker's schema version is 112; the overview itself falls back to the old full scan when the function is missing).
