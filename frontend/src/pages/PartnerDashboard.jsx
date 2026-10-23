@@ -392,7 +392,7 @@ function ConversionsSection({ token, initial, total, currency, payouts = [] }) {
   async function loadMore() {
     setLoadingMore(true); setError('')
     try {
-      const page = await fetchPage(loaded.length, 50)
+      const page = await fetchPage(initial.length + extra.length, 50)   // round 29: the raw count, not the de-duplicated one, or an all-duplicate page stalls
       setExtra(prev => [...prev, ...(page.data || [])])
     } catch (_) {
       setError('Could not load more — please try again.')

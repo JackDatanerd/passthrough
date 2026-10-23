@@ -49,6 +49,13 @@ const { REMOVED_EMAIL_DOMAIN, isRemovedEmail } = require('../lib/removedPartner'
 const { UUID_RE } = require('../middleware/validateUuidParam')
 const referralService = require('../services/referral.service')
 const { lookupCode, isCodeUsable } = referralService
+// Round 29: the internal partner that owns every personal welcome code (migration 0105; 0% rate, never paid, never mailed). It is
+// a plumbing row, not a partner: it is left out of every partner list / total / sweep and refused by every admin action that
+// would edit, pause, erase or pay it (pausing or erasing it would switch off every welcome code).
+const WELCOME_PARTNER_ID = c.WELCOME_PARTNER_ID
+const isSystemPartnerId = id => !!id && String(id).toLowerCase() === WELCOME_PARTNER_ID
+const systemPartnerResponse = ctx => ctx.json({ success: false, code: 'SYSTEM_PARTNER',
+  message: 'This is the internal record that owns the welcome codes. It cannot be edited, paused, paid or erased from here.' }, 409)
 const {
   partnerRowToCamel, payoutRowToCamel, referralCodeRowToCamel, commissionLedgerRowToCamel,
   camelToSnake, PARTNER_FIELD_MAP
@@ -417,6 +424,7 @@ const PROFILE_FIELDS = [['website', 'website'], ['audience', 'audience'], ['inte
 
 async function adminUpdatePartner(ctx) {
   const partnerId = ctx.req.param('id')
+  if (isSystemPartnerId(partnerId)) return systemPartnerResponse(ctx)
   const body = updatePartnerSchema.parse(await ctx.req.json())
   const supabase = getSupabase(ctx.env)
 
@@ -621,7 +629,7 @@ async function loadAllPartners(supabase, build) {
   const out = []
   const PAGE = 1000
   for (let from = 0; ; from += PAGE) {
-    const { data, error } = await build(supabase.from('partners'))
+    const { data, error } = await build(supabase.from('partners')).neq('id', WELCOME_PARTNER_ID)
       .order('created_at', { ascending: false }).order('id', { ascending: true }).range(from, from + PAGE - 1)
     if (error) throw error
     out.push(...(data || []))
@@ -661,6 +669,9 @@ async function loadUnpaidLedgerByPartner(supabase) {
       .from('commission_ledger')
       .select('id, partner_id, gross_amount_cents, commission_amount_cents, payout_id, reverses_ledger_id, kind, currency, created_at, payments(status)')
       .is('payout_id', null)
+      // Round 29: the welcome-code partner writes a 0-cent row per redemption that no payout ever settles; read on every admin
+      // list, payout export and hourly sweep it grew without bound. A zero row carries no money, so it is left out of these figures.
+      .neq('partner_id', WELCOME_PARTNER_ID).neq('commission_amount_cents', 0)
     if (last) q = q.gt('id', last)
     const { data: rows, error: lerr } = await q.order('id', { ascending: true }).limit(PAGE)
     if (lerr) throw lerr
@@ -833,6 +844,7 @@ async function adminListPartners(ctx) {
 
 async function adminGetPartner(ctx) {
   const partnerId = ctx.req.param('id')
+  if (isSystemPartnerId(partnerId)) return systemPartnerResponse(ctx)
   const supabase = getSupabase(ctx.env)
   const { data: row, error } = await supabase
     .from('partners')
@@ -904,6 +916,7 @@ async function adminGetPartner(ctx) {
 
 async function adminResendPayoutLink(ctx) {
   const partnerId = ctx.req.param('id')
+  if (isSystemPartnerId(partnerId)) return systemPartnerResponse(ctx)
   const supabase = getSupabase(ctx.env)
   // Section 4 round 13 (feature gap): `scope` 'dashboard' re-sends the read-only dashboard link (the one every conversion
   // email carries); admins could only ever re-send the payout-details link. Default stays 'payout'.
@@ -968,6 +981,7 @@ const regenerateLinkSchema = z.object({ scope: z.enum(['payout', 'dashboard', 'b
 
 async function adminRegeneratePayoutLink(ctx) {
   const partnerId = ctx.req.param('id')
+  if (isSystemPartnerId(partnerId)) return systemPartnerResponse(ctx)
   // The body is optional (the pre-round-5 caller sent none) — absent or unparsable means 'payout'.
   let raw = {}
   try { raw = await ctx.req.json() } catch (_) { raw = {} }
@@ -1019,6 +1033,7 @@ async function adminRegeneratePayoutLink(ctx) {
 // because it is a bearer credential. (Round 22: read-only — the payout link comes from the POST routes.)
 async function adminGetPartnerLinks(ctx) {
   const partnerId = ctx.req.param('id')
+  if (isSystemPartnerId(partnerId)) return systemPartnerResponse(ctx)
   const supabase = getSupabase(ctx.env)
   const { data: partner, error } = await supabase
     .from('partners').select(`name, email, ${partnerLinks.DASHBOARD_LINK_COLUMNS}`).eq('id', partnerId).maybeSingle()
@@ -1087,6 +1102,7 @@ const createReferralCodeSchema = z.object({
 
 async function adminCreateReferralCode(ctx) {
   const partnerId = ctx.req.param('id')
+  if (isSystemPartnerId(partnerId)) return systemPartnerResponse(ctx)
   const body = createReferralCodeSchema.parse(await ctx.req.json())
   const supabase = getSupabase(ctx.env)
 
@@ -1115,10 +1131,12 @@ async function adminCreateReferralCode(ctx) {
   // isCodeUsable), so telling them "your code is ready" would be wrong — the
   // code is created and waits for reactivation; the admin is told as much.
   const partnerPaused = partner.status !== 'ACTIVE'
+  // Round 29: `notified` used to be `!partnerPaused` even when the send failed or was throttled (the error was swallowed).
+  let notified = false
   if (!partnerPaused) {
     const dashboardUrl = await partnerLinks.dashboardUrlOf(ctx.env, partner)
-    await emailService.sendReferralCodeCreated(ctx.env, supabase, partner.email, partner.name, codeRow.code, dashboardUrl)
-      .catch(() => {})
+    notified = await emailService.sendReferralCodeCreated(ctx.env, supabase, partner.email, partner.name, codeRow.code, dashboardUrl)
+      .then(ok => ok === true || ok === undefined).catch(() => false)
   }
 
   await logAdminAction(ctx, supabase, 'partner.referral_code_created', 'referral_code', codeRow.id, {
@@ -1126,7 +1144,7 @@ async function adminCreateReferralCode(ctx) {
     lowPriceConfirmed: guard.tooLow.length > 0
   })
 
-  return ctx.json({ success: true, data: referralCodeRowToCamel(codeRow), notified: !partnerPaused, partnerPaused, warnings: guardWarnings(guard) })
+  return ctx.json({ success: true, data: referralCodeRowToCamel(codeRow), notified, partnerPaused, warnings: guardWarnings(guard) })
 }
 
 // ── Admin: update a referral code — active flag AND/OR its pricing/limits ──
@@ -1182,6 +1200,7 @@ async function adminUpdateReferralCode(ctx) {
   const { data: owner, error: ownerErr } = await supabase.from('referral_codes')
     .select('partner_id, code, active, tier_prices, usage_limit, expires_at, partners(name, email, status)').eq('id', codeId).maybeSingle()
   if (ownerErr) throw ownerErr
+  if (owner && isSystemPartnerId(owner.partner_id)) return systemPartnerResponse(ctx)
   if (body.active !== false && owner && isRemovedEmail(owner.partners?.email)) return partnerRemovedResponse(ctx)
   if (!owner && newCode) return ctx.json({ success: false, message: 'Referral code not found.' }, 404)
 
@@ -1230,7 +1249,9 @@ async function adminUpdateReferralCode(ctx) {
     }
   } catch (err) { console.error('adminUpdateReferralCode partner notice:', err.message) }
 
-  return ctx.json({ success: true, data: referralCodeRowToCamel(data), warnings: [...guardWarnings(guard), ...(renaming ? [`Renamed ${owner.code} to ${newCode}. Links and codes already shared with the old text no longer work.`] : [])], notified, ...(renaming ? { renamed: { from: owner.code, to: newCode } } : {}) })
+  const limitWarning = body.usageLimit != null && data.usage_limit != null && (data.uses_so_far || 0) >= data.usage_limit
+    ? [`This limit (${data.usage_limit}) is at or below the ${data.uses_so_far || 0} redemption(s) already used, so the code stops applying immediately.`] : []
+  return ctx.json({ success: true, data: referralCodeRowToCamel(data), warnings: [...guardWarnings(guard), ...limitWarning, ...(renaming ? [`Renamed ${owner.code} to ${newCode}. Links and codes already shared with the old text no longer work.`] : [])], notified, ...(renaming ? { renamed: { from: owner.code, to: newCode } } : {}) })
 }
 
 // ── Admin: record a payout that has ALREADY been sent manually ─────────────
@@ -1349,6 +1370,8 @@ async function selectInChunks(makeQuery, ids) {
 }
 
 async function recordPayoutCore(ctx, supabase, partnerId, body, reply, opts = {}) {
+  if (isSystemPartnerId(partnerId))
+    return reply({ success: false, code: 'SYSTEM_PARTNER', message: 'This is the internal welcome-code record; it is never paid.' }, 409)
 
   const { data: partner, error: pErr } = await supabase
     .from('partners').select('*').eq('id', partnerId).maybeSingle()
@@ -1549,9 +1572,16 @@ async function recordPayoutCore(ctx, supabase, partnerId, body, reply, opts = {}
       period_end:               body.periodEnd   ? body.periodEnd.slice(0, 10)   : (settledSpan.end || null)
     },
     p_discard_if_empty: autoAmount,
-    p_amount_is_auto:   body.amountCents == null
+    p_amount_is_auto:   body.amountCents == null,
+    // Round 29 (0110): the snapshot above was read earlier; the function re-checks, under the partner's row lock, that the details
+    // were not changed in between, so the money is never recorded against an account the admin did not see.
+    p_check_details:    true,
+    p_expected_details_submitted_at: partner.payout_details_submitted_at ?? null
   })
   if (error) throw error
+  if (settlement && settlement.details_changed)
+    return reply({ success: false, code: 'PAYOUT_DETAILS_CHANGED',
+      message: "This partner's payout details changed while the payout was being recorded. Nothing was recorded. Reload, check where the money should go, and try again." }, 409)
 
   let payoutRow = settlement.payout
   const claimedCount = settlement.claimed || 0
@@ -2223,9 +2253,17 @@ async function requestPayoutLink(ctx) {
   const token = partnerTokenOf(ctx)
   if (!token) return ctx.json({ success: false, message: 'Missing token.' }, 400)
   const supabase = getSupabase(ctx.env)
-  const { partner } = await findPartnerByAnyToken(ctx.env, supabase, token, 'id, name, email')
+  const { partner, scope } = await findPartnerByAnyToken(ctx.env, supabase, token, 'id, name, email')
   if (!partner) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)
   if (isRemovedEmail(partner.email)) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)
+  // Round 29: a holder of the READ-ONLY dashboard link (a forwarded earnings email) could call this in a loop and kill the partner's
+  // current payout link each time. One swap per 15 minutes for that scope; the answer stays the same neutral message.
+  if (scope === 'dashboard') {
+    const throttleKey = `partner-payout-link-self:${partner.id}`
+    if (await referralService.keySeen(ctx.env, throttleKey))
+      return ctx.json({ success: true, message: 'If your link is valid, we\'ve emailed the payout-details link to the address we have on file.' })
+    await referralService.keyMark(ctx.env, throttleKey, 900)
+  }
   // Round 16: the stored token is a hash, so a link can only be "sent" by minting a new one — which kills the previous link. That
   // swap used to happen BEFORE the email and its result was ignored, so a send that failed or hit the 4-per-hour cap left the
   // partner with a dead link and nothing in their inbox. Same pattern as resetMyPartnerLinks: remember what was there, swap
@@ -2300,20 +2338,34 @@ async function trackClick(ctx) {
   // keeps the code, as before.
   let valid
   try {
-    valid = isCodeUsable(await lookupCode(supabase, code))
+    const looked = await lookupCode(supabase, code)
+    // Round 29: a personal welcome code prices for ONE account only. Called "valid" it was stored as the visitor's attribution and
+    // replaced a real partner's code with one that can never apply (so nobody was credited). It is not a shareable partner link.
+    valid = looked && looked.user_id ? false : isCodeUsable(looked)
   } catch (err) {
     console.error('trackClick lookup:', err.message)
   }
   if (valid === false) return ctx.json({ success: true, valid: false })
+  // Round 29: one visitor counts once per code per 30 minutes (a script or a refresh loop used to inflate clicks and skew the
+  // conversion rate). Needs the KV; without it every click counts, as before.
+  let ipKey = ''
+  try { ipKey = (await cryptoLib.sha256(String(clientIp(ctx) || ''))).slice(0, 24) } catch (_) { ipKey = '' }
+  const seenClick = async (suffix) => {
+    if (!ipKey || typeof referralService.keySeen !== 'function') return false
+    const key = `referral-click:${code}:${suffix}:${ipKey}`
+    if (await referralService.keySeen(ctx.env, key)) return true
+    await referralService.keyMark(ctx.env, key, 1800)
+    return false
+  }
   // Round 19: `subOnly` is a returning visitor arriving through a DIFFERENT channel tag of the same code. The code's own click
   // counter is for new attributions, so it is left alone; only the channel's visit is counted.
-  if (body.subOnly !== true) {
+  if (body.subOnly !== true && !(await seenClick('c'))) {
     const { error } = await supabase.rpc('increment_referral_code_clicks', { p_code: code })
     if (error) console.error('trackClick:', error.message)
   }
   // Round 18 (feature gap): the channel tag is counted per code too, so the partner sees visits and conversion by channel.
   const sub = normalizeSub(body.sub)
-  if (sub) {
+  if (sub && !(await seenClick(`s-${sub}`))) {
     const { error: subErr } = await supabase.rpc('increment_referral_sub_clicks', { p_code: code, p_sub: sub })
     if (subErr) console.error('trackClick sub:', subErr.message)
   }
@@ -2646,6 +2698,8 @@ async function adminListReferralCodes(ctx) {
   let query = supabase.from('referral_codes')
     .select('id, partner_id, code, tier_prices, active, usage_limit, uses_so_far, clicks, expires_at, created_at, partners(name, email, status)', { count: 'exact' })
   if (q) query = query.ilike('code', `%${q}%`)
+  // Round 29: one personal welcome code exists per account and used to bury every partner code in this list. Hidden unless asked for.
+  query = ctx.req.query('personal') === 'true' ? query.not('user_id', 'is', null) : query.is('user_id', null)
   const active = ctx.req.query('active')
   if (active === 'true' || active === 'false') query = query.eq('active', active === 'true')
   const partnerId = ctx.req.query('partnerId')
@@ -2717,12 +2771,12 @@ async function adminPartnersOverview(ctx) {
   const supabase = getSupabase(ctx.env)
   const head = (table, apply) => apply(supabase.from(table).select('id', { count: 'exact', head: true }))
   const [partnersRes, activeRes, pendingAppsRes, paidOutCents, unpaidByPartner, earnedCents] = await Promise.all([
-    head('partners', q => q),
-    head('partners', q => q.eq('status', 'ACTIVE')),
+    head('partners', q => q.neq('id', WELCOME_PARTNER_ID)),
+    head('partners', q => q.eq('status', 'ACTIVE').neq('id', WELCOME_PARTNER_ID)),
     head('partner_applications', q => q.eq('status', 'PENDING')),
     sumPaged(() => supabase.from('payouts').select('id, amount_cents').is('voided_at', null), 'amount_cents'),
-    sumPagedBy(() => supabase.from('commission_ledger').select('id, partner_id, commission_amount_cents').is('payout_id', null), 'commission_amount_cents', 'partner_id'),
-    sumPaged(() => supabase.from('commission_ledger').select('id, commission_amount_cents'), 'commission_amount_cents')
+    sumPagedBy(() => supabase.from('commission_ledger').select('id, partner_id, commission_amount_cents').is('payout_id', null).neq('partner_id', WELCOME_PARTNER_ID), 'commission_amount_cents', 'partner_id'),
+    sumPaged(() => supabase.from('commission_ledger').select('id, commission_amount_cents').neq('partner_id', WELCOME_PARTNER_ID), 'commission_amount_cents')
   ])
   for (const r of [partnersRes, activeRes, pendingAppsRes]) if (r.error) throw r.error
   // Round 10: one partner's refund credit used to be subtracted from the OTHER partners' balances, so "Owed to
@@ -2822,6 +2876,7 @@ async function purgePartnerLogs(supabase, { partnerId, emails }) {
 
 async function adminAnonymizePartner(ctx) {
   const partnerId = ctx.req.param('id')
+  if (isSystemPartnerId(partnerId)) return systemPartnerResponse(ctx)
   const body = anonymizePartnerSchema.parse(await ctx.req.json().catch(() => ({})))
   const supabase = getSupabase(ctx.env)
 
@@ -2954,6 +3009,7 @@ const adjustLedgerSchema = z.object({
 
 async function adminAdjustLedger(ctx) {
   const partnerId = ctx.req.param('id')
+  if (isSystemPartnerId(partnerId)) return systemPartnerResponse(ctx)
   const body = adjustLedgerSchema.parse(await ctx.req.json())
   const supabase = getSupabase(ctx.env)
 
@@ -3098,6 +3154,7 @@ async function adminSendTermsNotice(ctx) {
     // Erased partners are left PAUSED with a placeholder address: they can never be mailed or marked notified, so they
     // must not count towards `remaining` or sit at the head of the batch (round 19).
     .not('email', 'ilike', `%@${REMOVED_EMAIL_DOMAIN}`)
+    .neq('id', WELCOME_PARTNER_ID)
     .or(`terms_version.is.null,terms_version.neq.${version}`)
     .or(`terms_notified_version.is.null,terms_notified_version.neq.${version}`)
   if (skipIds.length) q = q.not('id', 'in', `(${skipIds.join(',')})`)
@@ -3132,6 +3189,7 @@ async function adminListLedger(ctx) {
     .select('id, created_at, partner_id, kind, reverses_ledger_id, reversal_reason, adjustment_reason, gross_amount_cents, commission_rate, commission_amount_cents, currency, payout_id, attribution_sub, partners(name, email), referral_codes(code), payments(paystack_ref), payouts(paid_at, voided_at)', { count: 'exact' })
   const partnerId = ctx.req.query('partnerId')
   if (partnerId && UUID_RE.test(partnerId)) query = query.eq('partner_id', partnerId)
+  else if (ctx.req.query('includeSystem') !== 'true') query = query.neq('partner_id', WELCOME_PARTNER_ID)   // round 29: 0-cent welcome-code rows
   const from = ctx.req.query('from'), to = ctx.req.query('to')
   if (from && !Number.isNaN(Date.parse(from))) query = query.gte('created_at', new Date(from).toISOString())
   if (to && !Number.isNaN(Date.parse(to))) {
@@ -3169,6 +3227,7 @@ async function adminConvertLegacyDashboardLinks(ctx) {
     .select('id, name, email, dashboard_token, dashboard_token_version', { count: 'exact' })
     .not('dashboard_token', 'is', null)
     .not('email', 'ilike', `%@${REMOVED_EMAIL_DOMAIN}`)
+    .neq('id', WELCOME_PARTNER_ID)
     .order('created_at', { ascending: true }).limit(CONVERT_BATCH)
   if (error) throw error
   let converted = 0
@@ -3198,6 +3257,7 @@ async function adminConvertLegacyDashboardLinks(ctx) {
 // partner's account number leaves the same trace as exporting it.
 async function adminRevealPayoutDetails(ctx) {
   const partnerId = ctx.req.param('id')
+  if (isSystemPartnerId(partnerId)) return systemPartnerResponse(ctx)
   const supabase = getSupabase(ctx.env)
   const { data: row, error } = await supabase.from('partners')
     .select('id, email, payout_method, payout_details, tax_country, tax_id, payouts(id, payout_method, payout_details_snapshot)')
@@ -3248,6 +3308,11 @@ async function adminReattributeSale(ctx) {
   const target = await referralService.lookupCode(supabase, body.toCode)
   if (!target || !target.partners) return ctx.json({ success: false, message: 'That code does not exist.' }, 404)
   if (isRemovedEmail(target.partners.email)) return partnerRemovedResponse(ctx)
+  // Round 29: a personal welcome code (owned by the 0% system partner) or a code that is switched off / expired cannot receive a sale.
+  if (isSystemPartnerId(target.partner_id) || target.user_id)
+    return ctx.json({ success: false, code: 'PERSONAL_CODE', message: 'That is a personal welcome code; a sale cannot be credited to it.' }, 409)
+  if (target.active === false || (target.expires_at && Date.parse(target.expires_at) < Date.now()))
+    return ctx.json({ success: false, code: 'CODE_INACTIVE', message: 'That code is switched off or expired. Re-activate it first, or credit a different code.' }, 409)
   if (target.partners.status !== 'ACTIVE')
     return ctx.json({ success: false, message: 'That code belongs to a partner who is not active.' }, 409)
   if (target.id === row.referral_code_id)

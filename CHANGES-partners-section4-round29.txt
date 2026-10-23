@@ -1,0 +1,15 @@
+Partners / Referral program, section 4 round 29 (audit round; migration 0110)
+
+Welcome-code system partner (00000000-0000-4000-8000-00000000e1c0) is plumbing, not a partner:
+- left out of the admin partner list, overview totals, terms notice, legacy-link conversion, payout export/due sweep;
+- its 0-cent ledger rows are no longer read into unpaid-ledger figures (they grew without bound); cross-partner ledger hides them
+  (?includeSystem=true); the code list hides personal codes (?personal=true shows only those);
+- the hourly expiry sweep no longer mails it once per welcome code;
+- edit / pause / erase / pay / adjust / links / reveal / its codes return 409 SYSTEM_PARTNER.
+Attribution: track-click calls a personal code invalid; setUserAttribution refuses another account's personal code.
+Clicks: one visitor counts once per code per 30 min (KV). Payout link: a dashboard-link holder may swap it once per 15 min.
+Admin answers: create-code `notified` reflects the real send; usage limit already used up is warned; re-attribution refuses personal /
+inactive / expired target codes.
+Payouts: record_payout_settlement re-checks payout_details_submitted_at under the partner lock (0110) -> 409 PAYOUT_DETAILS_CHANGED.
+Links: warning when PARTNER_LINK_SECRET is unset (JWT_SECRET fallback). Dashboard "Load more" offset uses the raw count.
+Deploy: apply 0110 before/with the Worker.

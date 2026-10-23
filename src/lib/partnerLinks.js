@@ -13,8 +13,14 @@ const cryptoLib = require('./crypto')
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+let warnedFallback = false
 function linkSecret(env) {
   const secret = env.PARTNER_LINK_SECRET || env.JWT_SECRET
+  // Round 29: with only JWT_SECRET set, rotating it silently kills every emailed dashboard link. Say so once per isolate.
+  if (!env.PARTNER_LINK_SECRET && secret && !warnedFallback) {
+    warnedFallback = true
+    console.warn('PARTNER_LINK_SECRET is not set: partner dashboard links are derived from JWT_SECRET, so rotating JWT_SECRET will invalidate every emailed dashboard link. Set a dedicated PARTNER_LINK_SECRET.')
+  }
   if (!secret) throw new Error('PARTNER_LINK_SECRET / JWT_SECRET is not set — cannot derive partner dashboard links')
   return secret
 }

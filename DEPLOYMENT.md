@@ -1176,3 +1176,9 @@ Operator notes for the newest migrations. Apply each migration before deploying 
 #     "Refund failed" until the full refund goes through. payments.dispute_checked_at (nullable): the old-open-disputes sweep's own rotation marker.
 #   * Neither column has a default and nothing reads them unguarded: a Worker deployed before the migration skips the stamp / falls back a tier
 #     (Admin -> Payments, the dispute sweep and delivery health all retry without them), and the webhook self-test names 0103 until it is applied.
+
+# PARTNERS ROUND 29 (migration 0110): record_payout_settlement re-checks the payout details under the partner lock. Apply 0110
+# BEFORE or WITH this Worker (a Worker that sends the new arguments to an unmigrated database fails the payout call).
+# Set a dedicated PARTNER_LINK_SECRET (`wrangler secret put PARTNER_LINK_SECRET`). Without it partner dashboard links are derived from
+# JWT_SECRET, and rotating JWT_SECRET would invalidate every dashboard link already emailed. Setting it NOW changes the derived links,
+# so do it together with a "reset links" for partners, or keep the value equal to the current JWT_SECRET.

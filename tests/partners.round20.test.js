@@ -137,7 +137,7 @@ describe('cross-partner commission ledger (gap 4)', () => {
     const q = t.db.calls.find(c => c.table === 'commission_ledger')
     expect(q.filters).toContainEqual(['gte', 'created_at', '2026-10-01T00:00:00.000Z'])
     expect(q.filters).toContainEqual(['lte', 'created_at', '2026-10-31T23:59:59.999Z'])
-    expect(q.filters.some(f => f[1] === 'partner_id')).toBe(false)
+    expect(q.filters.some(f => f[0] === 'eq' && f[1] === 'partner_id')).toBe(false)   // round 29: only the welcome-code partner is filtered out (neq)
     expect(q.orders[0]).toEqual(['created_at', { ascending: false }])
   })
 })

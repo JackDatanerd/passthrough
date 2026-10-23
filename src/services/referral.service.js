@@ -659,7 +659,8 @@ async function sweepExpiringCodes(supabase, env) {
     for (let page = 0; page < EXPIRY_SWEEP_MAX_PAGES; page += 1) {
       const { data, error } = await supabase.from('referral_codes')
         .select('id, code, expires_at, partners(name, email, status)')
-        .eq('active', true).gt('expires_at', now.toISOString()).lte('expires_at', horizon.toISOString())
+        .eq('active', true).neq('partner_id', c.WELCOME_PARTNER_ID)   // round 29: personal welcome codes have no partner to tell (their owner gets the welcome mail)
+        .gt('expires_at', now.toISOString()).lte('expires_at', horizon.toISOString())
         .order('expires_at', { ascending: true }).order('id', { ascending: true })
         .range(page * EXPIRY_SWEEP_PAGE, (page + 1) * EXPIRY_SWEEP_PAGE - 1)
       if (error) { console.error('sweepExpiringCodes:', error.message); return out }
@@ -698,6 +699,8 @@ async function setUserAttribution(supabase, user, rawCode, capturedAt, rawSub) {
   if (!CODE_FORMAT_RE.test(code)) return { stored: false, reason: 'format' }
   const row = await lookupCode(supabase, code)
   if (!isCodeUsable(row)) return { stored: false, reason: 'unusable' }
+  // Round 29: a personal welcome code prices for its owner only; as another account's attribution it would displace a real partner's.
+  if (row.user_id && row.user_id !== user.id) return { stored: false, reason: 'personal' }
   if (isSelfReferral(row, user.email)) return { stored: false, reason: 'self' }
 
   const now = Date.now()
