@@ -932,10 +932,10 @@ async function adminResendPayoutLink(ctx) {
 
   if (resendScope === 'dashboard') {
     const dashboardUrl = await partnerLinks.dashboardUrlOf(ctx.env, partner)
-    const sentDash = await emailService.sendPartnerLinksRecovery(ctx.env, supabase, partner.email, partner.name, dashboardUrl)
+    const sentDash = await emailService.sendPartnerLinksRecovery(ctx.env, supabase, partner.email, partner.name, dashboardUrl, { quotaKey: 'partner_links_recovery:admin' })
     await logAdminAction(ctx, supabase, 'partner.dashboard_link_resent', 'partner', partnerId, { emailed: sentDash })
     return ctx.json({ success: sentDash,
-      message: sentDash ? 'Dashboard link re-sent.' : 'Email not sent — it failed or hit this partner\'s 4-per-hour limit. Check logs, or copy the link instead.',
+      message: sentDash ? 'Dashboard link re-sent.' : 'Email not sent — it failed or hit this partner\'s hourly email limit. Check logs, or copy the link instead.',
       ...(sentDash ? {} : { dashboardUrl }) })
   }
 

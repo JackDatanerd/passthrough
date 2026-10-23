@@ -625,10 +625,13 @@ async function sendPartnerTermsAccepted(env, supabase, email, name, version) {
 }
 
 // Round 7: the partner asked (public form) for their dashboard link back. Read-only link only.
-async function sendPartnerLinksRecovery(env, supabase, email, name, dashboardUrl) {
+// Round 35: `opts.quotaKey` (a suffix after ':' keeps the same limit but its own counter, like partner_payout_link_self). The PUBLIC
+// "I lost my link" form mails whatever address is typed into it, so anyone could use up a partner's hourly budget on the shared counter
+// and make the ADMIN's own Resend fail; the admin button passes its own key.
+async function sendPartnerLinksRecovery(env, supabase, email, name, dashboardUrl, opts) {
   return send(env, supabase, email, 'Your Passthrough partner dashboard link', 'partner_links_recovery', {
     NAME: name, DASHBOARD_URL: dashboardUrl
-  })
+  }, opts)
 }
 
 // A recorded payout was voided by an admin (recorded in error).

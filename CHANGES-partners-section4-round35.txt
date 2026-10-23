@@ -1,0 +1,7 @@
+Partners / Referral program, section 4 round 35
+
+- The admin "Resend dashboard link" now sends with its own per-recipient email budget (quotaKey 'partner_links_recovery:admin': same
+  3/hour cap, separate counter). Before, it shared one counter with the public "I lost my link" form, so anyone typing a partner's address
+  there could use up the hour's budget and make the admin's resend fail. sendPartnerLinksRecovery takes an optional `opts`.
+- The failure message no longer says "4-per-hour" (this limit is 3).
+No migration.
