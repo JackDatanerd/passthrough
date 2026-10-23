@@ -1,0 +1,584 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Passthrough Experts Marketplace: design reference</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>body{margin:0;background:#E9ECF4;font-family:Inter,system-ui,sans-serif}
+.intro{max-width:1200px;margin:0 auto;padding:40px 24px 8px;color:#0A1530}
+.intro h1{font-family:'Bricolage Grotesque',sans-serif;font-size:40px;letter-spacing:-.03em;margin:0 0 8px}
+.intro p{margin:6px 0;max-width:760px;line-height:1.5;color:#2B3A5E}
+.intro .note{background:#FFF4C2;border:1px solid #F0D468;border-radius:10px;padding:10px 14px;color:#0A1530}
+.board{max-width:1440px;margin:32px auto;padding:0 16px}
+.lbl{font:600 14px Inter,sans-serif;color:#5B6785;text-transform:uppercase;letter-spacing:.06em;margin:0 0 10px}
+.frame{border-radius:14px;overflow:hidden;box-shadow:0 6px 30px rgba(10,21,48,.18)}
+.frame.phone{max-width:390px}
+a{color:#1D4ED8}
+button{font-family:inherit}
+.tier .box{display:flex;align-items:center;justify-content:space-between;gap:16px;border:2px solid #CBD3E6;border-radius:14px;padding:16px 18px;background:#fff}
+.tier input:checked + .box{border-color:#1D4ED8;background:#F1F5FF}
+.tier input:focus-visible + .box{outline:3px solid #1D4ED8;outline-offset:2px}
+.tier input{position:absolute;opacity:0}
+.tier{display:block;cursor:pointer}
+a{color:#1D4ED8}
+a{color:#1D4ED8}a:hover{color:#1E3A8A}
+button{font-family:inherit}
+</style></head><body>
+<div class="intro"><h1>Passthrough Experts: the human tier</h1>
+<p>Design reference for a future experts.usepassthrough.com. Five screens: expert queue, workbench, grade and earnings, client order, and mobile queue.</p>
+<p class="note">Illustrative only. Names, jobs and numbers are sample data. Prices ($89 / $129 / $169, +$25 cover letter), the 60/40 split and the grading weights are proposals to test in the pilot, not final.</p></div>
+<section class="board" id="s1"><h2 class="lbl">1 · Expert queue</h2><div class="frame">
+
+<div style="min-height: 1160px; background: #F6F7FB; font-family: 'Inter', system-ui, sans-serif; color: #0A1530; display: flex; flex-direction: column">
+
+<!-- Top bar -->
+<header style="background: #0A1530; color: #FFFFFF">
+<div style="max-width: 1280px; margin: 0 auto; padding: 0 32px; height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 24px; flex-wrap: wrap">
+<div style="display: flex; align-items: center; gap: 36px">
+<div style="display: flex; align-items: center; gap: 10px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 21px; letter-spacing: -0.03em">
+<svg viewBox="0 0 32 32" width="30" height="30" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#1E40AF"/><path d="M11 6.5v6M11 19.5v6M21 6.5v6M21 19.5v6" stroke="#fff" stroke-width="2.6" stroke-linecap="round" fill="none"/><path d="M4.5 16h22.5m-5.5-5.5 5.5 5.5-5.5 5.5" stroke="#FFE27A" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+<span>Passthrough <span style="font-weight: 500; color: #B8C4E8">Experts</span></span>
+</div>
+<nav aria-label="Experts" style="display: flex; gap: 6px; font-size: 14px; font-weight: 500">
+<a href="#s1" aria-current="page" style="padding: 8px 14px; border-radius: 8px; background: rgba(255,255,255,0.12); color: #FFFFFF; text-decoration: none">Queue</a>
+<a href="#s2" style="padding: 8px 14px; border-radius: 8px; color: #D5DDF5; text-decoration: none">My jobs <span style="margin-left: 4px; background: #FFE27A; color: #0A1530; border-radius: 999px; padding: 1px 7px; font-size: 12px; font-weight: 600">1</span></a>
+<a href="#s3" style="padding: 8px 14px; border-radius: 8px; color: #D5DDF5; text-decoration: none">Grade &amp; earnings</a>
+</nav>
+</div>
+<div style="display: flex; align-items: center; gap: 16px">
+<button type="button" style="display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.08); color: #FFFFFF; border: 1px solid rgba(255,255,255,0.22); border-radius: 999px; padding: 7px 14px 7px 10px; font-size: 13px; font-weight: 500; cursor: pointer; min-height: 44px">
+<span style="width: 10px; height: 10px; border-radius: 50%; background: #4ADE80"></span>Available for new jobs
+</button>
+<div style="display: flex; align-items: center; gap: 10px">
+<span style="width: 40px; height: 40px; border-radius: 50%; background: #FFE27A; color: #0A1530; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px" aria-hidden="true">AK</span>
+<span style="font-size: 13px; line-height: 1.25"><strong style="display: block; font-weight: 600">Amina K.</strong><span style="color: #FFE27A; font-weight: 600">Gold expert</span></span>
+</div>
+</div>
+</div>
+</header>
+
+<main style="flex: 1; max-width: 1280px; width: 100%; margin: 0 auto; padding: 32px 32px 48px; box-sizing: border-box">
+
+<!-- Greeting + vitals -->
+<div style="display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 24px">
+<div>
+<h1 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 40px; letter-spacing: -0.03em; line-height: 1.05">Good afternoon, Amina.</h1>
+<p style="margin: 8px 0 0; font-size: 16px; color: #2B3A5E">9 jobs are open. Three are yours alone for the next few minutes.</p>
+</div>
+<dl style="margin: 0; display: flex; gap: 12px; flex-wrap: wrap">
+<div style="background: #FFFFFF; border: 1px solid #E3E7F0; border-radius: 12px; padding: 12px 18px; min-width: 96px"><dt style="font-size: 12px; color: #5B6785; text-transform: uppercase; letter-spacing: 0.05em">Grade</dt><dd style="margin: 2px 0 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 28px">94</dd></div>
+<div style="background: #FFFFFF; border: 1px solid #E3E7F0; border-radius: 12px; padding: 12px 18px; min-width: 96px"><dt style="font-size: 12px; color: #5B6785; text-transform: uppercase; letter-spacing: 0.05em">On time</dt><dd style="margin: 2px 0 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 28px">100%</dd></div>
+<div style="background: #FFFFFF; border: 1px solid #E3E7F0; border-radius: 12px; padding: 12px 18px; min-width: 96px"><dt style="font-size: 12px; color: #5B6785; text-transform: uppercase; letter-spacing: 0.05em">Strikes</dt><dd style="margin: 2px 0 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 28px">0<span style="font-size: 16px; color: #5B6785; font-weight: 500"> / 3</span></dd></div>
+</dl>
+</div>
+
+<div style="display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start">
+
+<!-- Queue column -->
+<section aria-labelledby="queue-h" style="flex: 999 1 600px; min-width: 0">
+
+<!-- Head-start banner -->
+<div style="display: flex; align-items: center; gap: 16px; background: #FFF4C2; border: 1px solid #F0D468; border-radius: 14px; padding: 14px 18px; margin-bottom: 20px; flex-wrap: wrap">
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#0A1530" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+<p style="margin: 0; flex: 1; min-width: 240px; font-size: 14px; line-height: 1.45; color: #0A1530"><strong>Gold head start.</strong> New jobs reach Gold experts first. The two at the top open to everyone in <strong style="font-variant-numeric: tabular-nums">12:41</strong>, so claim one now if you want it.</p>
+</div>
+
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 14px">
+<h2 id="queue-h" style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 22px; letter-spacing: -0.02em">Open jobs</h2>
+<div role="group" aria-label="Filter by turnaround" style="display: flex; gap: 8px; flex-wrap: wrap">
+<button type="button" aria-pressed="true" style="min-height: 40px; padding: 0 16px; border-radius: 999px; border: 1px solid #0A1530; background: #0A1530; color: #FFFFFF; font-size: 14px; font-weight: 500; cursor: pointer">All 9</button>
+<button type="button" aria-pressed="false" style="min-height: 40px; padding: 0 16px; border-radius: 999px; border: 1px solid #CBD3E6; background: #FFFFFF; color: #2B3A5E; font-size: 14px; font-weight: 500; cursor: pointer">24 hour 2</button>
+<button type="button" aria-pressed="false" style="min-height: 40px; padding: 0 16px; border-radius: 999px; border: 1px solid #CBD3E6; background: #FFFFFF; color: #2B3A5E; font-size: 14px; font-weight: 500; cursor: pointer">48 hour 3</button>
+<button type="button" aria-pressed="false" style="min-height: 40px; padding: 0 16px; border-radius: 999px; border: 1px solid #CBD3E6; background: #FFFFFF; color: #2B3A5E; font-size: 14px; font-weight: 500; cursor: pointer">7 day 4</button>
+</div>
+</div>
+
+<ul style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px">
+
+<li style="background: #FFFFFF; border: 1px solid #E3E7F0; border-radius: 16px; padding: 20px 22px; display: flex; flex-wrap: wrap; gap: 20px; align-items: center; justify-content: space-between">
+<div style="flex: 1 1 340px; min-width: 0">
+<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px">
+<span style="background: #0A1530; color: #FFFFFF; border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 600">24 hour</span>
+
+
+<span style="background: #E4F5EC; color: #065F46; border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 600">+ cover letter</span>
+<span style="display: inline-flex; align-items: center; gap: 5px; background: #FFF4C2; color: #5B4300; border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 600"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>Gold only for 12:41</span>
+<span style="font-size: 12px; color: #5B6785">PT-1042 · open 2 min</span>
+</div>
+<h3 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 600; font-size: 19px; letter-spacing: -0.015em">Software engineer to fintech product role</h3>
+<p style="margin: 4px 0 0; font-size: 14px; color: #2B3A5E">Mid-career, 6 years · applying in the US · one revision included</p>
+<p style="margin: 10px 0 0; font-size: 13px; color: #5B6785; display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+<span>AI draft ready</span><span aria-hidden="true">·</span><span>ATS score <strong style="color: #0A1530">58</strong></span><span aria-hidden="true">·</span><span>Needs about 45 min of your time</span>
+</p>
+</div>
+<div style="display: flex; align-items: center; gap: 22px; flex-wrap: wrap">
+<div style="text-align: right">
+<div style="font-size: 12px; color: #5B6785; text-transform: uppercase; letter-spacing: 0.05em">You earn</div>
+<div style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 32px; letter-spacing: -0.03em; line-height: 1.1">$101</div>
+<div style="font-size: 13px; color: #92400E; font-weight: 500">Due in 23h 58m</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<button type="button" style="min-height: 44px; padding: 0 26px; border: 0; border-radius: 10px; background: #1D4ED8; color: #FFFFFF; font-size: 15px; font-weight: 600; cursor: pointer; box-shadow: 0 3px 0 #1E3A8A">Claim job</button>
+<button type="button" style="min-height: 36px; padding: 0 16px; border: 1px solid #CBD3E6; border-radius: 10px; background: #FFFFFF; color: #2B3A5E; font-size: 13px; font-weight: 500; cursor: pointer">Preview, no claim</button>
+</div>
+</div>
+</li>
+
+<li style="background: #FFFFFF; border: 1px solid #E3E7F0; border-radius: 16px; padding: 20px 22px; display: flex; flex-wrap: wrap; gap: 20px; align-items: center; justify-content: space-between">
+<div style="flex: 1 1 340px; min-width: 0">
+<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px">
+<span style="background: #0A1530; color: #FFFFFF; border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 600">24 hour</span>
+
+
+
+<span style="display: inline-flex; align-items: center; gap: 5px; background: #FFF4C2; color: #5B4300; border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 600"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></svg>Gold only for 10:12</span>
+<span style="font-size: 12px; color: #5B6785">PT-1041 · open 4 min</span>
+</div>
+<h3 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 600; font-size: 19px; letter-spacing: -0.015em">Operations analyst to supply chain lead</h3>
+<p style="margin: 4px 0 0; font-size: 14px; color: #2B3A5E">Senior, 11 years · applying in the UK · one revision included</p>
+<p style="margin: 10px 0 0; font-size: 13px; color: #5B6785; display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+<span>AI draft ready</span><span aria-hidden="true">·</span><span>ATS score <strong style="color: #0A1530">49</strong></span><span aria-hidden="true">·</span><span>Needs about 50 min of your time</span>
+</p>
+</div>
+<div style="display: flex; align-items: center; gap: 22px; flex-wrap: wrap">
+<div style="text-align: right">
+<div style="font-size: 12px; color: #5B6785; text-transform: uppercase; letter-spacing: 0.05em">You earn</div>
+<div style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 32px; letter-spacing: -0.03em; line-height: 1.1">$86</div>
+<div style="font-size: 13px; color: #92400E; font-weight: 500">Due in 23h 55m</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<button type="button" style="min-height: 44px; padding: 0 26px; border: 0; border-radius: 10px; background: #1D4ED8; color: #FFFFFF; font-size: 15px; font-weight: 600; cursor: pointer; box-shadow: 0 3px 0 #1E3A8A">Claim job</button>
+<button type="button" style="min-height: 36px; padding: 0 16px; border: 1px solid #CBD3E6; border-radius: 10px; background: #FFFFFF; color: #2B3A5E; font-size: 13px; font-weight: 500; cursor: pointer">Preview, no claim</button>
+</div>
+</div>
+</li>
+
+<li style="background: #FFFFFF; border: 1px solid #E3E7F0; border-radius: 16px; padding: 20px 22px; display: flex; flex-wrap: wrap; gap: 20px; align-items: center; justify-content: space-between">
+<div style="flex: 1 1 340px; min-width: 0">
+<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px">
+
+<span style="background: #DCE6FF; color: #1E3A8A; border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 600">48 hour</span>
+
+<span style="background: #E4F5EC; color: #065F46; border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 600">+ cover letter</span>
+
+<span style="font-size: 12px; color: #5B6785">PT-1040 · open 38 min</span>
+</div>
+<h3 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 600; font-size: 19px; letter-spacing: -0.015em">Registered nurse to clinical educator</h3>
+<p style="margin: 4px 0 0; font-size: 14px; color: #2B3A5E">Mid-career, 8 years · applying in the US · one revision included</p>
+<p style="margin: 10px 0 0; font-size: 13px; color: #5B6785; display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+<span>AI draft ready</span><span aria-hidden="true">·</span><span>ATS score <strong style="color: #0A1530">63</strong></span><span aria-hidden="true">·</span><span>Needs about 40 min of your time</span>
+</p>
+</div>
+<div style="display: flex; align-items: center; gap: 22px; flex-wrap: wrap">
+<div style="text-align: right">
+<div style="font-size: 12px; color: #5B6785; text-transform: uppercase; letter-spacing: 0.05em">You earn</div>
+<div style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 32px; letter-spacing: -0.03em; line-height: 1.1">$92</div>
+<div style="font-size: 13px; color: #92400E; font-weight: 500">Due in 47h 22m</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<button type="button" style="min-height: 44px; padding: 0 26px; border: 0; border-radius: 10px; background: #1D4ED8; color: #FFFFFF; font-size: 15px; font-weight: 600; cursor: pointer; box-shadow: 0 3px 0 #1E3A8A">Claim job</button>
+<button type="button" style="min-height: 36px; padding: 0 16px; border: 1px solid #CBD3E6; border-radius: 10px; background: #FFFFFF; color: #2B3A5E; font-size: 13px; font-weight: 500; cursor: pointer">Preview, no claim</button>
+</div>
+</div>
+</li>
+
+<li style="background: #FFFFFF; border: 1px solid #E3E7F0; border-radius: 16px; padding: 20px 22px; display: flex; flex-wrap: wrap; gap: 20px; align-items: center; justify-content: space-between">
+<div style="flex: 1 1 340px; min-width: 0">
+<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px">
+
+
+<span style="background: #ECEFF6; color: #2B3A5E; border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 600">7 day</span>
+
+
+<span style="font-size: 12px; color: #5B6785">PT-1036 · open 1 h 20 min</span>
+</div>
+<h3 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 600; font-size: 19px; letter-spacing: -0.015em">Marketing associate, first full-time role</h3>
+<p style="margin: 4px 0 0; font-size: 14px; color: #2B3A5E">Early career, 1 year · applying in Kenya · one revision included</p>
+<p style="margin: 10px 0 0; font-size: 13px; color: #5B6785; display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+<span>AI draft ready</span><span aria-hidden="true">·</span><span>ATS score <strong style="color: #0A1530">52</strong></span><span aria-hidden="true">·</span><span>Needs about 35 min of your time</span>
+</p>
+</div>
+<div style="display: flex; align-items: center; gap: 22px; flex-wrap: wrap">
+<div style="text-align: right">
+<div style="font-size: 12px; color: #5B6785; text-transform: uppercase; letter-spacing: 0.05em">You earn</div>
+<div style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 32px; letter-spacing: -0.03em; line-height: 1.1">$53</div>
+<div style="font-size: 13px; color: #92400E; font-weight: 500">Due in 6d 22h</div>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<button type="button" style="min-height: 44px; padding: 0 26px; border: 0; border-radius: 10px; background: #1D4ED8; color: #FFFFFF; font-size: 15px; font-weight: 600; cursor: pointer; box-shadow: 0 3px 0 #1E3A8A">Claim job</button>
+<button type="button" style="min-height: 36px; padding: 0 16px; border: 1px solid #CBD3E6; border-radius: 10px; background: #FFFFFF; color: #2B3A5E; font-size: 13px; font-weight: 500; cursor: pointer">Preview, no claim</button>
+</div>
+</div>
+</li>
+
+</ul>
+
+<p style="margin: 16px 2px 0; font-size: 13px; color: #5B6785">Previewing never locks a job. Claiming starts your clock and a free unclaim window, shown on the next screen.</p>
+</section>
+
+<!-- Side column -->
+<aside aria-label="Your status" style="flex: 1 1 300px; max-width: 380px; display: flex; flex-direction: column; gap: 16px">
+
+<div style="background: #FFFFFF; border: 1px solid #E3E7F0; border-radius: 16px; padding: 20px">
+<div style="display: flex; justify-content: space-between; align-items: baseline">
+<h2 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 18px">On your desk</h2>
+<span style="font-size: 12px; color: #5B6785">1 active</span>
+</div>
+<p style="margin: 12px 0 2px; font-size: 15px; font-weight: 600">Product manager, fintech</p>
+<p style="margin: 0; font-size: 13px; color: #5B6785">PT-1038 · 48 hour · + cover letter</p>
+<div style="margin-top: 14px; height: 8px; border-radius: 999px; background: #E3E7F0; overflow: hidden"><div style="width: 38%; height: 100%; background: #1D4ED8"></div></div>
+<div style="display: flex; justify-content: space-between; margin-top: 8px; font-size: 13px; color: #2B3A5E"><span>Resume in progress</span><span style="font-variant-numeric: tabular-nums">31h 06m left</span></div>
+<a href="#s2" style="display: flex; align-items: center; justify-content: center; margin-top: 16px; min-height: 44px; border-radius: 10px; background: #0A1530; color: #FFFFFF; font-size: 14px; font-weight: 600; text-decoration: none">Open workbench</a>
+</div>
+
+<div style="background: #FFFFFF; border: 1px solid #E3E7F0; border-radius: 16px; padding: 20px">
+<h2 style="margin: 0 0 12px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 18px">The rules, in short</h2>
+<ul style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 12px; font-size: 14px; line-height: 1.45; color: #2B3A5E">
+<li style="display: flex; gap: 10px"><span style="flex: none; width: 22px; height: 22px; border-radius: 50%; background: #E4F5EC; color: #065F46; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700" aria-hidden="true">1</span><span><strong style="color: #0A1530">Claim, then decide.</strong> Unclaiming is free inside the window set by the job's turnaround (60 minutes for 24 hour jobs).</span></li>
+<li style="display: flex; gap: 10px"><span style="flex: none; width: 22px; height: 22px; border-radius: 50%; background: #E4F5EC; color: #065F46; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700" aria-hidden="true">2</span><span><strong style="color: #0A1530">A late unclaim is a strike.</strong> Three in 30 days pauses your head start. Nothing is ever deducted from pay.</span></li>
+<li style="display: flex; gap: 10px"><span style="flex: none; width: 22px; height: 22px; border-radius: 50%; background: #E4F5EC; color: #065F46; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700" aria-hidden="true">3</span><span><strong style="color: #0A1530">Nothing ships unchecked.</strong> Every delivery passes the ATS score and the truth check first.</span></li>
+</ul>
+</div>
+
+<div style="background: #0A1530; color: #FFFFFF; border-radius: 16px; padding: 20px">
+<div style="font-size: 12px; color: #B8C4E8; text-transform: uppercase; letter-spacing: 0.05em">Next tier</div>
+<p style="margin: 6px 0 12px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 20px; letter-spacing: -0.02em">Platinum: 6 jobs to go</p>
+<div style="height: 8px; border-radius: 999px; background: rgba(255,255,255,0.18); overflow: hidden"><div style="width: 70%; height: 100%; background: #FFE27A"></div></div>
+<p style="margin: 12px 0 0; font-size: 13px; line-height: 1.45; color: #D5DDF5">Keep your grade above 92 and your on-time rate at 100% to earn a 15-minute head start on every new job.</p>
+</div>
+
+</aside>
+</div>
+</main>
+</div>
+</div></section>
+<section class="board" id="s2"><h2 class="lbl">2 · Workbench (claimed job)</h2><div class="frame">
+
+<div style="min-height: 1160px; background: #F6F7FB; font-family: 'Inter', system-ui, sans-serif; color: #0A1530; display: flex; flex-direction: column">
+
+<header style="background: #0A1530; color: #FFFFFF">
+<div style="max-width: 1360px; margin: 0 auto; padding: 0 32px; height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 24px; flex-wrap: wrap">
+<div style="display: flex; align-items: center; gap: 20px; flex-wrap: wrap">
+<a href="#s1" style="color: #D5DDF5; text-decoration: none; font-size: 14px; font-weight: 500; min-height: 44px; display: inline-flex; align-items: center">&larr; Queue</a>
+<span style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 18px; letter-spacing: -0.02em">PT-1038 · Product manager, fintech</span>
+<span style="background: #DCE6FF; color: #1E3A8A; border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 600">48 hour</span>
+<span style="background: #E4F5EC; color: #065F46; border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 600">+ cover letter</span>
+</div>
+<div style="display: flex; align-items: center; gap: 20px">
+<div style="text-align: right; line-height: 1.2"><div style="font-size: 11px; color: #B8C4E8; text-transform: uppercase; letter-spacing: 0.06em">Due in</div><div style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 24px; font-variant-numeric: tabular-nums">31:06:12</div></div>
+<button type="button" style="min-height: 44px; padding: 0 20px; border: 0; border-radius: 10px; background: #FFE27A; color: #0A1530; font-size: 14px; font-weight: 600; cursor: pointer">Submit for checks</button>
+</div>
+</div>
+</header>
+
+<!-- Claim status strip -->
+<div style="background: #E4F5EC; border-bottom: 1px solid #BFE5D0">
+<div style="max-width: 1360px; margin: 0 auto; padding: 10px 32px; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; font-size: 14px; color: #064E3B">
+<span><strong>Free unclaim window closed.</strong> You claimed this 3 h 12 m ago. It is yours to finish; the clock above is the only deadline.</span>
+<span style="font-size: 13px">Autosaved 12:02</span>
+</div>
+</div>
+
+<main style="flex: 1; max-width: 1360px; width: 100%; margin: 0 auto; padding: 24px 32px 40px; box-sizing: border-box; display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start">
+
+<!-- Client brief -->
+<aside aria-label="Client brief" style="flex: 1 1 280px; max-width: 320px; display: flex; flex-direction: column; gap: 16px">
+<section style="background: #FFFFFF; border: 1px solid #E3E7F0; border-radius: 16px; padding: 20px">
+<h2 style="margin: 0 0 12px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 17px">The client's brief</h2>
+<dl style="margin: 0; display: grid; gap: 12px; font-size: 14px">
+<div><dt style="font-size: 12px; color: #5B6785; text-transform: uppercase; letter-spacing: 0.05em">Target role</dt><dd style="margin: 2px 0 0">Senior product manager, payments</dd></div>
+<div><dt style="font-size: 12px; color: #5B6785; text-transform: uppercase; letter-spacing: 0.05em">Region</dt><dd style="margin: 2px 0 0">United States</dd></div>
+<div><dt style="font-size: 12px; color: #5B6785; text-transform: uppercase; letter-spacing: 0.05em">Client's note</dt><dd style="margin: 2px 0 0; line-height: 1.5; color: #2B3A5E">"I led the checkout rebuild but my resume reads like a task list. I want it to show results."</dd></div>
+</dl>
+</section>
+<section style="background: #FFFFFF; border: 1px solid #E3E7F0; border-radius: 16px; padding: 20px">
+<h2 style="margin: 0 0 12px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 17px">Job description match</h2>
+<p style="margin: 0 0 10px; font-size: 13px; color: #5B6785">Keywords the posting asks for</p>
+<div style="display: flex; flex-wrap: wrap; gap: 6px; font-size: 13px">
+<span style="background: #E4F5EC; color: #065F46; border-radius: 6px; padding: 3px 8px">roadmap</span>
+<span style="background: #E4F5EC; color: #065F46; border-radius: 6px; padding: 3px 8px">payments</span>
+<span style="background: #E4F5EC; color: #065F46; border-radius: 6px; padding: 3px 8px">A/B testing</span>
+<span style="background: #FDE8E8; color: #9B1C1C; border-radius: 6px; padding: 3px 8px">PCI compliance</span>
+<span style="background: #FDE8E8; color: #9B1C1C; border-radius: 6px; padding: 3px 8px">stakeholder</span>
+</div>
+<p style="margin: 12px 0 0; font-size: 12px; color: #5B6785; line-height: 1.45">Red means missing. Only add one if the client's own history supports it.</p>
+</section>
+</aside>
+
+<!-- Editor -->
+<section aria-label="Resume editor" style="flex: 999 1 520px; min-width: 0; background: #FFFFFF; border: 1px solid #E3E7F0; border-radius: 16px; overflow: hidden">
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 20px; border-bottom: 1px solid #E3E7F0; background: #FAFBFE">
+<div role="tablist" aria-label="Editor view" style="display: flex; gap: 6px">
+<button type="button" role="tab" aria-selected="true" style="min-height: 40px; padding: 0 16px; border-radius: 8px; border: 0; background: #0A1530; color: #FFFFFF; font-size: 14px; font-weight: 500; cursor: pointer">Edit</button>
+<button type="button" role="tab" aria-selected="false" style="min-height: 40px; padding: 0 16px; border-radius: 8px; border: 0; background: transparent; color: #2B3A5E; font-size: 14px; font-weight: 500; cursor: pointer">Changes vs AI draft</button>
+<button type="button" role="tab" aria-selected="false" style="min-height: 40px; padding: 0 16px; border-radius: 8px; border: 0; background: transparent; color: #2B3A5E; font-size: 14px; font-weight: 500; cursor: pointer">Cover letter</button>
+</div>
+<span style="font-size: 13px; color: #5B6785">Contact details are hidden from you</span>
+</div>
+
+<div style="padding: 24px 28px; display: flex; flex-direction: column; gap: 22px">
+<div>
+<div style="display: flex; justify-content: space-between; align-items: baseline"><h3 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 600; font-size: 16px">Summary</h3><span style="font-size: 12px; color: #5B6785">Rewritten by you</span></div>
+<div style="margin-top: 8px; border: 2px solid #1D4ED8; border-radius: 10px; padding: 12px 14px; font-size: 15px; line-height: 1.55">Product manager with 7 years in payments. Led the checkout rebuild that cut abandonment 18% and added $2.4M in annual revenue across 3 markets.</div>
+</div>
+
+<div>
+<div style="display: flex; justify-content: space-between; align-items: baseline"><h3 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 600; font-size: 16px">Northgate Pay · Product Manager</h3><span style="font-size: 12px; color: #5B6785">2021 to present</span></div>
+<ul style="list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px">
+<li style="display: flex; gap: 12px; align-items: flex-start; border: 1px solid #E3E7F0; border-radius: 10px; padding: 12px 14px; font-size: 15px; line-height: 1.5">
+<span style="flex: 1">Led the checkout rebuild, cutting cart abandonment 18% and adding $2.4M annual revenue.</span>
+<span style="flex: none; background: #E4F5EC; color: #065F46; border-radius: 999px; padding: 2px 9px; font-size: 12px; font-weight: 600">Verified from client</span>
+</li>
+<li style="display: flex; gap: 12px; align-items: flex-start; border: 1px solid #F0D468; background: #FFFBE8; border-radius: 10px; padding: 12px 14px; font-size: 15px; line-height: 1.5">
+<span style="flex: 1">Ran A/B tests on payment flow, improving conversion <mark style="background: #FFE27A; padding: 0 2px">by a double-digit amount</mark>.</span>
+<span style="flex: none; background: #FFF4C2; color: #5B4300; border-radius: 999px; padding: 2px 9px; font-size: 12px; font-weight: 600">Needs a real number</span>
+</li>
+<li style="display: flex; gap: 12px; align-items: flex-start; border: 1px solid #E3E7F0; border-radius: 10px; padding: 12px 14px; font-size: 15px; line-height: 1.5">
+<span style="flex: 1">Partnered with engineering, design and compliance to ship on a quarterly roadmap.</span>
+<span style="flex: none; background: #ECEFF6; color: #2B3A5E; border-radius: 999px; padding: 2px 9px; font-size: 12px; font-weight: 600">AI draft, unchanged</span>
+</li>
+</ul>
+<button type="button" style="margin-top: 10px; min-height: 40px; padding: 0 14px; border: 1px dashed #98A4C4; border-radius: 10px; background: transparent; color: #2B3A5E; font-size: 14px; font-weight: 500; cursor: pointer">+ Add a bullet from the client's own history</button>
+</div>
+</div>
+</section>
+
+<!-- Checks -->
+<aside aria-label="Delivery checks" style="flex: 1 1 280px; max-width: 340px; display: flex; flex-direction: column; gap: 16px">
+<section style="background: #FFFFFF; border: 1px solid #E3E7F0; border-radius: 16px; padding: 20px">
+<h2 style="margin: 0 0 4px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 17px">ATS score</h2>
+<div style="display: flex; align-items: baseline; gap: 10px"><span style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 44px; letter-spacing: -0.03em">81</span><span style="font-size: 14px; color: #065F46; font-weight: 600">up from 58 in the AI draft</span></div>
+<div style="margin-top: 8px; height: 8px; border-radius: 999px; background: #E3E7F0; overflow: hidden"><div style="width: 81%; height: 100%; background: #059669"></div></div>
+<p style="margin: 10px 0 0; font-size: 13px; color: #5B6785; line-height: 1.45">Delivery needs 75 or higher. This updates as you type.</p>
+</section>
+<section style="background: #FFFFFF; border: 1px solid #E3E7F0; border-radius: 16px; padding: 20px">
+<h2 style="margin: 0 0 12px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 17px">Before you submit</h2>
+<ul style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; font-size: 14px; color: #2B3A5E">
+<li style="display: flex; gap: 10px; align-items: flex-start"><span style="flex: none; width: 20px; height: 20px; border-radius: 50%; background: #059669; color: #FFFFFF; display: flex; align-items: center; justify-content: center; font-size: 12px" aria-hidden="true">&#10003;</span><span><strong style="color: #0A1530">ATS score</strong> is above 75</span></li>
+<li style="display: flex; gap: 10px; align-items: flex-start"><span style="flex: none; width: 20px; height: 20px; border-radius: 50%; background: #059669; color: #FFFFFF; display: flex; align-items: center; justify-content: center; font-size: 12px" aria-hidden="true">&#10003;</span><span><strong style="color: #0A1530">Cover letter</strong> written</span></li>
+<li style="display: flex; gap: 10px; align-items: flex-start"><span style="flex: none; width: 20px; height: 20px; border-radius: 50%; background: #F59E0B; color: #0A1530; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700" aria-hidden="true">!</span><span><strong style="color: #0A1530">Truth check:</strong> 1 bullet has no number the client gave us. Ask or reword.</span></li>
+</ul>
+<button type="button" style="margin-top: 14px; width: 100%; min-height: 44px; border: 1px solid #CBD3E6; border-radius: 10px; background: #FFFFFF; color: #0A1530; font-size: 14px; font-weight: 600; cursor: pointer">Ask the client one question</button>
+<p style="margin: 8px 0 0; font-size: 12px; color: #5B6785; line-height: 1.45">Questions pause your clock for up to 12 hours.</p>
+</section>
+</aside>
+</main>
+</div>
+</div></section>
+<section class="board" id="s3"><h2 class="lbl">3 · Grade and earnings</h2><div class="frame">
+
+<div style="min-height: 1160px; background: #F6F7FB; font-family: 'Inter', system-ui, sans-serif; color: #0A1530; display: flex; flex-direction: column">
+
+<header style="background: #0A1530; color: #FFFFFF">
+<div style="max-width: 1280px; margin: 0 auto; padding: 0 32px; height: 68px; display: flex; align-items: center; gap: 36px">
+<span style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 21px; letter-spacing: -0.03em">Passthrough <span style="font-weight: 500; color: #B8C4E8">Experts</span></span>
+<nav aria-label="Experts" style="display: flex; gap: 6px; font-size: 14px; font-weight: 500">
+<a href="#s1" style="padding: 8px 14px; border-radius: 8px; color: #D5DDF5; text-decoration: none">Queue</a>
+<a href="#s2" style="padding: 8px 14px; border-radius: 8px; color: #D5DDF5; text-decoration: none">My jobs</a>
+<a href="#s3" aria-current="page" style="padding: 8px 14px; border-radius: 8px; background: rgba(255,255,255,0.12); color: #FFFFFF; text-decoration: none">Grade &amp; earnings</a>
+</nav>
+</div>
+</header>
+
+<main style="flex: 1; max-width: 1280px; width: 100%; margin: 0 auto; padding: 32px 32px 48px; box-sizing: border-box">
+<h1 style="margin: 0 0 24px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 40px; letter-spacing: -0.03em; line-height: 1.05">Your standing</h1>
+
+<div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: stretch">
+
+<!-- Grade hero -->
+<section aria-labelledby="g-h" style="flex: 1 1 440px; background: #0A1530; color: #FFFFFF; border-radius: 20px; padding: 28px">
+<div style="display: flex; align-items: center; gap: 24px; flex-wrap: wrap">
+<div style="position: relative; width: 150px; height: 150px; flex: none">
+<svg viewBox="0 0 120 120" width="150" height="150" role="img" aria-label="Grade 94 out of 100"><circle cx="60" cy="60" r="52" fill="none" stroke="rgba(255,255,255,0.16)" stroke-width="10"/><circle cx="60" cy="60" r="52" fill="none" stroke="#FFE27A" stroke-width="10" stroke-linecap="round" stroke-dasharray="307 327" transform="rotate(-90 60 60)"/></svg>
+<div style="position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center"><span style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 46px; line-height: 1">94</span><span style="font-size: 12px; color: #B8C4E8">of 100</span></div>
+</div>
+<div style="flex: 1; min-width: 200px">
+<h2 id="g-h" style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 24px; letter-spacing: -0.02em">Gold expert</h2>
+<p style="margin: 6px 0 0; font-size: 15px; line-height: 1.5; color: #D5DDF5">Based on your last 20 jobs. Gold means new jobs reach you first, with a few minutes before they open to everyone.</p>
+</div>
+</div>
+
+<div style="margin-top: 24px">
+<div style="display: flex; justify-content: space-between; font-size: 13px; color: #B8C4E8; margin-bottom: 8px"><span>Gold</span><span>Platinum at 96 and 25 jobs</span></div>
+<div style="height: 10px; border-radius: 999px; background: rgba(255,255,255,0.16); overflow: hidden"><div style="width: 70%; height: 100%; background: #FFE27A"></div></div>
+<p style="margin: 8px 0 0; font-size: 13px; color: #D5DDF5">19 of 25 jobs done. Platinum adds a 15-minute head start.</p>
+</div>
+</section>
+
+<!-- Grade breakdown -->
+<section aria-labelledby="b-h" style="flex: 1 1 440px; background: #FFFFFF; border: 1px solid #E3E7F0; border-radius: 20px; padding: 28px">
+<h2 id="b-h" style="margin: 0 0 4px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 20px">Where your 94 comes from</h2>
+<p style="margin: 0 0 20px; font-size: 14px; color: #5B6785">Weights are shown so nothing is a mystery.</p>
+<div style="display: flex; flex-direction: column; gap: 16px">
+
+<div>
+<div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 14px"><span><strong>Client rating</strong> <span style="color: #5B6785">· weight 40%</span></span><span style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 18px">96</span></div>
+<div style="margin-top: 6px; height: 8px; border-radius: 999px; background: #E3E7F0; overflow: hidden"><div style="height: 100%; background: #1D4ED8; width: 96%"></div></div>
+<p style="margin: 6px 0 0; font-size: 13px; color: #5B6785">Average of the last 20 accepted jobs.</p>
+</div>
+
+<div>
+<div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 14px"><span><strong>Quality audit</strong> <span style="color: #5B6785">· weight 25%</span></span><span style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 18px">92</span></div>
+<div style="margin-top: 6px; height: 8px; border-radius: 999px; background: #E3E7F0; overflow: hidden"><div style="height: 100%; background: #1D4ED8; width: 92%"></div></div>
+<p style="margin: 6px 0 0; font-size: 13px; color: #5B6785">Staff review of 1 in 5 deliveries.</p>
+</div>
+
+<div>
+<div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 14px"><span><strong>Reliability</strong> <span style="color: #5B6785">· weight 20%</span></span><span style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 18px">100</span></div>
+<div style="margin-top: 6px; height: 8px; border-radius: 999px; background: #E3E7F0; overflow: hidden"><div style="height: 100%; background: #1D4ED8; width: 100%"></div></div>
+<p style="margin: 6px 0 0; font-size: 13px; color: #5B6785">No late deliveries, no late unclaims.</p>
+</div>
+
+<div>
+<div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 14px"><span><strong>Revision rate</strong> <span style="color: #5B6785">· weight 15%</span></span><span style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 18px">86</span></div>
+<div style="margin-top: 6px; height: 8px; border-radius: 999px; background: #E3E7F0; overflow: hidden"><div style="height: 100%; background: #1D4ED8; width: 86%"></div></div>
+<p style="margin: 6px 0 0; font-size: 13px; color: #5B6785">Share of jobs accepted without a revision.</p>
+</div>
+
+</div>
+</section>
+</div>
+
+<div style="display: flex; flex-wrap: wrap; gap: 20px; margin-top: 20px; align-items: flex-start">
+
+<!-- Earnings -->
+<section aria-labelledby="e-h" style="flex: 1 1 520px; background: #FFFFFF; border: 1px solid #E3E7F0; border-radius: 20px; padding: 28px">
+<div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap">
+<div>
+<h2 id="e-h" style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 20px">Earnings</h2>
+<p style="margin: 4px 0 0; font-size: 14px; color: #5B6785">Pay is released after the client's 48 hour acceptance window.</p>
+</div>
+<button type="button" style="min-height: 44px; padding: 0 20px; border: 0; border-radius: 10px; background: #1D4ED8; color: #FFFFFF; font-size: 14px; font-weight: 600; cursor: pointer">Withdraw available</button>
+</div>
+<dl style="margin: 20px 0 0; display: flex; gap: 12px; flex-wrap: wrap">
+<div style="flex: 1 1 140px; background: #F6F7FB; border-radius: 12px; padding: 14px 16px"><dt style="font-size: 12px; color: #5B6785; text-transform: uppercase; letter-spacing: 0.05em">Available</dt><dd style="margin: 2px 0 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 28px">$412</dd></div>
+<div style="flex: 1 1 140px; background: #F6F7FB; border-radius: 12px; padding: 14px 16px"><dt style="font-size: 12px; color: #5B6785; text-transform: uppercase; letter-spacing: 0.05em">In acceptance window</dt><dd style="margin: 2px 0 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 28px">$178</dd></div>
+<div style="flex: 1 1 140px; background: #F6F7FB; border-radius: 12px; padding: 14px 16px"><dt style="font-size: 12px; color: #5B6785; text-transform: uppercase; letter-spacing: 0.05em">This month</dt><dd style="margin: 2px 0 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 28px">$1,046</dd></div>
+</dl>
+<table style="width: 100%; margin-top: 20px; border-collapse: collapse; font-size: 14px">
+<caption style="text-align: left; font-size: 12px; color: #5B6785; text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 8px">Recent jobs</caption>
+<thead><tr style="text-align: left; color: #5B6785; font-size: 12px"><th scope="col" style="padding: 8px 0; font-weight: 500">Job</th><th scope="col" style="padding: 8px 0; font-weight: 500">Delivered</th><th scope="col" style="padding: 8px 0; font-weight: 500">Client rating</th><th scope="col" style="padding: 8px 0; font-weight: 500; text-align: right">Pay</th></tr></thead>
+<tbody>
+
+<tr style="border-top: 1px solid #E3E7F0"><td style="padding: 12px 0"><strong>PT-1031</strong> <span style="color: #5B6785">Data analyst</span></td><td style="padding: 12px 0; color: #2B3A5E">Oct 19</td><td style="padding: 12px 0; color: #2B3A5E">5 of 5</td><td style="padding: 12px 0; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums">$77</td></tr>
+
+<tr style="border-top: 1px solid #E3E7F0"><td style="padding: 12px 0"><strong>PT-1027</strong> <span style="color: #5B6785">HR coordinator</span></td><td style="padding: 12px 0; color: #2B3A5E">Oct 17</td><td style="padding: 12px 0; color: #2B3A5E">5 of 5</td><td style="padding: 12px 0; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums">$101</td></tr>
+
+<tr style="border-top: 1px solid #E3E7F0"><td style="padding: 12px 0"><strong>PT-1022</strong> <span style="color: #5B6785">Civil engineer</span></td><td style="padding: 12px 0; color: #2B3A5E">Oct 14</td><td style="padding: 12px 0; color: #2B3A5E">4 of 5</td><td style="padding: 12px 0; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums">$53</td></tr>
+
+<tr style="border-top: 1px solid #E3E7F0"><td style="padding: 12px 0"><strong>PT-1019</strong> <span style="color: #5B6785">Sales lead</span></td><td style="padding: 12px 0; color: #2B3A5E">Oct 12</td><td style="padding: 12px 0; color: #2B3A5E">Awaiting</td><td style="padding: 12px 0; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums">$92</td></tr>
+
+</tbody>
+</table>
+</section>
+
+<!-- Strikes and tiers -->
+<aside style="flex: 1 1 340px; max-width: 460px; display: flex; flex-direction: column; gap: 20px">
+<section style="background: #FFFFFF; border: 1px solid #E3E7F0; border-radius: 20px; padding: 24px">
+<h2 style="margin: 0 0 12px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 18px">Strikes</h2>
+<div style="display: flex; gap: 8px" aria-label="0 of 3 strikes used" role="img"><span style="flex: 1; height: 10px; border-radius: 999px; background: #E3E7F0"></span><span style="flex: 1; height: 10px; border-radius: 999px; background: #E3E7F0"></span><span style="flex: 1; height: 10px; border-radius: 999px; background: #E3E7F0"></span></div>
+<p style="margin: 12px 0 0; font-size: 14px; line-height: 1.5; color: #2B3A5E">Late unclaims and missed deadlines each add a strike that expires after 30 days. Three pause your head start. A grade under 70 for 20 jobs ends access, always with a review first.</p>
+</section>
+<section style="background: #FFFFFF; border: 1px solid #E3E7F0; border-radius: 20px; padding: 24px">
+<h2 style="margin: 0 0 12px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 18px">Tiers</h2>
+<ol style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; font-size: 14px">
+<li style="display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; border-radius: 10px; background: #F6F7FB"><span><strong>Verified</strong> <span style="color: #5B6785">· first 10 jobs</span></span><span style="color: #5B6785">Open queue</span></li>
+<li style="display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; border-radius: 10px; background: #FFF4C2; border: 1px solid #F0D468"><span><strong>Gold</strong> <span style="color: #5B4300">· you are here</span></span><span style="color: #5B4300">Head start</span></li>
+<li style="display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; border-radius: 10px; background: #F6F7FB"><span><strong>Platinum</strong> <span style="color: #5B6785">· 96 and 25 jobs</span></span><span style="color: #5B6785">Longer head start</span></li>
+</ol>
+</section>
+</aside>
+</div>
+</main>
+</div>
+</div></section>
+<section class="board" id="s4"><h2 class="lbl">4 · Client: send to a human</h2><div class="frame">
+
+<div style="min-height: 980px; background: #F6F7FB; font-family: 'Inter', system-ui, sans-serif; color: #0A1530; display: flex; justify-content: center; padding: 40px 24px; box-sizing: border-box">
+<div style="width: 100%; max-width: 1080px; display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start">
+
+<section aria-labelledby="o-h" style="flex: 1 1 520px; background: #FFFFFF; border: 1px solid #E3E7F0; border-radius: 20px; padding: 32px">
+<p style="margin: 0 0 8px; font-size: 13px; font-weight: 600; color: #1D4ED8; text-transform: uppercase; letter-spacing: 0.06em">Passthrough Experts</p>
+<h1 id="o-h" style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 36px; letter-spacing: -0.03em; line-height: 1.05">Have a human finish it.</h1>
+<p style="margin: 12px 0 0; font-size: 16px; line-height: 1.55; color: #2B3A5E">Your AI fix is already done. A verified resume expert reviews it, sharpens the wording and checks every claim with you. You keep the AI version either way.</p>
+
+<fieldset style="border: 0; margin: 28px 0 0; padding: 0">
+<legend style="font-size: 14px; font-weight: 600; margin-bottom: 12px">How fast do you need it?</legend>
+<div style="display: flex; flex-direction: column; gap: 10px">
+<label class="tier"><input type="radio" name="speed" value="7"><span class="box"><span><strong style="font-size: 16px">7 days</strong><span style="display: block; font-size: 13px; color: #5B6785; margin-top: 2px">Best value. Most people choose this.</span></span><span style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 24px">$89</span></span></label>
+<label class="tier"><input type="radio" name="speed" value="48" checked><span class="box"><span><strong style="font-size: 16px">48 hours</strong><span style="display: block; font-size: 13px; color: #5B6785; margin-top: 2px">For an application closing this week.</span></span><span style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 24px">$129</span></span></label>
+<label class="tier"><input type="radio" name="speed" value="24"><span class="box"><span><strong style="font-size: 16px">24 hours</strong><span style="display: block; font-size: 13px; color: #5B6785; margin-top: 2px">Interview or deadline tomorrow.</span></span><span style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 24px">$169</span></span></label>
+</div>
+</fieldset>
+
+<label style="display: flex; align-items: flex-start; gap: 12px; margin-top: 20px; padding: 16px 18px; border: 1px solid #CBD3E6; border-radius: 14px; cursor: pointer">
+<input type="checkbox" checked style="width: 22px; height: 22px; margin: 1px 0 0; accent-color: #1D4ED8">
+<span style="flex: 1"><strong style="font-size: 15px">Add a cover letter</strong><span style="display: block; font-size: 13px; color: #5B6785; margin-top: 2px">Written for this role, in your voice.</span></span>
+<span style="font-weight: 600; font-size: 15px">+$25</span>
+</label>
+
+<label style="display: block; margin-top: 20px; font-size: 14px; font-weight: 600">Anything the expert should know? <span style="font-weight: 400; color: #5B6785">(optional)</span>
+<textarea rows="3" placeholder="For example: I led the checkout rebuild but it reads like a task list." style="display: block; width: 100%; box-sizing: border-box; margin-top: 8px; padding: 12px 14px; border: 1px solid #CBD3E6; border-radius: 12px; font: inherit; font-size: 15px; resize: vertical"></textarea>
+</label>
+</section>
+
+<aside aria-label="Order summary" style="flex: 1 1 340px; max-width: 420px; display: flex; flex-direction: column; gap: 16px">
+<section style="background: #0A1530; color: #FFFFFF; border-radius: 20px; padding: 28px">
+<h2 style="margin: 0 0 16px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 20px">Your order</h2>
+<dl style="margin: 0; display: grid; gap: 10px; font-size: 15px">
+<div style="display: flex; justify-content: space-between"><dt style="color: #D5DDF5">Human review, 48 hours</dt><dd style="margin: 0">$129</dd></div>
+<div style="display: flex; justify-content: space-between"><dt style="color: #D5DDF5">Cover letter</dt><dd style="margin: 0">$25</dd></div>
+<div style="display: flex; justify-content: space-between; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.2); font-size: 18px; font-weight: 700"><dt>Total</dt><dd style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-size: 26px">$154</dd></div>
+</dl>
+<button type="button" style="margin-top: 20px; width: 100%; min-height: 48px; border: 0; border-radius: 12px; background: #FFE27A; color: #0A1530; font-size: 16px; font-weight: 700; cursor: pointer">Send to a human</button>
+<p style="margin: 12px 0 0; font-size: 13px; line-height: 1.45; color: #B8C4E8">You are charged now. If an expert has not claimed your job within 4 hours, you are refunded in full.</p>
+</section>
+<section style="background: #FFFFFF; border: 1px solid #E3E7F0; border-radius: 20px; padding: 24px">
+<h2 style="margin: 0 0 12px; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 17px">What happens next</h2>
+<ol style="margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; font-size: 14px; line-height: 1.45; color: #2B3A5E">
+<li>A verified expert claims your job and starts the clock.</li>
+<li>They edit your resume, never seeing your contact details.</li>
+<li>It passes the ATS score and a truth check, then reaches you.</li>
+<li>You have 48 hours to accept it or ask for one revision.</li>
+</ol>
+<p style="margin: 14px 0 0; font-size: 13px; color: #5B6785; line-height: 1.45">A better resume improves your odds. It cannot promise an interview.</p>
+</section>
+</aside>
+</div>
+</div>
+</div></section>
+<section class="board" id="s5"><h2 class="lbl">5 · Queue on a phone</h2><div class="frame phone">
+
+<div style="min-height: 844px; background: #F6F7FB; font-family: 'Inter', system-ui, sans-serif; color: #0A1530">
+<header style="background: #0A1530; color: #FFFFFF; padding: 14px 16px; display: flex; align-items: center; justify-content: space-between">
+<span style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 800; font-size: 18px; letter-spacing: -0.03em">Passthrough <span style="font-weight: 500; color: #B8C4E8">Experts</span></span>
+<span style="display: flex; align-items: center; gap: 6px; font-size: 12px"><span style="width: 8px; height: 8px; border-radius: 50%; background: #4ADE80"></span>Available</span>
+</header>
+<div style="background: #FFF4C2; padding: 10px 16px; font-size: 13px; line-height: 1.4"><strong>Gold head start:</strong> 2 jobs open to everyone in <span style="font-variant-numeric: tabular-nums; font-weight: 700">12:41</span></div>
+<main style="padding: 16px; display: flex; flex-direction: column; gap: 12px">
+<h1 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 24px; letter-spacing: -0.02em">Open jobs</h1>
+
+<article style="background: #FFFFFF; border: 1px solid #E3E7F0; border-radius: 16px; padding: 16px">
+<div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px"><span style="background: #0A1530; color: #FFFFFF; border-radius: 999px; padding: 2px 9px; font-size: 11px; font-weight: 600">24 hour</span><span style="background: #E4F5EC; color: #065F46; border-radius: 999px; padding: 2px 9px; font-size: 11px; font-weight: 600">+ cover letter</span></div>
+<h2 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 600; font-size: 17px">Software engineer to fintech product role</h2>
+<p style="margin: 4px 0 0; font-size: 13px; color: #5B6785">AI draft ready · ATS 58 · about 45 min</p>
+<div style="display: flex; justify-content: space-between; align-items: flex-end; margin-top: 14px">
+<div><div style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 28px; line-height: 1">$101</div><div style="font-size: 12px; color: #92400E; margin-top: 4px">Due in 23h 58m</div></div>
+<button type="button" style="min-height: 44px; padding: 0 22px; border: 0; border-radius: 10px; background: #1D4ED8; color: #FFFFFF; font-size: 15px; font-weight: 600">Claim</button>
+</div>
+</article>
+
+<article style="background: #FFFFFF; border: 1px solid #E3E7F0; border-radius: 16px; padding: 16px">
+<div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px"><span style="background: #DCE6FF; color: #1E3A8A; border-radius: 999px; padding: 2px 9px; font-size: 11px; font-weight: 600">48 hour</span></div>
+<h2 style="margin: 0; font-family: 'Bricolage Grotesque', sans-serif; font-weight: 600; font-size: 17px">Registered nurse to clinical educator</h2>
+<p style="margin: 4px 0 0; font-size: 13px; color: #5B6785">AI draft ready · ATS 63 · about 40 min</p>
+<div style="display: flex; justify-content: space-between; align-items: flex-end; margin-top: 14px">
+<div><div style="font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 28px; line-height: 1">$92</div><div style="font-size: 12px; color: #92400E; margin-top: 4px">Due in 47h 22m</div></div>
+<button type="button" style="min-height: 44px; padding: 0 22px; border: 0; border-radius: 10px; background: #1D4ED8; color: #FFFFFF; font-size: 15px; font-weight: 600">Claim</button>
+</div>
+</article>
+</main>
+<nav aria-label="Experts" style="display: flex; justify-content: space-around; background: #FFFFFF; border-top: 1px solid #E3E7F0; padding: 6px 0; position: sticky; bottom: 0; font-size: 12px">
+<a href="#s1" aria-current="page" style="min-width: 80px; min-height: 48px; display: flex; align-items: center; justify-content: center; color: #1D4ED8; font-weight: 600; text-decoration: none">Queue</a>
+<a href="#s2" style="min-width: 80px; min-height: 48px; display: flex; align-items: center; justify-content: center; color: #2B3A5E; text-decoration: none">My jobs</a>
+<a href="#s3" style="min-width: 80px; min-height: 48px; display: flex; align-items: center; justify-content: center; color: #2B3A5E; text-decoration: none">Earnings</a>
+</nav>
+</div>
+</div></section>
+</body></html>

@@ -1,6 +1,6 @@
 import axios from 'axios'
 import { resolveApiBase } from './apiUrl'
-import { normalizeBlobError, shouldRetryRequest } from './errors'
+import { normalizeBlobError, shouldRetryRequest, getRetryAfterSeconds } from './errors'
 import {
   TOKEN_KEY, USER_KEY, SESSION_ENDED_EVENT,
   classifyAuthFailure, isProtectedPath, failureScope, tokenSessionId,
@@ -44,7 +44,12 @@ const LONG_RUNNING_GET = /^\/(?:scan\/[^/?#]+\/(?:download-draft-pdf|cover-lette
 
 // Routes that sit behind the Worker's step-up gate (middleware/adminOnly.js `stepUp`): the admin console, the
 // admin side of partners (payout runs, links, ledger adjustments) and payment refunds / resolutions.
-const STEP_UP_URL = /^\/(?:admin|partners|payments)(?:[/?#]|$)/
+// Round 25: + the admin side of employer leads. Those routes live under /employer-leads (not /admin) and are gated by the same step-up
+// (export, import, bulk, merge, notify, manual, suppressions, PATCH/DELETE /:id). They were missing here, so every call went out WITHOUT the
+// elevation, was refused, and was replayed - two requests each time, and every batch of a lead import uploaded twice. Positive list on purpose:
+// the public routes under the same prefix (create, confirm, field, rejoin, preferences, remove, unsubscribe) must never carry the elevation.
+const EMPLOYER_LEADS_GATED = 'employer-leads\\/(?:export\\.csv|import|bulk|manual|notify-candidates|merge|suppressions|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'
+const STEP_UP_URL = new RegExp(`^\\/(?:admin|partners|payments|${EMPLOYER_LEADS_GATED})(?:[/?#]|$)`, 'i')
 // Round 21: the prefixes above also hold routes that are NOT admin-gated — the partner's own token-authenticated portal and the
 // signed-in user's own payments — and the in-memory elevation token used to ride on those too. A route missing from this list
 // that turns out to be gated still works: the refusal is replayed WITH the elevation (see __stepUpTried).
@@ -315,7 +320,8 @@ api.interceptors.response.use(
     }
 
     // One automatic retry for idempotent GETs that failed transiently.
-    const retryAfter = Number(err.response?.headers?.['retry-after'])
+    // getRetryAfterSeconds understands both forms of the header (seconds and an HTTP date); Number() read a date as NaN.
+    const retryAfter = getRetryAfterSeconds(err) ?? NaN
     const decision = shouldRetryRequest({
       method: config.method, status, hasResponse: !!err.response,
       retryAfterSeconds: retryAfter, alreadyRetried: !!config.__retried || !!config.__noRetry, cancelled: false,

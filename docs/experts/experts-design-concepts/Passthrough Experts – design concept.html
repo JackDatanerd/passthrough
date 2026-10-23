@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Passthrough Experts – design concept</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;1,6..72,400&family=Hanken+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#EDF0EE; --sheet:#FBFCFB; --ink:#1C2533; --ink2:#56627A; --line:#D3D9DD;
+  --ok:#0E7C66; --ok-bg:#DDF1EB; --mark:#C8362E; --mark-bg:#FBE4E1; --gold:#B7791F; --gold-bg:#F7EBD3; --blue:#2447D6;
+  --serif:"Newsreader",Georgia,"Times New Roman",serif; --sans:"Hanken Grotesk",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  box-sizing:border-box; padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){--paper:#10161F;--sheet:#192230;--ink:#E7ECF3;--ink2:#96A3B8;--line:#2B3748;--ok:#3FC7A6;--ok-bg:#12372F;--mark:#F0746B;--mark-bg:#3C1C1C;--gold:#E3B05A;--gold-bg:#3A2D14;--blue:#7F9BFF}
+}
+:root[data-theme="dark"]{--paper:#10161F;--sheet:#192230;--ink:#E7ECF3;--ink2:#96A3B8;--line:#2B3748;--ok:#3FC7A6;--ok-bg:#12372F;--mark:#F0746B;--mark-bg:#3C1C1C;--gold:#E3B05A;--gold-bg:#3A2D14;--blue:#7F9BFF}
+*,*::before,*::after{box-sizing:inherit}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.5 var(--sans);-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;cursor:pointer}
+:focus-visible{outline:2px solid var(--blue);outline-offset:2px;border-radius:4px}
+.app{display:grid;grid-template-columns:232px 1fr;min-height:100vh}
+.rail{border-right:1px solid var(--line);padding:28px 20px;display:flex;flex-direction:column;gap:28px;position:sticky;top:0;height:100vh}
+.brand{font:600 22px/1 var(--serif);letter-spacing:-.01em}
+.brand small{display:block;font:500 13px var(--sans);color:var(--ink2);margin-top:6px;letter-spacing:0}
+nav{display:flex;flex-direction:column;gap:4px}
+nav button{background:none;border:0;text-align:left;padding:10px 12px;border-radius:8px;color:var(--ink2);font-weight:500;display:flex;justify-content:space-between;align-items:center}
+nav button[aria-selected="true"]{background:var(--sheet);color:var(--ink);font-weight:700;box-shadow:inset 3px 0 0 var(--ok)}
+nav .dot{background:var(--mark);color:#fff;border-radius:99px;font-size:12px;padding:0 7px;line-height:18px}
+.me{margin-top:auto;font-size:14px;color:var(--ink2)}
+.me b{display:block;color:var(--ink);font-size:15px}
+main{padding:36px clamp(18px,4vw,56px) 72px;max-width:1120px;width:100%}
+h1{font:600 clamp(28px,4vw,40px)/1.1 var(--serif);letter-spacing:-.015em;margin:0 0 6px}
+h2{font:600 22px/1.2 var(--serif);margin:36px 0 12px}
+.sub{color:var(--ink2);margin:0 0 28px;max-width:62ch}
+.view{display:none}.view.on{display:block}
+.sheet{background:var(--sheet);border:1px solid var(--line);border-radius:14px}
+.chip{display:inline-block;font-size:13px;font-weight:600;padding:2px 10px;border-radius:99px;background:var(--paper);border:1px solid var(--line);color:var(--ink2)}
+.chip.ok{background:var(--ok-bg);color:var(--ok);border-color:transparent}
+.chip.gold{background:var(--gold-bg);color:var(--gold);border-color:transparent}
+.btn{border:0;border-radius:10px;padding:11px 18px;font-weight:700;background:var(--ink);color:var(--sheet)}
+.btn.ok{background:var(--ok);color:#fff}
+.btn.ghost{background:none;border:1px solid var(--line);color:var(--ink)}
+.btn[disabled]{opacity:.4;cursor:not-allowed}
+/* the sealed brief: the one memorable thing */
+.offer{display:grid;grid-template-columns:1fr auto;gap:28px;padding:28px;position:relative;overflow:hidden}
+.offer::after{content:"";position:absolute;right:-60px;top:-60px;width:220px;height:220px;border-radius:50%;border:1px dashed var(--line)}
+.seal{width:132px;height:132px;position:relative;align-self:center}
+.seal svg{transform:rotate(-90deg)}
+.seal .n{position:absolute;inset:0;display:grid;place-content:center;text-align:center;font:600 26px/1 var(--serif);font-variant-numeric:tabular-nums}
+.seal .n small{font:500 12px var(--sans);color:var(--ink2);margin-top:4px}
+.brief{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 18px}
+.redact{background:var(--ink);color:transparent;border-radius:3px;user-select:none;padding:0 6px}
+.pay{font:600 40px/1 var(--serif);font-variant-numeric:tabular-nums}
+.pay small{font:500 14px var(--sans);color:var(--ink2)}
+.list{display:grid;gap:10px}
+.row{display:grid;grid-template-columns:1fr auto auto;gap:18px;align-items:center;padding:16px 20px}
+.row b{display:block}
+.row span.m{color:var(--ink2);font-size:14px}
+.bonus{color:var(--gold);font-weight:700;font-size:13px}
+/* workspace */
+.ws{display:grid;grid-template-columns:230px 1fr 250px;gap:18px;align-items:start}
+.panel{padding:18px}
+.panel h3{margin:0 0 10px;font:700 15px var(--sans)}
+.check{display:flex;gap:10px;align-items:flex-start;padding:7px 0;font-size:14px}
+.check input{margin-top:3px;accent-color:var(--ok);width:16px;height:16px}
+.doc{padding:34px 38px;font:400 16px/1.6 var(--serif);min-height:420px}
+.doc h4{font:700 12.5px var(--sans);margin:22px 0 6px;color:var(--ink2);letter-spacing:.02em}
+.doc ul{margin:0;padding-left:20px}
+.doc li{margin:7px 0}
+.lock{display:inline-flex;gap:8px;align-items:center;background:var(--paper);border:1px dashed var(--ink2);border-radius:8px;padding:6px 12px;font:600 13px var(--sans);color:var(--ink2)}
+del{color:var(--mark);background:var(--mark-bg);text-decoration-thickness:1.5px}
+ins{color:var(--ok);background:var(--ok-bg);text-decoration:underline;text-underline-offset:3px}
+.score{font:600 44px/1 var(--serif);font-variant-numeric:tabular-nums}
+.bar{height:8px;border-radius:99px;background:var(--paper);overflow:hidden;margin:8px 0}
+.bar i{display:block;height:100%;background:var(--ok);border-radius:99px;transition:width .5s}
+.fine{font-size:13px;color:var(--ink2)}
+/* standing */
+.grid2{display:grid;grid-template-columns:260px 1fr;gap:18px}
+.ring{width:170px;height:170px;margin:6px auto 10px;position:relative}
+.ring svg{transform:rotate(-90deg)}
+.ring .n{position:absolute;inset:0;display:grid;place-content:center;text-align:center;font:600 48px/1 var(--serif)}
+.ring .n small{font:500 13px var(--sans);color:var(--ink2);margin-top:6px}
+.metric{display:grid;grid-template-columns:130px 1fr 54px;gap:12px;align-items:center;font-size:14px;margin:10px 0}
+.metric b{text-align:right;font-variant-numeric:tabular-nums}
+.strip{display:flex;gap:5px;flex-wrap:wrap;margin:8px 0}
+.strip i{width:18px;height:26px;border-radius:5px;background:var(--ok)}
+.strip i.late{background:var(--gold)}.strip i.bad{background:var(--mark)}
+.rules{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.rules div{padding:16px;border-radius:12px;border:1px solid var(--line);font-size:14px}
+.rules b{display:block;font:600 17px var(--serif);margin-bottom:4px}
+/* customer side */
+.cust{max-width:520px;padding:26px}
+.seg{display:grid;grid-template-columns:repeat(3,1fr);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin:14px 0}
+.seg button{background:none;border:0;padding:12px 6px;text-align:center;border-right:1px solid var(--line)}
+.seg button:last-child{border-right:0}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--sheet)}
+.seg b{display:block;font:600 20px var(--serif)}
+.seg span{font-size:12.5px;opacity:.8}
+.total{display:flex;justify-content:space-between;align-items:baseline;border-top:1px solid var(--line);margin-top:16px;padding-top:14px}
+.total b{font:600 36px var(--serif);font-variant-numeric:tabular-nums}
+.toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));transform:translate(-50%,20px);background:var(--ink);color:var(--sheet);padding:11px 18px;border-radius:10px;font-weight:600;opacity:0;pointer-events:none;transition:.25s;z-index:5}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+.mtabs{display:none}
+@media (max-width:900px){
+  .app{grid-template-columns:1fr}
+  .rail{display:none}
+  .mtabs{display:grid;grid-template-columns:repeat(4,1fr);position:sticky;top:0;background:var(--paper);border-bottom:1px solid var(--line);z-index:3;padding-top:env(safe-area-inset-top,0px)}
+  .mtabs button{background:none;border:0;padding:12px 2px;font-size:14px;font-weight:600;color:var(--ink2)}
+  .mtabs button[aria-selected="true"]{color:var(--ink);box-shadow:inset 0 -3px 0 var(--ok)}
+  .offer,.ws,.grid2,.rules{grid-template-columns:1fr}
+  .row{grid-template-columns:1fr auto}.row .btn{grid-column:1/-1}
+  .doc{padding:22px}
+  .metric{grid-template-columns:100px 1fr 48px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<div class="mtabs" role="tablist" aria-label="Sections">
+  <button role="tab" data-go="desk" aria-selected="true">Desk</button>
+  <button role="tab" data-go="work" aria-selected="false">Workspace</button>
+  <button role="tab" data-go="standing" aria-selected="false">Standing</button>
+  <button role="tab" data-go="customer" aria-selected="false">Customer</button>
+</div>
+<div class="app">
+  <aside class="rail">
+    <div class="brand">Passthrough<small>Experts · design concept</small></div>
+    <nav role="tablist" aria-label="Sections">
+      <button role="tab" data-go="desk" aria-selected="true">Desk <span class="dot" id="openCount">3</span></button>
+      <button role="tab" data-go="work" aria-selected="false">Workspace</button>
+      <button role="tab" data-go="standing" aria-selected="false">Standing</button>
+      <button role="tab" data-go="customer" aria-selected="false">What the customer sees</button>
+    </nav>
+    <div class="me"><b>Amani W.</b>Senior grade · 91 · first look on new jobs</div>
+  </aside>
+
+  <main>
+    <!-- DESK -->
+    <section class="view on" id="v-desk" aria-label="Desk">
+      <h1>One job is waiting for you</h1>
+      <p class="sub">New work is offered to the best-matched experts first. If nobody takes it, it opens to everyone.</p>
+      <article class="sheet offer" id="offer">
+        <div>
+          <span class="chip ok">Offered to you first</span>
+          <h2 style="margin:12px 0 0">Product manager, SaaS</h2>
+          <div class="brief">
+            <span class="chip">9 years experience</span><span class="chip">2 pages</span><span class="chip">ATS score 58</span>
+            <span class="chip gold">48-hour turnaround</span><span class="chip">Cover letter included</span>
+          </div>
+          <p class="fine" style="margin:0 0 18px">The name, email and phone are hidden until you take the job: <span class="redact">Jordan Mwangi</span> <span class="redact">+1 555 0100</span>. You edit with them locked and we restore them on delivery.</p>
+          <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+            <button class="btn ok" id="claimOffer">Take this job</button>
+            <span class="pay">$102 <small>you earn</small></span>
+          </div>
+        </div>
+        <div class="seal" aria-label="Time left to take it first">
+          <svg viewBox="0 0 132 132" width="132" height="132" aria-hidden="true"><circle cx="66" cy="66" r="58" fill="none" stroke="var(--line)" stroke-width="8"/><circle id="sealArc" cx="66" cy="66" r="58" fill="none" stroke="var(--ok)" stroke-width="8" stroke-linecap="round" stroke-dasharray="364.4" stroke-dashoffset="0"/></svg>
+          <div class="n"><span id="sealTime">10:00</span><small>before it opens up</small></div>
+        </div>
+      </article>
+
+      <h2>Open to everyone</h2>
+      <div class="list sheet" style="padding:6px 0">
+        <div class="row" style="border-bottom:1px solid var(--line)"><div><b>Registered nurse, hospital</b><span class="m">7-day · ATS score 64 · 2 pages</span></div><span class="pay" style="font-size:26px">$55</span><button class="btn ghost take" data-t="Registered nurse">Take job</button></div>
+        <div class="row" style="border-bottom:1px solid var(--line)"><div><b>Data analyst, fintech</b><span class="m">24-hour · ATS score 49 · cover letter</span><div class="bonus">+15% added: nobody has taken it in 15 minutes</div></div><span class="pay" style="font-size:26px">$115</span><button class="btn ghost take" data-t="Data analyst">Take job</button></div>
+        <div class="row"><div><b>Warehouse supervisor, logistics</b><span class="m">48-hour · ATS score 71 · 1 page</span></div><span class="pay" style="font-size:26px">$80</span><button class="btn ghost take" data-t="Warehouse supervisor">Take job</button></div>
+      </div>
+      <p class="fine" style="margin-top:14px">You can give a job back within 60 minutes of taking it without a mark. After that, giving it back costs grade points.</p>
+    </section>
+
+    <!-- WORKSPACE -->
+    <section class="view" id="v-work" aria-label="Workspace">
+      <h1 id="wTitle">Product manager, SaaS</h1>
+      <p class="sub">Due in <b id="due">47:58:12</b>. You can give it back without a mark for <b id="grace">59:58</b>.</p>
+      <div class="ws">
+        <div class="sheet panel">
+          <h3>Before you deliver</h3>
+          <label class="check"><input type="checkbox" class="ck"> Summary leads with the strongest result</label>
+          <label class="check"><input type="checkbox" class="ck"> Every bullet starts with an action and ends with a number</label>
+          <label class="check"><input type="checkbox" class="ck"> Keywords from the job post are in the text, not a skills dump</label>
+          <label class="check"><input type="checkbox" class="ck"> Cover letter leads with strengths and names no gaps</label>
+          <label class="check"><input type="checkbox" class="ck"> Nothing invented: every claim is in the original</label>
+          <p class="fine" style="margin-top:14px">The AI draft is your starting point. Your edits are shown as changes so the customer can see your work.</p>
+        </div>
+        <div class="sheet doc" aria-label="Resume, tracked changes">
+          <span class="lock" title="Restored on delivery">🔒 Name, email and phone locked</span>
+          <h4>Summary</h4>
+          <p><del>Results-driven product professional with a proven track record of delivering solutions.</del> <ins>Product manager who grew a B2B analytics product from 0 to $4.2M ARR in 22 months.</ins></p>
+          <h4>Experience</h4>
+          <ul>
+            <li><del>Responsible for managing the product roadmap and working with stakeholders.</del> <ins>Rebuilt the roadmap around three customer segments, cutting churn from 9% to 5.5% in two quarters.</ins></li>
+            <li><ins>Led 14 engineers and 2 designers through 11 releases with zero missed launch dates.</ins></li>
+            <li>Ran weekly discovery interviews with 40+ customers, which led to the usage-based pricing tier.</li>
+          </ul>
+        </div>
+        <div class="sheet panel">
+          <h3>Scan after your edits</h3>
+          <div class="score"><span id="sc">58</span><span class="fine"> → </span><span id="sc2">84</span></div>
+          <div class="bar"><i id="scBar" style="width:84%"></i></div>
+          <p class="fine">Goes up as the checklist is done. We re-scan what you deliver, and the change counts toward your grade.</p>
+          <button class="btn ok" id="deliver" style="width:100%;margin-top:12px" disabled>Deliver to customer</button>
+          <button class="btn ghost" id="giveBack" style="width:100%;margin-top:8px">Give job back</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- STANDING -->
+    <section class="view" id="v-standing" aria-label="Standing">
+      <h1>Your standing</h1>
+      <p class="sub">Your grade is built from your last 20 jobs. A bad week doesn’t end your account, a bad pattern does.</p>
+      <div class="grid2">
+        <div class="sheet panel" style="text-align:center">
+          <div class="ring"><svg viewBox="0 0 170 170" width="170" height="170" aria-hidden="true"><circle cx="85" cy="85" r="74" fill="none" stroke="var(--line)" stroke-width="10"/><circle cx="85" cy="85" r="74" fill="none" stroke="var(--ok)" stroke-width="10" stroke-linecap="round" stroke-dasharray="465" stroke-dashoffset="42"/></svg><div class="n">91<small>Senior grade</small></div></div>
+          <span class="chip ok">First look on new jobs</span>
+          <p class="fine" style="margin:12px 0 0">9 points from the next grade.</p>
+        </div>
+        <div class="sheet panel">
+          <h3>What your grade is made of</h3>
+          <div class="metric"><span>On-time delivery</span><div class="bar"><i style="width:96%"></i></div><b>96%</b></div>
+          <div class="metric"><span>Customer rating</span><div class="bar"><i style="width:94%"></i></div><b>4.7</b></div>
+          <div class="metric"><span>ATS score lift</span><div class="bar"><i style="width:84%"></i></div><b>+21</b></div>
+          <div class="metric"><span>Revision requests</span><div class="bar"><i style="width:92%;background:var(--gold)"></i></div><b>8%</b></div>
+          <h3 style="margin-top:20px">Last 20 jobs</h3>
+          <div class="strip" aria-label="Green on time, amber late, red gave back late"><i></i><i></i><i></i><i class="late"></i><i></i><i></i><i></i><i></i><i></i><i class="bad"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="late"></i><i></i><i></i></div>
+          <p class="fine">Green: on time. Amber: late. Red: gave back after the first 60 minutes.</p>
+        </div>
+      </div>
+      <h2>How grades work</h2>
+      <div class="rules">
+        <div><b>New experts</b>The first 5 jobs are reviewed before they reach the customer. A share of new jobs is always set aside for you.</div>
+        <div><b>Senior and above</b>New jobs reach you 10 minutes before everyone else, and you can pick the turnaround you want to work.</div>
+        <div><b>Below 70</b>Over your last 20 jobs, you get a review and a chance to fix it. Staying under it ends the account.</div>
+      </div>
+    </section>
+
+    <!-- CUSTOMER -->
+    <section class="view" id="v-customer" aria-label="Customer side">
+      <h1>What the customer sees</h1>
+      <p class="sub">The “Human rewrite” button on the offer card opens this. It is the only place customers meet the expert side.</p>
+      <div class="sheet cust">
+        <b style="font:600 22px var(--serif)">Have a person finish it</b>
+        <p class="fine" style="margin:6px 0 0">A reviewed expert edits your fixed resume, and we re-scan it before it reaches you.</p>
+        <div class="seg" role="group" aria-label="Turnaround">
+          <button aria-pressed="false" data-p="89"><b>$89</b><span>7 days</span></button>
+          <button aria-pressed="true" data-p="129"><b>$129</b><span>48 hours</span></button>
+          <button aria-pressed="false" data-p="159"><b>$159</b><span>24 hours</span></button>
+        </div>
+        <label class="check" style="font-size:15px"><input type="checkbox" id="cl"> Add a cover letter <span class="fine">+$35</span></label>
+        <ul class="fine" style="margin:10px 0 0;padding-left:18px"><li>One round of changes is included.</li><li>Late? You get your money back as credit, automatically.</li></ul>
+        <div class="total"><span class="fine">Total today</span><b id="tot">$129</b></div>
+        <button class="btn ok" style="width:100%;margin-top:14px" id="buy">Send to an expert</button>
+      </div>
+    </section>
+  </main>
+</div>
+<div class="toast" id="toast" role="status"></div>
+<script>
+(function(){
+  var views=['desk','work','standing','customer'];
+  function go(id){
+    if(views.indexOf(id)<0) id='desk';
+    views.forEach(function(v){document.getElementById('v-'+v).classList.toggle('on',v===id)});
+    document.querySelectorAll('[data-go]').forEach(function(b){b.setAttribute('aria-selected',String(b.dataset.go===id))});
+    try{history.replaceState(null,'','#'+id)}catch(e){}
+    window.scrollTo(0,0);
+  }
+  document.querySelectorAll('[data-go]').forEach(function(b){b.addEventListener('click',function(){go(b.dataset.go)})});
+  var toastEl=document.getElementById('toast'),tt;
+  function toast(m){toastEl.textContent=m;toastEl.classList.add('on');clearTimeout(tt);tt=setTimeout(function(){toastEl.classList.remove('on')},2400)}
+
+  // offer window ring
+  var left=600,arc=document.getElementById('sealArc'),st=document.getElementById('sealTime');
+  setInterval(function(){
+    if(left>0)left--;
+    var m=Math.floor(left/60),s=left%60;st.textContent=m+':'+(s<10?'0':'')+s;
+    arc.setAttribute('stroke-dashoffset',String(364.4*(1-left/600)));
+  },1000);
+
+  // claim
+  function claim(title){
+    document.getElementById('wTitle').textContent=title;
+    document.getElementById('openCount').textContent='2';
+    go('work');toast('Job taken. The clock for giving it back starts now.');
+  }
+  document.getElementById('claimOffer').addEventListener('click',function(){claim('Product manager, SaaS')});
+  document.querySelectorAll('.take').forEach(function(b){b.addEventListener('click',function(){claim(b.dataset.t)})});
+  document.getElementById('giveBack').addEventListener('click',function(){go('desk');toast('Job given back with no mark on your grade.')});
+
+  // timers
+  var due=47*3600+58*60+12,grace=59*60+58;
+  function f(n,h){var H=Math.floor(n/3600),M=Math.floor(n%3600/60),S=n%60,p=function(x){return(x<10?'0':'')+x};return(h?p(H)+':':'')+p(M)+':'+p(S)}
+  setInterval(function(){due--;if(grace>0)grace--;document.getElementById('due').textContent=f(due,true);document.getElementById('grace').textContent=f(grace,false)},1000);
+
+  // checklist drives the live score and unlocks delivery
+  var cks=[].slice.call(document.querySelectorAll('.ck'));
+  function upd(){
+    var n=cks.filter(function(c){return c.checked}).length,sc=58+Math.round(26*n/cks.length);
+    document.getElementById('sc2').textContent=sc;document.getElementById('scBar').style.width=sc+'%';
+    document.getElementById('deliver').disabled=n<cks.length;
+  }
+  cks.forEach(function(c){c.addEventListener('change',upd)});upd();
+  document.getElementById('deliver').addEventListener('click',function(){toast('Delivered. We re-scan it, then it goes to the customer.')});
+
+  // customer price
+  var base=129,seg=document.querySelectorAll('.seg button'),cl=document.getElementById('cl');
+  function tot(){document.getElementById('tot').textContent='$'+(base+(cl.checked?35:0))}
+  seg.forEach(function(b){b.addEventListener('click',function(){seg.forEach(function(x){x.setAttribute('aria-pressed','false')});b.setAttribute('aria-pressed','true');base=+b.dataset.p;tot()})});
+  cl.addEventListener('change',tot);
+  document.getElementById('buy').addEventListener('click',function(){toast('This is a concept: nothing was sent.')});
+
+  go((location.hash||'').slice(1));
+})();
+</script>
+</body>
+</html>

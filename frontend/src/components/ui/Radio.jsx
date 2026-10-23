@@ -8,7 +8,7 @@ import { cn } from '../../lib/utils'
 const Radio = forwardRef(function Radio({ label, description, size = 'md', className, wrapperClassName, id, ...props }, ref) {
   const autoId = useId()
   const inputId = id || autoId
-  const disabled = !!props.disabled
+  const disabled = !!props.disabled || props['aria-disabled'] === true || props['aria-disabled'] === 'true'
   const input = (
     <input
       ref={ref}

@@ -19,8 +19,9 @@ export default function RadioGroup({
         <Radio
           key={String(o.value)} size={size} label={o.label} description={o.description}
           name={groupName} value={String(o.value)} checked={value === o.value}
-          disabled={disabled || !!o.disabled}
-          onChange={() => onChange?.(o.value)}
+          // A group held while a save runs keeps focus (aria-disabled, change swallowed) instead of the native attribute, which drops a keyboard user onto <body>.
+          disabled={!!o.disabled} aria-disabled={disabled && !o.disabled ? true : undefined}
+          onChange={() => { if (!disabled) onChange?.(o.value) }}
         />
       ))}
     </Fieldset>

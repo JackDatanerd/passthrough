@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Passthrough Experts: design concept</title>
+<style>
+:root{--bg:#EDF0F5;--panel:#fff;--ink:#18213A;--mute:#5B6577;--line:#D9DEE8;--act:#2D4BE0;--on-act:#fff;--pass:#157A4F;--warn:#A85D00;--late:#C0352B;--tint:#F5F7FB;color-scheme:light}
+@media(prefers-color-scheme:dark){:root{--bg:#0E1320;--panel:#161D2E;--ink:#E8ECF6;--mute:#9AA5BC;--line:#26304A;--act:#8EA2FF;--on-act:#0E1320;--pass:#4CC38A;--warn:#F0A950;--late:#FF7B6E;--tint:#1B2438;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.serif{font-family:Charter,"Iowan Old Style","Palatino Linotype",Georgia,serif}
+button{font:inherit;color:inherit;cursor:pointer}
+:focus-visible{outline:2px solid var(--act);outline-offset:2px}
+.top{display:flex;align-items:center;justify-content:space-between;padding:14px 28px;background:var(--panel);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:10px;font-weight:650;letter-spacing:-.01em}
+.mark{width:26px;height:26px;border:2px solid var(--ink);border-radius:6px;position:relative}
+.mark::after{content:"";position:absolute;left:-2px;right:-2px;top:9px;height:4px;background:var(--panel);border-left:2px solid var(--act);border-right:2px solid var(--act)}
+.tools{display:flex;align-items:center;gap:14px}
+.avail{border:1px solid var(--line);background:var(--tint);border-radius:999px;padding:6px 14px;display:flex;align-items:center;gap:8px}
+.avail i{width:9px;height:9px;border-radius:50%;background:var(--mute)}
+.avail[aria-pressed=true] i{background:var(--pass);box-shadow:0 0 0 4px color-mix(in srgb,var(--pass) 22%,transparent)}
+.me{width:34px;height:34px;border-radius:50%;background:var(--ink);color:var(--panel);display:grid;place-items:center;font-weight:600;font-size:13px}
+.shell{display:grid;grid-template-columns:280px minmax(0,1fr);gap:24px;max-width:1160px;margin:0 auto;padding:26px 28px 60px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px}
+.rail{display:flex;flex-direction:column;gap:16px;align-self:start}
+.grade{padding:20px}
+.grade .big{font-size:56px;line-height:1;letter-spacing:-.03em}
+.grade .big small{font-size:18px;color:var(--mute);letter-spacing:0}
+.tier{margin:14px 0 6px;display:flex;justify-content:space-between;font-size:13px;color:var(--mute)}
+.tier b{color:var(--ink)}
+.bar{height:8px;border-radius:99px;background:var(--tint);border:1px solid var(--line);overflow:hidden}
+.bar span{display:block;height:100%;background:var(--act);border-radius:99px}
+.stats{padding:6px 20px}
+.stats div{display:flex;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line)}
+.stats div:last-child{border:0}
+.stats dt{color:var(--mute)}
+.stats dd{margin:0;font-weight:600}
+.pay{padding:18px 20px}
+.pay .n{font-size:30px;letter-spacing:-.02em}
+.pay p{margin:4px 0 0;color:var(--mute);font-size:13px}
+.work h1{margin:0;font-size:28px;letter-spacing:-.02em;font-weight:600}
+.lede{margin:4px 0 18px;color:var(--mute)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:3px;margin-bottom:16px}
+.seg button{border:0;background:none;padding:6px 14px;border-radius:8px;color:var(--mute)}
+.seg button[aria-pressed=true]{background:var(--ink);color:var(--panel)}
+ul{list-style:none;margin:0;padding:0;display:grid;gap:12px}
+.job{display:grid;grid-template-columns:1fr auto;gap:8px 20px;padding:18px 20px}
+.job h3{margin:0;font-size:19px;font-weight:600;letter-spacing:-.01em}
+.meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:13px;color:var(--mute)}
+.chip{border:1px solid var(--line);background:var(--tint);border-radius:6px;padding:1px 8px}
+.chip.t24{border-color:var(--late);color:var(--late)}
+.chip.t48{border-color:var(--warn);color:var(--warn)}
+.chip.cl{border-color:var(--act);color:var(--act)}
+.lines{display:grid;gap:6px;margin-top:14px;max-width:420px}
+.lines i{display:block;height:7px;border-radius:4px;background:var(--line)}
+.lines i.mk{background:linear-gradient(90deg,var(--line) 62%,color-mix(in srgb,var(--late) 55%,transparent) 62%,color-mix(in srgb,var(--late) 55%,transparent) 78%,var(--line) 78%)}
+.side{text-align:right;display:flex;flex-direction:column;align-items:flex-end;justify-content:space-between;gap:10px}
+.side .amt{font-size:30px;letter-spacing:-.02em;line-height:1}
+.side .left{font-size:13px;color:var(--mute)}
+.btn{border:1px solid var(--ink);border-radius:9px;padding:8px 18px;background:var(--panel);font-weight:600}
+.btn.go{background:var(--act);border-color:var(--act);color:var(--on-act)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.quiet{border-color:var(--line);font-weight:500;color:var(--mute)}
+.note{margin-top:22px;font-size:13px;color:var(--mute);max-width:60ch}
+.empty{padding:34px 20px;text-align:center;color:var(--mute)}
+#active{padding:22px;margin-bottom:22px;border-left:5px solid var(--act)}
+#active .row{display:grid;grid-template-columns:1fr 150px;gap:22px}
+#active h2{margin:0;font-size:22px;font-weight:600;letter-spacing:-.01em}
+.ring{position:relative;width:150px;height:150px}
+.ring svg{transform:rotate(-90deg)}
+.ring circle{fill:none;stroke-width:9}
+.ring .bg{stroke:var(--line)}
+.ring .fg{stroke:var(--act);stroke-linecap:round;transition:stroke-dashoffset 1s linear}
+.ring.late .fg{stroke:var(--late)}
+.ring .t{position:absolute;inset:0;display:grid;place-content:center;text-align:center}
+.ring .t b{font-size:30px;letter-spacing:-.02em}
+.ring .t span{font-size:12px;color:var(--mute);max-width:90px}
+.gate{margin:20px 0 6px}
+.gate .track{position:relative;height:14px;border-radius:99px;background:var(--tint);border:1px solid var(--line)}
+.gate .fill{height:100%;width:58%;border-radius:99px;background:var(--warn);transition:width .9s ease,background .3s}
+.gate .fill.ok{background:var(--pass)}
+.gate .th{position:absolute;left:80%;top:-6px;bottom:-6px;border-left:2px dashed var(--ink)}
+.gate .lab{display:flex;justify-content:space-between;font-size:13px;margin-top:8px;color:var(--mute)}
+.gate .lab b{color:var(--ink)}
+.acts{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:var(--panel);padding:10px 18px;border-radius:10px;opacity:0;pointer-events:none;transition:opacity .25s}
+.toast.on{opacity:1}
+@media(max-width:860px){.shell{grid-template-columns:1fr;padding:18px 16px 50px}.top{padding:12px 16px}.job{grid-template-columns:1fr}.side{flex-direction:row;align-items:center;text-align:left}#active .row{grid-template-columns:1fr}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="mark" aria-hidden="true"></span>Passthrough Experts</div>
+  <div class="tools">
+    <button class="avail" id="avail" aria-pressed="true"><i></i><span>Taking jobs</span></button>
+    <span class="me" title="Signed in expert">AK</span>
+  </div>
+</header>
+<div class="shell">
+  <aside class="rail" aria-label="Your standing">
+    <section class="card grade">
+      <div class="big serif">4.8<small> / 5</small></div>
+      <div class="tier"><span>Tier <b>Senior</b></span><span>Elite at 4.9 and 40 jobs</span></div>
+      <div class="bar" role="img" aria-label="31 of 40 jobs toward Elite"><span style="width:77%"></span></div>
+      <p style="margin:10px 0 0;font-size:13px;color:var(--mute)">31 of 40 jobs. Elite experts see new jobs first and earn a larger share.</p>
+    </section>
+    <dl class="card stats" style="margin:0">
+      <div><dt>Delivered on time</dt><dd>98%</dd></div>
+      <div><dt>Average ATS gain</dt><dd>+19 points</dd></div>
+      <div><dt>Revision requests</dt><dd>4%</dd></div>
+      <div><dt>Late releases (90 days)</dt><dd>1</dd></div>
+    </dl>
+    <section class="card pay">
+      <div class="n serif" id="earned">$412</div>
+      <p>Paid this month</p>
+      <div class="n serif" id="held" style="font-size:22px;margin-top:12px">$145</div>
+      <p>Held until clients accept, or 72 hours</p>
+    </section>
+  </aside>
+  <main class="work">
+    <section id="active" class="card" hidden aria-live="polite"></section>
+    <h1 class="serif">Open jobs</h1>
+    <p class="lede">Senior experts see new jobs 4 minutes before everyone else.</p>
+    <div class="seg" role="group" aria-label="Filter by turnaround" id="seg">
+      <button aria-pressed="true" data-f="all">All</button>
+      <button aria-pressed="false" data-f="24h">24 hours</button>
+      <button aria-pressed="false" data-f="48h">48 hours</button>
+      <button aria-pressed="false" data-f="7d">7 days</button>
+    </div>
+    <ul id="queue"></ul>
+    <p class="note">Client names and contact details stay hidden until you claim a job. Every view of a resume is logged, and downloads are switched off. Design concept only: nothing here is connected to real data.</p>
+  </main>
+</div>
+<div class="toast" id="toast" role="status"></div>
+<script>
+const JOBS=[
+ {id:'J-2417',t:'24h',role:'Senior data analyst',ind:'Fintech',pages:2,ats:58,cl:true,pay:85,left:'23h 41m'},
+ {id:'J-2416',t:'48h',role:'Operations manager',ind:'Logistics',pages:3,ats:64,cl:false,pay:60,left:'47h 12m'},
+ {id:'J-2411',t:'7d',role:'Registered nurse',ind:'Hospital system',pages:2,ats:71,cl:true,pay:55,left:'6d 20h'},
+ {id:'J-2409',t:'7d',role:'Junior frontend developer',ind:'Startup',pages:1,ats:49,cl:false,pay:42,left:'6d 9h'}];
+const LABEL={'24h':'24 hours','48h':'48 hours','7d':'7 days'};
+let filter='all',claimed=null,secs=3600,timer=null,score=0,earned=412,held=145;
+const $=s=>document.querySelector(s);
+const bars=()=>[92,88,70,95,64].map((w,i)=>`<i class="${i==1||i==3?'mk':''}" style="width:${w}%"></i>`).join('');
+function renderQueue(){
+  const rows=JOBS.filter(j=>j!==claimed&&(filter==='all'||j.t===filter));
+  $('#queue').innerHTML=rows.length?rows.map(j=>`<li class="card job">
+    <div><h3 class="serif">${j.role}</h3>
+      <div class="meta"><span class="chip t${j.t.replace('h','').replace('7d','7')}">${LABEL[j.t]}</span>${j.cl?'<span class="chip cl">Cover letter</span>':''}<span>${j.ind}</span><span>${j.pages} ${j.pages>1?'pages':'page'}</span><span>ATS score now ${j.ats}</span></div>
+      <div class="lines" aria-hidden="true">${bars()}</div></div>
+    <div class="side"><div><div class="amt serif">$${j.pay}</div><div class="left">Due in ${j.left}</div></div>
+      <button class="btn go" data-claim="${j.id}" ${claimed?'disabled title="Finish or release your current job first"':''}>Claim job</button></div></li>`).join(''):'<li class="card empty">No open jobs in this turnaround. New ones appear here the moment a client pays.</li>';
+}
+function fmt(s){return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')}
+function renderActive(){
+  const a=$('#active');
+  if(!claimed){a.hidden=true;return}
+  const j=claimed,C=2*Math.PI*66;
+  a.hidden=false;
+  a.innerHTML=`<div class="row"><div>
+    <h2 class="serif">${j.role}: ${j.id}</h2>
+    <div class="meta"><span class="chip">${LABEL[j.t]}</span>${j.cl?'<span class="chip cl">Cover letter included</span>':''}<span>${j.ind}</span><span>Client: Amina K. (revealed)</span></div>
+    <div class="gate"><div class="track"><div class="fill" id="fill" style="width:${score}%"></div><div class="th"></div></div>
+      <div class="lab"><span id="sc">Score <b>${score}</b></span><span>Delivery needs <b>80</b></span></div></div>
+    <div class="acts"><button class="btn" id="run">Run ATS check</button><button class="btn go" id="deliver" disabled>Deliver to client</button><button class="btn quiet" id="release">Release job</button></div>
+    <p class="note" id="hint" style="margin-top:12px">Delivery stays locked until the rewrite scores 80 or higher on the same scanner clients use.</p></div>
+    <div class="ring" id="ring"><svg width="150" height="150" viewBox="0 0 150 150"><circle class="bg" cx="75" cy="75" r="66"/><circle class="fg" id="fg" cx="75" cy="75" r="66" stroke-dasharray="${C}" stroke-dashoffset="0"/></svg>
+      <div class="t"><b class="serif" id="clock">${fmt(secs)}</b><span id="rt">to release without penalty</span></div></div></div>`;
+}
+function tick(){
+  secs=Math.max(0,secs-1);
+  const late=secs===0,C=2*Math.PI*66;
+  $('#clock').textContent=late?'Closed':fmt(secs);
+  $('#fg').style.strokeDashoffset=C*(1-secs/3600);
+  $('#ring').classList.toggle('late',late);
+  $('#rt').textContent=late?'releasing now costs 5 grade points':'to release without penalty';
+}
+function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('on');setTimeout(()=>t.classList.remove('on'),2600)}
+function stop(){clearInterval(timer);timer=null;claimed=null;renderActive();renderQueue()}
+document.addEventListener('click',e=>{
+  const b=e.target.closest('button');if(!b)return;
+  if(b.dataset.claim){claimed=JOBS.find(j=>j.id===b.dataset.claim);secs=3600;score=claimed.ats;renderActive();renderQueue();timer=setInterval(tick,1000);toast('Claimed. You have 60 minutes to release it without penalty.');$('#active').scrollIntoView({behavior:'smooth',block:'start'})}
+  else if(b.id==='run'){score=86;$('#fill').style.width='86%';$('#fill').classList.add('ok');$('#sc').innerHTML='Score <b>86</b>, up '+(86-claimed.ats);$('#deliver').disabled=false;$('#hint').textContent='Gate passed. Your payout is held until the client accepts, or 72 hours pass.'}
+  else if(b.id==='deliver'){held+=claimed.pay;$('#held').textContent='$'+held;JOBS.splice(JOBS.indexOf(claimed),1);toast('Delivered. $'+claimed.pay+' is held until the client accepts.');stop()}
+  else if(b.id==='release'){const late=secs===0;toast(late?'Released late: 5 grade points deducted.':'Released. The job is back in the queue with no penalty.');stop()}
+  else if(b.dataset.f){filter=b.dataset.f;document.querySelectorAll('#seg button').forEach(x=>x.setAttribute('aria-pressed',x===b));renderQueue()}
+  else if(b.id==='avail'){const on=b.getAttribute('aria-pressed')!=='true';b.setAttribute('aria-pressed',on);b.querySelector('span').textContent=on?'Taking jobs':'Paused'}
+});
+renderQueue();
+</script>
+</body>
+</html>

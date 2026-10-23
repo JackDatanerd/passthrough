@@ -1,0 +1,8 @@
+Section 11 (shared frontend) round 25
+GAP  lib/api.js: STEP_UP_URL now covers the admin /employer-leads routes (positive list; public routes excluded). Each gated call used to be refused then replayed (2 requests, lead-import batches uploaded twice).
+BUG  Menu items had no keyboard focus indicator (tabindex -1 + global outline:none): index.css exempts [role=menuitem]; Menu styles focused items.
+BUG  api.js Retry-After: HTTP-date form now understood (getRetryAfterSeconds); errors.js no longer retries a 502/503/504 that asked for >5s.
+BUG  DashboardLayout.isActive / Navbar.here case-insensitive (router is) - aria-current at /Dashboard/Settings.
+MINOR CopyButton: empty text announces "Nothing to copy yet." not a browser-blocked message.
+MINOR RadioGroup disabled: aria-disabled + swallowed change instead of native disabled (keeps focus).
+Tests: frontend/tests/components/Section11Round25.test.jsx

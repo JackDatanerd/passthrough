@@ -17,7 +17,7 @@
    an anchor target (hooks/useScrollToHash), the skip links — carry tabindex="-1". They are not controls: a focus ring
    around a whole page section after every navigation is noise, not a cue. Real controls keep their own rings. */
 @layer base {
-  [tabindex="-1"]:focus { outline: none; }
+  [tabindex="-1"]:focus:not([role="menuitem"]) { outline: none; }   /* menu items are focused by arrow keys and need their ring */
 }
 
 /* The navbar is sticky now, so every in-page anchor (/#pricing, /#scan-form ...) has to stop below it, not under it. */

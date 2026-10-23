@@ -6,7 +6,7 @@ import LogoMark from './LogoMark'
 import SkipLink from './SkipLink'
 
 // The page a top-level link points at, for assistive tech. Hash links (/#stories) never count: the page is Home either way.
-const here = (pathname, to) => (pathname === to || pathname.startsWith(`${to}/`) ? 'page' : undefined)
+const here = (pathname, to) => { const p = pathname.toLowerCase(); return p === to || p.startsWith(`${to}/`) ? 'page' : undefined }   // router paths are case-insensitive
 
 // Top-level bar: four plain entries. "Stories" is a dropdown that holds the proof-style sections (the example, the receipt,
 // the hot fields) so the bar itself stays short next to the one button. Hash links all point at "/" so they work from any

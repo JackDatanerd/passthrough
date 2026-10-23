@@ -22,8 +22,11 @@ const CopyButton = forwardRef(function CopyButton({
   async function handleClick(e) {
     onClick?.(e)
     if (e?.defaultPrevented) return
-    const ok = await copy(typeof text === 'function' ? text() : text)
-    announce(ok ? 'Copied to the clipboard.' : 'Could not copy — your browser blocked clipboard access.')
+    const value = typeof text === 'function' ? text() : text
+    const ok = await copy(value)
+    // Nothing to copy is not the browser's fault (a value that has not loaded yet).
+    const empty = !(typeof value === 'number' || (typeof value === 'string' && value !== ''))
+    announce(ok ? 'Copied to the clipboard.' : empty ? 'Nothing to copy yet.' : 'Could not copy — your browser blocked clipboard access.')
     if (ok) onCopied?.()
   }
 

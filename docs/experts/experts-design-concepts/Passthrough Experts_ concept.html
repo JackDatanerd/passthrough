@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Passthrough Experts: concept</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Newsreader:opsz,wght@6..72,400;6..72,600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#EEF2F6;--panel:#fff;--ink:#0E1B2C;--muted:#52627A;--line:#D5DDE8;--accent:#2457D6;--on:#fff;--brass:#8F6310;--good:#17694B;--warn:#FFF3D6;color-scheme:light;
+--serif:"Newsreader",Georgia,"Times New Roman",serif;--sans:"Instrument Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0B1522;--panel:#12233A;--ink:#E8EEF7;--muted:#9FB0C8;--line:#25384F;--accent:#7FA2FF;--on:#0B1522;--brass:#E0B25A;--good:#5FD0A0;--warn:#2E2A17;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0B1522;--panel:#12233A;--ink:#E8EEF7;--muted:#9FB0C8;--line:#25384F;--accent:#7FA2FF;--on:#0B1522;--brass:#E0B25A;--good:#5FD0A0;--warn:#2E2A17;color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 16px/1.55 var(--sans)}
+.wrap{max-width:980px;margin:0 auto;padding:20px 20px 64px}
+h1,h2,h3{font-family:var(--serif);font-weight:400;margin:0;letter-spacing:-.01em}
+h1{font-size:clamp(30px,5vw,44px);line-height:1.1}h2{font-size:26px}h3{font-size:20px}
+p{margin:0}.muted{color:var(--muted)}.small{font-size:14px}
+button{font:inherit;cursor:pointer}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px;border-radius:6px}
+header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:6px 0 26px}
+.brand{display:flex;align-items:center;gap:10px;font:600 22px var(--serif)}
+.brand small{font:500 13px var(--sans);color:var(--muted)}
+.who{display:flex;align-items:center;gap:14px}
+.sw{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--muted);background:none;border:0;padding:6px 0}
+.sw i{width:38px;height:22px;border-radius:99px;background:var(--line);position:relative;transition:background .2s}
+.sw i::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;transition:transform .2s}
+.sw[aria-pressed=true] i{background:var(--good)}.sw[aria-pressed=true] i::after{transform:translateX(16px)}
+.av{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;background:var(--ink);color:var(--bg);font:600 14px var(--sans)}
+nav{display:flex;gap:26px;border-bottom:1px solid var(--line);margin-bottom:30px;overflow-x:auto}
+nav button{background:none;border:0;color:var(--muted);padding:10px 0 12px;font-weight:500;white-space:nowrap;border-bottom:3px solid transparent;margin-bottom:-1px}
+nav button[aria-selected=true]{color:var(--ink);border-color:var(--brass)}
+nav b{font-weight:600;color:var(--brass);margin-left:6px}
+section[hidden]{display:none}
+.lead{max-width:56ch;margin:10px 0 26px}
+.job{display:grid;grid-template-columns:1fr auto;gap:8px 24px;padding:22px 0 22px 18px;border-top:1px solid var(--line);position:relative}
+.job::before{content:"";position:absolute;left:0;top:22px;bottom:22px;width:4px;border-radius:4px;background:var(--line)}
+.job.pri::before{background:var(--brass)}
+.job .pay{font:400 34px/1 var(--serif);text-align:right}.job .pay small{display:block;font:400 13px var(--sans);color:var(--muted);margin-top:4px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.chip{font-size:13px;padding:3px 10px;border-radius:99px;background:var(--panel);border:1px solid var(--line)}
+.chip.pri{background:var(--warn);border-color:var(--brass);color:var(--brass);font-weight:600}
+details{grid-column:1/-1}summary{cursor:pointer;color:var(--accent);font-size:14px;width:fit-content}
+.brief{margin-top:10px;padding:16px;background:var(--panel);border:1px solid var(--line);border-radius:10px;font-size:15px}
+.brief ul{margin:6px 0 10px;padding-left:20px}.lock{font-size:13px;color:var(--muted)}
+.btn{border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:10px 18px;border-radius:9px;font-weight:600}
+.btn.p{background:var(--accent);border-color:var(--accent);color:var(--on)}
+.btn:disabled{opacity:.45;cursor:not-allowed}.btn.g{background:none;color:var(--muted);font-weight:500}
+.confirm{grid-column:1/-1;display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:var(--warn);border-radius:10px;padding:14px 16px;font-size:15px}
+.work{display:grid;grid-template-columns:auto 1fr;gap:34px;align-items:start}
+.ring{position:relative;width:190px;height:190px}.ring svg{transform:rotate(-90deg)}
+.ring div{position:absolute;inset:0;display:grid;place-content:center;text-align:center}
+.ring strong{font:400 40px/1 var(--serif)}.ring span{font-size:13px;color:var(--muted)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:24px}
+.check{display:flex;gap:12px;align-items:flex-start;padding:11px 0;border-top:1px solid var(--line)}
+.check input{width:20px;height:20px;margin-top:2px;accent-color:var(--good)}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin-top:20px}
+.empty{padding:40px 0}.empty h2{margin-bottom:8px}
+.grade{display:grid;grid-template-columns:auto 1fr;gap:34px;align-items:center}
+.seal{width:150px;height:150px;border-radius:50%;border:2px solid var(--brass);display:grid;place-content:center;text-align:center}
+.seal strong{font:400 68px/1 var(--serif);color:var(--brass)}
+dl{margin:0;display:grid;grid-template-columns:1fr auto;gap:0 20px}
+dt,dd{margin:0;padding:11px 0;border-top:1px solid var(--line)}dd{font:400 22px var(--serif);text-align:right}
+.ladder{display:grid;grid-template-columns:repeat(3,1fr);margin:40px 0 14px}
+.step{padding:0 14px 0 0;position:relative}.step::before{content:"";display:block;height:6px;border-radius:6px;background:var(--line);margin-bottom:14px}
+.step.on::before{background:var(--brass)}.step.now::before{background:linear-gradient(90deg,var(--brass) 80%,var(--line) 80%)}
+.step h3{font-size:19px}.step p{font-size:14px;color:var(--muted);margin-top:4px}
+.note{background:var(--warn);border-radius:10px;padding:14px 16px;font-size:14px;margin-top:22px}
+.client{max-width:460px}.client .price{font:400 52px/1 var(--serif);margin:12px 0 4px}
+.client ul{padding-left:20px;margin:14px 0 20px}
+.track{list-style:none;padding:0;margin:20px 0 0;display:grid;gap:0}
+.track li{display:grid;grid-template-columns:22px 1fr;gap:12px;padding-bottom:18px;position:relative;font-size:15px}
+.track li::before{content:"";width:12px;height:12px;border-radius:50%;border:2px solid var(--line);background:var(--bg);margin-top:5px}
+.track li::after{content:"";position:absolute;left:5px;top:20px;bottom:-4px;width:2px;background:var(--line)}
+.track li:last-child::after{display:none}.track li.d::before{background:var(--good);border-color:var(--good)}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:34px}
+.toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));transform:translate(-50%,30px);opacity:0;background:var(--ink);color:var(--bg);padding:12px 20px;border-radius:10px;font-size:15px;transition:.25s;pointer-events:none;max-width:90vw}
+.toast.on{transform:translate(-50%,0);opacity:1}
+@media (max-width:720px){.work,.grade,.split{grid-template-columns:1fr}.ring{margin:0 auto}.seal{margin:0 auto}.ladder{grid-template-columns:1fr;gap:18px}.job{grid-template-columns:1fr}.job .pay{text-align:left;order:-1}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="brand">
+    <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><circle cx="15" cy="15" r="13" fill="none" stroke="var(--brass)" stroke-width="2"/><path d="M9 15.5l4 4 8-9" fill="none" stroke="var(--brass)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <span>Passthrough Experts</span><small>experts.usepassthrough.com</small>
+  </div>
+  <div class="who">
+    <button class="sw" id="avail" aria-pressed="true"><i></i><span id="availT">Taking new jobs</span></button>
+    <div class="av" aria-label="Signed in as Grace Mwangi">GM</div>
+  </div>
+</header>
+
+<nav role="tablist" aria-label="Expert workspace">
+  <button role="tab" aria-selected="true" data-t="board">Open jobs<b id="nOpen">5</b></button>
+  <button role="tab" aria-selected="false" data-t="work">My work<b id="nWork" hidden>1</b></button>
+  <button role="tab" aria-selected="false" data-t="standing">Standing</button>
+  <button role="tab" aria-selected="false" data-t="client">What clients see</button>
+</nav>
+
+<section id="board">
+  <h1>Five briefs are waiting.</h1>
+  <p class="lead muted">The first expert to claim a brief has seven days to deliver it. Names, emails and employers stay hidden until you claim.</p>
+  <div id="list"></div>
+</section>
+
+<section id="work" hidden>
+  <div id="workBody"></div>
+</section>
+
+<section id="standing" hidden>
+  <div class="grade">
+    <div class="seal"><div><strong>A</strong><div class="small muted">Trusted</div></div></div>
+    <div>
+      <h1>You’re delivering at 4.8.</h1>
+      <p class="lead muted" style="margin-bottom:0">That’s your average client rating over the last 20 jobs. Grades update after every delivery.</p>
+    </div>
+  </div>
+  <div class="ladder" aria-label="Expert levels">
+    <div class="step on"><h3>Verified</h3><p>Passed the sample brief. Works open jobs.</p></div>
+    <div class="step now"><h3>Trusted</h3><p>25 jobs at 4.6 or better. You’re here.</p></div>
+    <div class="step"><h3>Elite</h3><p>60 jobs at 4.8 or better. Sees new briefs 20 minutes before everyone else.</p></div>
+  </div>
+  <p class="muted small">12 more jobs at 4.8 or better to reach Elite.</p>
+  <div class="split" style="margin-top:34px">
+    <dl>
+      <dt>Delivered on time</dt><dd>96%</dd>
+      <dt>Average client rating</dt><dd>4.9</dd>
+      <dt>Average score lift</dt><dd>+31 pts</dd>
+      <dt>Sent back for changes</dt><dd>1 in 14</dd>
+    </dl>
+    <div class="panel"><p class="muted small">This month</p><p style="font:400 44px/1.1 var(--serif);margin:6px 0">$420</p><p class="small muted">12 jobs at $35. Next payout on Friday.</p></div>
+  </div>
+  <p class="note">An average under 3.8 across your last 10 jobs pauses new claims while we review your work with you. Late unclaims count toward your grade.</p>
+</section>
+
+<section id="client" hidden>
+  <div class="split">
+    <div class="client panel">
+      <h3>Rather have a person do it?</h3>
+      <div class="price">$50</div><p class="muted small">One resume, delivered within 7 days.</p>
+      <ul><li>A verified expert rewrites it by hand</li><li>Checked against the same 80+ Passthrough score</li><li>Tailored cover letter included</li></ul>
+      <button class="btn p" style="width:100%">Send to a human expert</button>
+    </div>
+    <div>
+      <h3>Once it’s sent</h3>
+      <ol class="track">
+        <li class="d"><span>Sent to experts<br><span class="muted small">Today, 09:12</span></span></li>
+        <li class="d"><span>Claimed by Grace M., Trusted<br><span class="muted small">Today, 09:40</span></span></li>
+        <li><span>In progress<br><span class="muted small">Due in 6 days</span></span></li>
+        <li><span>Delivered with your new score</span></li>
+      </ol>
+      <p class="note">Concept screen: the client’s dashboard shows who has the job and when it’s due, never the expert’s contact details.</p>
+    </div>
+  </div>
+</section>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+var JOBS=[
+{id:1,t:"Operations lead, logistics",w:"9 years, moving into supply chain strategy",b:52,pay:35,age:"4 minutes ago",pri:1,g:["Results are described, not measured, in 3 of 4 roles","No tools or systems section","Summary reads as a job list"],n:"Wants the career-change angle to lead."},
+{id:2,t:"Staff nurse, critical care",w:"6 years, applying to NHS band 6 roles",b:61,pay:35,age:"22 minutes ago",g:["Certifications buried on page 2","Two employment gaps unexplained"],n:"Prefers a two-page layout."},
+{id:3,t:"Backend engineer, fintech",w:"4 years, targeting senior roles",b:58,pay:35,age:"1 hour ago",g:["Project impact missing","Skills list has 40 keywords, no context"],n:"No note."},
+{id:4,t:"Graduate marketing associate",w:"1 year, first full-time search",b:47,pay:35,age:"2 hours ago",g:["Internships listed as duties","No portfolio link"],n:"Open to remote and hybrid."},
+{id:5,t:"Finance manager, manufacturing",w:"12 years, returning after a career break",b:55,pay:35,age:"3 hours ago",g:["Break not addressed","Dated formatting"],n:"Keep it to two pages."}
+];
+var $=function(s){return document.querySelector(s)},open=JOBS.slice(),mine=null,claimed=0,confirming=null;
+function toast(m){var t=$("#toast");t.textContent=m;t.classList.add("on");clearTimeout(toast.h);toast.h=setTimeout(function(){t.classList.remove("on")},2800)}
+function tab(n){["board","work","standing","client"].forEach(function(k){$("#"+k).hidden=k!==n});document.querySelectorAll("nav button").forEach(function(b){b.setAttribute("aria-selected",b.dataset.t===n)})}
+function counts(){$("#nOpen").textContent=open.length;$("#nWork").hidden=!mine;$("#board h1").textContent=open.length?(["No","One","Two","Three","Four","Five","Six"][open.length]+(open.length===1?" brief is":" briefs are")+" waiting."):"You’re all caught up."}
+function drawList(){
+  $("#list").innerHTML=open.length?open.map(function(j){
+    var c=confirming===j.id;
+    return '<article class="job'+(j.pri?' pri':'')+'"><div><h3>'+j.t+'</h3><p class="muted small">'+j.w+'</p><div class="chips"><span class="chip">Score '+j.b+', target 80+</span><span class="chip">'+j.age+'</span>'+(j.pri?'<span class="chip pri">Elite priority for 20 more minutes</span>':'')+'</div></div>'+
+    '<div class="pay">$'+j.pay+'<small>7 days</small>'+(c?'':'<button class="btn p" data-claim="'+j.id+'" style="margin-top:12px">Claim brief</button>')+'</div>'+
+    (c?'<div class="confirm"><span>You’ll have 7 days. Unclaim free for the first 24 hours.</span><button class="btn p" data-ok="'+j.id+'">Confirm claim</button><button class="btn g" data-no="1">Cancel</button></div>':'')+
+    '<details><summary>Preview the brief</summary><div class="brief"><p><strong>What needs work</strong></p><ul>'+j.g.map(function(x){return"<li>"+x+"</li>"}).join("")+'</ul><p class="small"><strong>Client note:</strong> '+j.n+'</p><p class="lock" style="margin-top:8px">Name, contact details and employers unlock when you claim.</p></div></details></article>'}).join(""):'<div class="empty"><h2>Nothing open right now.</h2><p class="muted">New briefs appear here the moment a client sends one. Keep “Taking new jobs” on and we’ll email you.</p></div>'}
+function drawWork(){
+  if(!mine){$("#workBody").innerHTML='<div class="empty"><h2>Nothing claimed yet.</h2><p class="muted" style="margin-bottom:18px">Pick a brief from Open jobs. Your seven-day clock starts when you claim it.</p><button class="btn p" data-go="board">See open jobs</button></div>';return}
+  var C=2*Math.PI*84;
+  $("#workBody").innerHTML='<div class="work"><div class="ring"><svg width="190" height="190" viewBox="0 0 190 190" aria-hidden="true"><circle cx="95" cy="95" r="84" fill="none" stroke="var(--line)" stroke-width="8"/><circle cx="95" cy="95" r="84" fill="none" stroke="var(--brass)" stroke-width="8" stroke-linecap="round" stroke-dasharray="'+C+'" stroke-dashoffset="'+(C*.02)+'"/></svg><div><strong>6 d 23 h</strong><span>until it’s due</span></div></div>'+
+  '<div class="panel"><h2>'+mine.t+'</h2><p class="muted small">For Amina. '+mine.w+'. Starting score '+mine.b+'.</p><div style="margin-top:14px">'+
+  ["Open the resume in the editor","Re-score reaches 80 or higher","Write the cover letter","Leave a short note for Amina"].map(function(x,i){return'<label class="check"><input type="checkbox" data-c="'+i+'"><span>'+x+'</span></label>'}).join("")+'</div>'+
+  '<div class="row"><button class="btn p" id="sub" disabled>Submit for review</button><button class="btn">Open editor</button><button class="btn g" data-un="1">Unclaim</button></div>'+
+  '<p class="lock" style="margin-top:12px">Unclaiming is free for 24 hours. After that it counts toward your grade.</p></div></div>'}
+document.addEventListener("click",function(e){
+  var t=e.target.closest("button");if(!t)return;var d=t.dataset;
+  if(d.t)tab(d.t);
+  if(d.go)tab(d.go);
+  if(d.claim){confirming=+d.claim;drawList()}
+  if(d.no){confirming=null;drawList()}
+  if(d.ok){if(mine){toast("Finish or unclaim your current job first.");return}var i=open.findIndex(function(j){return j.id==d.ok});mine=open.splice(i,1)[0];confirming=null;counts();drawList();drawWork();tab("work");toast("Claimed. Amina’s details are now unlocked.")}
+  if(d.un){open.unshift(mine);mine=null;counts();drawList();drawWork();tab("board");toast("Unclaimed. The brief is back on the board.")}
+  if(t.id==="sub"&&!t.disabled){mine=null;counts();drawWork();tab("standing");toast("Submitted. Amina is notified and your $35 is queued.")}
+  if(t.id==="avail"){var on=t.getAttribute("aria-pressed")!=="true";t.setAttribute("aria-pressed",on);$("#availT").textContent=on?"Taking new jobs":"Paused"}
+});
+document.addEventListener("change",function(e){if(e.target.dataset.c!==undefined){var all=[].every.call(document.querySelectorAll("[data-c]"),function(x){return x.checked});$("#sub").disabled=!all}});
+counts();drawList();drawWork();
+</script>
+</body>
+</html>

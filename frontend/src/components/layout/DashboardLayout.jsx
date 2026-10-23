@@ -28,7 +28,7 @@ const tabs = [
 // Active on the tab's own page and anything nested under it ('/dashboard' itself only matches exactly,
 // since every other tab lives beneath it).
 function isActive(pathname, to) {
-  const path = pathname.replace(/\/+$/, '') || '/'
+  const path = (pathname.replace(/\/+$/, '') || '/').toLowerCase()   // the router matches case-insensitively, so must this
   return path === to || (to !== '/dashboard' && path.startsWith(`${to}/`))
 }
 

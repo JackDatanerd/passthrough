@@ -148,6 +148,9 @@ export function shouldRetryRequest({ method, status, hasResponse, retryAfterSeco
   if (status === 502 || status === 503 || status === 504) {
     // A server that says how long to wait (a brief 503) is asked once, after that time, when it is short enough to wait for.
     if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 && retryAfterSeconds <= 5) return { retry: true, delayMs: Math.ceil(retryAfterSeconds * 1000) }
+    // Round 25: a server that asked for MORE than we are willing to wait is not asked again after 800ms - that is the one
+    // thing it said not to do. The error message already tells the person how long to wait.
+    if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 5) return { retry: false }
     return { retry: true, delayMs: 800 }
   }
   if (status === 429 && Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 && retryAfterSeconds <= 5)

@@ -161,7 +161,7 @@ export default function Menu({
           // remembers the trigger (still on the page) as where to return focus — not the item that is about to unmount.
           onClickCapture={e => { if (e.target instanceof Element && e.target.closest(ITEM)) close() }}
           style={pos ? { position: 'fixed', ...pos } : undefined}
-          className={cn(!pos && 'absolute top-9', 'z-30 min-w-56 overflow-y-auto rounded-lg border border-gray-200 bg-white p-1 shadow-lg', !pos && (align === 'left' ? 'left-0' : 'right-0'), menuClassName)}
+          className={cn(!pos && 'absolute top-9', 'z-30 min-w-56 overflow-y-auto [&_[role=menuitem]:focus]:bg-gray-100 [&_[role=menuitem]:focus]:outline-none [&_[role=menuitem]:focus]:ring-2 [&_[role=menuitem]:focus]:ring-inset [&_[role=menuitem]:focus]:ring-blue-500 rounded-lg border border-gray-200 bg-white p-1 shadow-lg', !pos && (align === 'left' ? 'left-0' : 'right-0'), menuClassName)}
         >{children}</div>
       )}
     </div>
