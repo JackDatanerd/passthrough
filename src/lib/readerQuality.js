@@ -62,7 +62,10 @@ function readerQuality(resume) {
 const SCORE_BAND = 2
 
 // Does `cand` replace `best`? scores are the blended ATS scores; `threshold` is the credential line.
-function pickWinner({ candScore, bestScore, candData, bestData, baselineHeld = false, threshold = null }) {
+function pickWinner({ candScore, bestScore, candData, bestData, baselineHeld = false, threshold = null, floor = null }) {
+  // A Try Again round must never hand back a document scoring under the one already delivered, however well it reads
+  // (the reader-quality band below could otherwise pick a candidate up to SCORE_BAND points lower).
+  if (typeof floor === 'number' && candScore < floor) return false
   if (typeof threshold === 'number') {
     if (bestScore >= threshold && candScore < threshold) return false     // never trade the credential for style
     if (candScore >= threshold && bestScore < threshold) return true

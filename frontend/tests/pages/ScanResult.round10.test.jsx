@@ -102,3 +102,23 @@ describe('a Try Again that found nothing better says so', () => {
     expect(screen.queryByTestId('retry-no-gain')).toBeNull()
   })
 })
+
+describe('round 18: a first run that kept the person\'s own resume does not call it "improved"', () => {
+  const same = { name: 'A', experience: [{ company: 'Acme', bullets: ['Built things'] }] }
+  const first = (over = {}) => delivered({ fixTier: 'FIX', atsScore: 60, fixAtsScore: 70, fixRetryCount: 0, originalResumeData: same, rewrittenResumeData: { ...same }, ...over })
+  it('says the original was kept, with the score and the credit', async () => {
+    setup(first())
+    expect(await screen.findByTestId('original-kept')).toHaveTextContent(/None of our rewrites beat your original/)
+    expect(screen.queryByText(/Your improved resume is ready/)).toBeNull()
+  })
+  it('a genuinely rewritten resume still reads "improved"', async () => {
+    setup(first({ rewrittenResumeData: { ...same, summary: 'New summary' } }))
+    await screen.findByText(/Your improved resume is ready/)
+    expect(screen.queryByTestId('original-kept')).toBeNull()
+  })
+  it('a Try Again round (retry count above zero) keeps its own wording', async () => {
+    setup(first({ fixRetryCount: 1 }))
+    await screen.findByText(/Your improved resume is ready/)
+    expect(screen.queryByTestId('original-kept')).toBeNull()
+  })
+})

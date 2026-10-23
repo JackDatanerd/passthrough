@@ -46,6 +46,7 @@ const STOP_WORDS = new Set([
 //
 // Deliberately still NOT full derivational morphology ("coordination" won't
 // meet "coordinate").
+const SHORT_ACRONYM_PLURALS = new Set(['apis', 'kpis', 'rois', 'ctas', 'pdas'])
 function stem(word) {
   if (PROTECTED_TOKENS.has(word)) return word
   let w = word
@@ -53,6 +54,11 @@ function stem(word) {
   if (w.length > 4 && w.endsWith('ies'))                          w = w.slice(0, -3) + 'y'
   else if (w.length > 5 && /(?:ch|sh|x|z|ss)es$/.test(w))         w = w.slice(0, -2)
   else if (w.length > 4 && w.endsWith('s') && !/(?:ss|us|is)$/.test(w)) w = w.slice(0, -1)
+  // SCAN/ATS ROUND 18 (bug, reproduced): the rule above starts at 5 letters, so a four-letter plural never met its singular -
+  // a posting asking for "APIs" gave no credit for "API" (nor apps/app, KPIs/KPI, SDKs/SDK, bugs/bug, tags/tag, pods/pod).
+  // Four letters ending in a consonant-or-vowel + s are stripped; "ss" / "us" / "as" / "is" endings (less, plus, gas, this) stay,
+  // except the acronym plurals listed, which are plurals despite the "is" / "as" ending.
+  else if (w.length === 4 && w.endsWith('s') && (SHORT_ACRONYM_PLURALS.has(w) || !/(?:ss|us|as|is)$/.test(w))) w = w.slice(0, -1)
   // 2. derivational suffixes, applied to the singular form
   if (w.length > 5 && w.endsWith('ational')) w = w.slice(0, -5)
   if (w.length > 6 && w.endsWith('ization')) w = w.slice(0, -4)
@@ -822,6 +828,16 @@ function scoreSections(resumeText) {
   // backtracked from every start of one very long unbroken token, ~2s of CPU on 40,000 characters.
   const hasEmail = lines20.includes('@') && /[a-z0-9._%+\-]{1,64}@[a-z0-9.\-]{1,255}\.[a-z]{2,}/.test(lines20)
 
+  // SCAN/ATS ROUND 18 (bug, reproduced): a phone number is contact information too. Only an email counted, so a resume with a
+  // phone, location and profile link but no email (or a from-scratch resume whose email was left blank) lost 21 section
+  // points, and the rewrite was told to add a Contact section it is not allowed to invent an email for. Read line by line
+  // (a date range on the next line must not join a phone), 8-15 digits, and never a run made only of years ("2019 - 2023").
+  const hasPhone = lower.split('\n').slice(0, 20).some(line =>
+    (line.match(/\+?\(?\d[\d\s().-]{6,}\d/g) || []).some(m => {
+      const groups = m.match(/\d+/g) || [], digits = groups.join('').length
+      return digits >= 8 && digits <= 15 && !groups.every(g => g.length === 4 && /^(?:19|20)/.test(g))
+    }))
+
   // AUDIT FIX (Auth/Scan round): every section used to be detected with
   // lower.includes('experience') / ('education') / ('skills') / ('profile') /
   // ('objective') anywhere in the text — so a resume with NO section headings
@@ -860,9 +876,9 @@ function scoreSections(resumeText) {
   const allHeadings = headings.concat(labelHeadings)
   const hasSection = patterns => structured
     ? allHeadings.some(h => patterns.some(pt => new RegExp(`(?:^| )${pt}(?: |$)`).test(h)))
-    : patterns.some(pt => lower.includes(pt))
+    : patterns.some(pt => new RegExp(`(?<![a-z])${pt}(?![a-z])`).test(lower))   // whole words: "information" is not "formation"
 
-  const foundReq = required.filter(s => s.patterns ? hasSection(s.patterns) : hasEmail)
+  const foundReq = required.filter(s => s.patterns ? hasSection(s.patterns) : (hasEmail || hasPhone))
   const hasSummary  = hasSection(summaryPatterns)
   const hasCerts    = hasSection(certPatterns)
   const hasProjects = hasSection(projectPatterns)

@@ -1123,6 +1123,15 @@ export default function ScanResult() {
                           so this attempt cost you nothing. You can try again below at no cost.
                         </p>
                       </>
+                    ) : (!scan.fixRetryCount && scan.userId && scan.originalResumeData && scan.rewrittenResumeData
+                        && JSON.stringify(scan.originalResumeData) === JSON.stringify(scan.rewrittenResumeData)) ? (
+                      <>
+                        <p className="font-semibold text-amber-900 mb-1" data-testid="original-kept">None of our rewrites beat your original</p>
+                        <p className="text-sm text-amber-800 mb-3">
+                          This is your own resume, correctly formatted, with its ATS score of {scan.fixAtsScore ?? '—'}/100 — not a rewrite. We've added
+                          a free fix credit to your account, no charge, and you can try again below at no cost.
+                        </p>
+                      </>
                     ) : (
                       <>
                         <p className="font-semibold text-amber-900 mb-1">Your improved resume is ready</p>

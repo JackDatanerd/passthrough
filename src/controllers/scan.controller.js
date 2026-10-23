@@ -3348,7 +3348,7 @@ async function generateFixRun(env, supabase, scanId, leaseToken = null) {
 
       // Inside a small band of ATS points the document that READS better wins (lib/readerQuality.js); outside it the score
       // decides, and a candidate that would drop a credential-clearing document under the line is never chosen.
-      if (pickWinner({ candScore: candidateScore.score, bestScore, candData: candidateData, bestData, baselineHeld, threshold: c.ATS_BADGE_THRESHOLD })) {
+      if (pickWinner({ candScore: candidateScore.score, bestScore, candData: candidateData, bestData, baselineHeld, threshold: c.ATS_BADGE_THRESHOLD, floor: isRetry && typeof scan.fixAtsScore === 'number' ? scan.fixAtsScore : null })) {
         baselineHeld = false
         bestScore = candidateScore.score
         bestData = candidateData
