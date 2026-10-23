@@ -6,6 +6,7 @@ import Form from '../ui/Form'
 import PasswordInput from '../ui/PasswordInput'
 import Button from '../ui/Button'
 import Alert from '../ui/Alert'
+import { allowNextLeave } from '../../lib/unsavedGuard'
 
 // FEATURE GAP CLOSED (Shared frontend round 9): when a session ended (a sign-out elsewhere, the absolute expiry) while an
 // editor held unsaved changes, lib/api.js hard-redirected to /login — the draft was gone, and answering "Stay" to the
@@ -83,7 +84,7 @@ export default function SessionResumePrompt() {
           autoComplete="current-password" data-autofocus />
         <Alert>{error}</Alert>
         <div className="flex justify-end gap-2 pt-1">
-          <Button type="button" variant="secondary" size="sm" onClick={() => finish(false)} disabled={busy}>
+          <Button type="button" variant="secondary" size="sm" onClick={() => { allowNextLeave(); finish(false) }} disabled={busy}>
             Discard my changes
           </Button>
           <Button type="submit" size="sm" loading={busy}>Sign in and continue</Button>

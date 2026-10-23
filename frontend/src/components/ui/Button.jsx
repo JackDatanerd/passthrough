@@ -37,17 +37,21 @@ export function buttonClasses(variant = 'primary', size = 'md') {
 // stays focusable and is marked aria-disabled instead; clicks (and the Enter-key submit of the form it belongs to, which arrives
 // as a click on a submit button) are swallowed here, so a second press still cannot fire the action twice. An explicit
 // `disabled` is unchanged: that one is the caller saying the action is unavailable, not that it is in flight.
+// `pending` (round 2 of section 11): the same "in flight" state as `loading` WITHOUT the spinner — for a row of buttons where one
+// request holds them all (only the pressed one should spin, or none). Focus stays put and clicks are swallowed, exactly like `loading`;
+// use it instead of `disabled={busy}`, which drops a keyboard user's focus onto <body> mid-request.
 const Button = forwardRef(function Button({
   children, variant = 'primary', size = 'md',
-  className, disabled, loading, type = 'button', onClick, ...props
+  className, disabled, loading, pending, type = 'button', onClick, ...props
 }, ref) {
+  const held = !!(loading || pending)
   return (
     <button
       ref={ref}
       type={type}
-      onClick={loading ? e => e.preventDefault() : onClick}
+      onClick={held ? e => e.preventDefault() : onClick}
       disabled={disabled}
-      aria-disabled={loading && !disabled ? true : undefined}
+      aria-disabled={held && !disabled ? true : undefined}
       aria-busy={loading || undefined}
       className={cn(buttonClasses(variant, size), className)}
       {...props}

@@ -57,7 +57,7 @@ export default function PartnerPayoutDetails() {
   const [clearTaxId, setClearTaxId] = useState(false)
   const [taxSaved, setTaxSaved] = useState(false)
   const [holdUntil, setHoldUntil] = useState(null)
-  const { loading: saving, error, execute } = useApi()
+  const { loading: saving, error, execute, fail: showError } = useApi()
 
   useEffect(() => {
     if (!token) { setInvalid(true); setLoading(false); return }
@@ -95,7 +95,7 @@ export default function PartnerPayoutDetails() {
       .finally(() => setLoading(false))
   }, [token])
 
-  const fail0 = msg => execute(() => Promise.reject(new Error(msg)), { fallback: msg }).catch(() => {})
+  const fail0 = msg => showError(msg)
 
   async function handleSubmit() {
     // Tax-only save: details are already on file and the partner has not retyped the account number, so only the
@@ -118,7 +118,7 @@ export default function PartnerPayoutDetails() {
       if (taxId.trim() && taxId.trim().length < 3) return fail0('That tax ID looks too short — enter it in full, or leave it blank.')
       const patch = { ...(c !== taxCountryLoaded ? { taxCountry: c } : {}), ...(clearTaxId ? { taxId: '' } : taxId.trim() ? { taxId: taxId.trim() } : {}) }
       try {
-        await execute(() => api.post('/partners/payout-details', patch, partnerAuth(token)), { fallback: 'Something went wrong — please try again.' })
+        await execute(() => api.post('/partners/payout-details', patch, partnerAuth(token)), { keepAlive: true, fallback: 'Something went wrong — please try again.' })
         setTaxCountryLoaded(c)
         if (clearTaxId) setTaxIdOnFile('')
         else if (taxId.trim()) setTaxIdOnFile(`\u2026${taxId.trim().replace(/\s+/g, '').slice(-4)}`)
@@ -136,12 +136,11 @@ export default function PartnerPayoutDetails() {
     const taxExtra = { ...(country !== taxCountryLoaded ? { taxCountry: country } : {}), ...(clearTaxId ? { taxId: '' } : taxId.trim() ? { taxId: taxId.trim() } : {}) }
     const missing = Object.values(body).some(v => !v)
     if (missing) {
-      await execute(() => Promise.reject(new Error('Please fill in every field.')),
-        { fallback: 'Please fill in every field.' }).catch(() => {})
+      await showError('Please fill in every field.')
       return
     }
 
-    const fail = msg => execute(() => Promise.reject(new Error(msg)), { fallback: msg }).catch(() => {})
+    const fail = msg => showError(msg)
     const number = method === 'BANK' ? body.accountNumber : body.phoneNumber
     if (method === 'BANK' && !ACCOUNT_NUMBER_RE.test(body.accountNumber))
       return fail('That account number doesn\'t look right — use 4–34 letters, digits, spaces or dashes.')
@@ -154,7 +153,7 @@ export default function PartnerPayoutDetails() {
 
     try {
       const out = await execute(() => api.post('/partners/payout-details', { ...body, ...taxExtra }, partnerAuth(token)),
-        { fallback: 'Something went wrong — please try again.' })
+        { keepAlive: true, fallback: 'Something went wrong — please try again.' })
       // Round 8: a CHANGE pauses payouts for a while (a safeguard if the link was ever leaked). Say so now,
       // not when the partner wonders later why a payout has not arrived.
       setHoldUntil(out?.payoutHoldUntil || null)

@@ -6,6 +6,7 @@ import Modal from '../../components/ui/Modal'
 import Form from '../../components/ui/Form'
 import PasswordInput from '../../components/ui/PasswordInput'
 import Button from '../../components/ui/Button'
+import SkipLink from '../../components/layout/SkipLink'
 
 const NAV = [
   { to: '/admin/dashboard', label: 'Dashboard' },
@@ -149,6 +150,7 @@ function StepUpModal() {
 export default function AdminLayout() {
   return (
     <div className="min-h-screen bg-gray-50">
+      <SkipLink />
       <StepUpModal />
       <div className="border-b border-gray-200 bg-white">
         <div className="max-w-6xl mx-auto px-4 py-3 flex flex-col gap-2">
@@ -180,7 +182,7 @@ export default function AdminLayout() {
           </nav>
         </aside>
 
-        <main className="flex-1 min-w-0">
+        <main id="main" className="flex-1 min-w-0">
           <Outlet />
         </main>
       </div>

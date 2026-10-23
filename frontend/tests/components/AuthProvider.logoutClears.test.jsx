@@ -9,6 +9,7 @@ vi.mock('../../src/lib/api', () => ({
   default: { get: vi.fn(), post: vi.fn() },
   SESSION_ENDED_EVENT: 'passthrough:session-ended',
   clearStepUp: vi.fn(),
+  resumeEndedSession: vi.fn(() => Promise.resolve(false)),
 }))
 import api from '../../src/lib/api'
 

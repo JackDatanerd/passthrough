@@ -19,7 +19,7 @@ export default function ResetPassword() {
   const [newPassword, setNewPassword] = useState('')
   const [confirm,     setConfirm    ] = useState('')
   const [success,     setSuccess    ] = useState(false)
-  const { loading, error, execute } = useApi()
+  const { loading, error, execute, fail: showError } = useApi()
   const { refreshUser } = useAuth()
 
   // FEATURE GAP CLOSED (Auth/Scan round): the page used to find out the link
@@ -73,7 +73,7 @@ export default function ResetPassword() {
   }
 
   function fail(message) {
-    return execute(() => Promise.reject(new Error(message)), { fallback: message }).catch(() => {})
+    return showError(message)
   }
 
   async function handleSubmit() {

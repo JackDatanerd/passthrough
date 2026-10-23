@@ -64,5 +64,5 @@ export default function RouteAnnouncer() {
     return () => { cancelled = true; clearTimeout(timer) }
   }, [pathname])   // eslint-disable-line react-hooks/exhaustive-deps
 
-  return <div role="status" aria-live="polite" aria-atomic="true" className="sr-only" data-route-announcer="">{message}</div>
+  return <div role="status" aria-live="polite" aria-atomic="true" className="sr-only" data-route-announcer="" data-live-region="">{message}</div>
 }

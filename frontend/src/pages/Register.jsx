@@ -38,7 +38,7 @@ export default function Register() {
   // Cloudflare Turnstile (opt-in: renders nothing and demands nothing unless the site key is set).
   const [captcha, setCaptcha] = useState('')
   const [captchaReset, setCaptchaReset] = useState(0)
-  const { loading, error, execute } = useApi()
+  const { loading, error, execute, fail: showError } = useApi()
   // The terms message belongs to the checkbox (announced there, tied to it with aria-describedby) and
   // goes away once it is ticked; every other message stays in the form-level slot above the button.
   const termsMissing = error === TERMS_REQUIRED && !acceptTerms
@@ -58,7 +58,7 @@ export default function Register() {
   if (!authLoading && user && getToken() && !loading) return <Navigate to={next || '/dashboard'} replace />
 
   function fail(message) {
-    return execute(() => Promise.reject(new Error(message)), { fallback: message }).catch(() => {})
+    return showError(message)
   }
 
   async function handleSubmit() {

@@ -22,6 +22,11 @@ function normalizeMessage(m) {
   if (m && m.isAxiosError) return getErrorMessage(m)
   if (m instanceof Error) return m.message || 'Something went wrong.'
   if (m === null || m === undefined) return ''
+  // A plain object (an API body handed over whole): its own message if it has one, never "[object Object]".
+  if (typeof m === 'object') {
+    if (typeof m.message === 'string') return m.message
+    return ''
+  }
   try { return String(m) } catch (_) { return '' }
 }
 

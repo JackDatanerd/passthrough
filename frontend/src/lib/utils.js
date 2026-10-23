@@ -53,6 +53,8 @@ export function formatDateUtc(dateStr) { return formatDate(dateStr, { utc: true 
 // Today's date as YYYY-MM-DD in the VIEWER's zone, for file names. `new Date().toISOString().slice(0, 10)` is the UTC day, so a file
 // exported at 02:00 in Nairobi (or at 8 pm in New York) was named for the wrong day.
 export function dateStamp(date = new Date()) {
+  // null used to become new Date(null) = 1 Jan 1970; only an omitted argument means "today".
+  if (date === null) return ''
   const d = date instanceof Date ? date : new Date(date)
   if (Number.isNaN(d.getTime())) return ''
   const pad = n => String(n).padStart(2, '0')
@@ -209,7 +211,8 @@ export function filenameFromDisposition(headers, fallback) {
     let name = ''
     if (star) { try { name = decodeURIComponent(star[1].trim()) } catch (_) { name = '' } }
     if (!name && plain) name = plain[1].trim()
-    return name && !/[\\/]/.test(name) && name.length <= 120 ? name : fallback
+    // No path separators, no control characters (a newline in a download name), nothing made only of dots (".."), and a sane length.
+    return name && !/[\\/\x00-\x1f\x7f]/.test(name) && !/^\.+$/.test(name) && name.length <= 120 ? name : fallback
   } catch (_) { return fallback }
 }
 
@@ -298,7 +301,8 @@ export function csvCell(v) {
   let s = String(v)
   // Leading line breaks are skipped over when looking for the formula character: a cell that opens with a newline and then "=" is
   // still read as a formula by some spreadsheet importers.
-  if (typeof v !== 'number' && /^[\t\r\n]*[=+\-@\t\r]/.test(s)) s = `'${s}`
+  // A lone "-" is the usual empty-cell placeholder, not a formula: it stays as it is.
+  if (typeof v !== 'number' && s !== '-' && /^[\t\r\n]*[=+\-@\t\r]/.test(s)) s = `'${s}`
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
 }
 export function toCsv(rows) {

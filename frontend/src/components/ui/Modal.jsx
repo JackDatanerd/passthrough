@@ -109,13 +109,13 @@ function inertOutside(keep) {
     const parent = node.parentElement
     if (!parent) return
     Array.from(parent.children).forEach(sib => {
-      if (path.has(sib) || sib.tagName === 'SCRIPT' || sib.hasAttribute('data-toast-stack') || sib.hasAttribute('data-announcer')) return
+      if (path.has(sib) || sib.tagName === 'SCRIPT' || sib.hasAttribute('data-toast-stack') || sib.hasAttribute('data-announcer') || sib.hasAttribute('data-live-region')) return
       marked.push(sib)
     })
   })
   // The children of <body> itself.
   Array.from(document.body.children).forEach(sib => {
-    if (!path.has(sib) && sib.tagName !== 'SCRIPT' && !sib.hasAttribute('data-announcer')) marked.push(sib)
+    if (!path.has(sib) && sib.tagName !== 'SCRIPT' && !sib.hasAttribute('data-announcer') && !sib.hasAttribute('data-live-region')) marked.push(sib)
   })
   const mine = []
   new Set(marked).forEach(el => {

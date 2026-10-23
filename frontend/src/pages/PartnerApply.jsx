@@ -29,22 +29,19 @@ export default function PartnerApply() {
   // Cloudflare Turnstile (opt-in: renders nothing and demands nothing unless the site key is set).
   const [captcha, setCaptcha] = useState('')
   const [captchaReset, setCaptchaReset] = useState(0)
-  const { loading, error, execute } = useApi()
+  const { loading, error, execute, fail: showError } = useApi()
 
   async function handleSubmit() {
     if (!name.trim() || !email.trim()) {
-      await execute(() => Promise.reject(new Error('Please enter your name and email.')),
-        { fallback: 'Please enter your name and email.' }).catch(() => {})
+      await showError('Please enter your name and email.')
       return
     }
     if (!accepted) {
-      await execute(() => Promise.reject(new Error('Please accept the partner program terms to apply.')),
-        { fallback: 'Please accept the partner program terms to apply.' }).catch(() => {})
+      await showError('Please accept the partner program terms to apply.')
       return
     }
     if (TURNSTILE_ENABLED && !captcha) {
-      await execute(() => Promise.reject(new Error('Please complete the security check below.')),
-        { fallback: 'Please complete the security check below.' }).catch(() => {})
+      await showError('Please complete the security check below.')
       return
     }
     try {

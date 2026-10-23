@@ -19,7 +19,7 @@ export default function Login() {
   const { postAuthActions, user, authLoading } = useAuth()
   const [email,    setEmail   ] = useState('')
   const [password, setPassword] = useState('')
-  const { loading, error, execute } = useApi()
+  const { loading, error, execute, fail: showError } = useApi()
 
   const expired = params.get('expired') === 'true'
   const banned  = params.get('banned')  === 'true'
@@ -43,8 +43,7 @@ export default function Login() {
 
   async function handleSubmit() {
     if (!email || !password) {
-      await execute(() => Promise.reject(new Error('Email and password required.')),
-        { fallback: 'Email and password required.' }).catch(() => {})
+      await showError('Email and password required.')
       return
     }
     try {

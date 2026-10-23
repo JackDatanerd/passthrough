@@ -19,16 +19,15 @@ export default function ForgotPassword() {
   const [captchaReset, setCaptchaReset] = useState(0)
   // The server throttles reset emails per address; a visible timer beats a bare "Too many attempts".
   const { remaining, start: startCooldown } = useCooldown(30)
-  const { loading, error, execute } = useApi()
+  const { loading, error, execute, fail: showError } = useApi()
 
   async function handleSubmit() {
     if (!email) {
-      await execute(() => Promise.reject(new Error('Email required.')), { fallback: 'Email required.' }).catch(() => {})
+      await showError('Email required.')
       return
     }
     if (TURNSTILE_ENABLED && !captcha) {
-      await execute(() => Promise.reject(new Error('Please complete the security check below.')),
-        { fallback: 'Please complete the security check below.' }).catch(() => {})
+      await showError('Please complete the security check below.')
       return
     }
     try {

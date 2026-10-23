@@ -119,13 +119,13 @@ export default function SavedProfileEditor({ onSaved, onClose, onDirtyChange, pr
       <div className="flex flex-wrap gap-3">
         {conflict ? (
           <>
-            <Button onClick={reloadLatest} disabled={saving}>Load the current profile (drops my edits)</Button>
+            <Button onClick={reloadLatest} pending={saving}>Load the current profile (drops my edits)</Button>
             <Button variant="secondary" onClick={saveOverCurrent} loading={saving}>Save my version over it</Button>
           </>
         ) : (
           <Button onClick={() => handleSave()} loading={saving}>Save changes</Button>
         )}
-        <Button variant="ghost" onClick={requestClose} disabled={saving}>Cancel</Button>
+        <Button variant="ghost" onClick={requestClose} pending={saving}>Cancel</Button>
       </div>
       <ConfirmDialog
         open={confirmCancel}

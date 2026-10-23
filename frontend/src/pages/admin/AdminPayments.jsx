@@ -450,17 +450,17 @@ export default function AdminPayments() {
                 <>
                   {p.status === 'SUCCESS' && (
                     <>
-                      <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
+                      <Button size="sm" variant="secondary" pending={busyRef === p.paystackRef}
                         onClick={() => reconcile(p)}>
                         Reconcile
                       </Button>
                       {isRefundable(p) && (
-                        <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
+                        <Button size="sm" variant="secondary" pending={busyRef === p.paystackRef}
                           onClick={() => openRefund(p)}>
                           Refund
                         </Button>
                       )}
-                      <Button size="sm" variant="danger" disabled={busyRef === p.paystackRef}
+                      <Button size="sm" variant="danger" pending={busyRef === p.paystackRef}
                         onClick={() => resolvePayment(p, 'reverse')}>
                         Reverse
                       </Button>
@@ -470,7 +470,7 @@ export default function AdminPayments() {
                     <Button size="sm" variant="secondary" onClick={() => openTimeline(p)}>History</Button>
                   )}
                   {['PENDING', 'ABANDONED', 'FAILED'].includes(p.status) && (
-                    <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
+                    <Button size="sm" variant="secondary" pending={busyRef === p.paystackRef}
                       onClick={() => recheck(p)}>
                       Recheck
                     </Button>
@@ -478,24 +478,24 @@ export default function AdminPayments() {
                   {p.status === 'DISPUTED' && (
                     <>
                       {!p.disputeAnswer && (<>
-                      <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
+                      <Button size="sm" variant="secondary" pending={busyRef === p.paystackRef}
                         onClick={() => setEvidenceDialog({ payment: p, phone: '', details: '', error: '' })}>
                         Send evidence
                       </Button>
-                      <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
+                      <Button size="sm" variant="secondary" pending={busyRef === p.paystackRef}
                         onClick={() => contestDispute(p)}>
                         Contest dispute
                       </Button>
-                      <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
+                      <Button size="sm" variant="secondary" pending={busyRef === p.paystackRef}
                         onClick={() => acceptDispute(p)}>
                         Accept dispute
                       </Button>
                       </>)}
-                      <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
+                      <Button size="sm" variant="secondary" pending={busyRef === p.paystackRef}
                         onClick={() => resolvePayment(p, 'clear-dispute')}>
                         Clear dispute
                       </Button>
-                      <Button size="sm" variant="danger" disabled={busyRef === p.paystackRef}
+                      <Button size="sm" variant="danger" pending={busyRef === p.paystackRef}
                         onClick={() => resolvePayment(p, 'reverse')}>
                         Reverse
                       </Button>

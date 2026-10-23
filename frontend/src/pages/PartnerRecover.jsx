@@ -19,16 +19,15 @@ export default function PartnerRecover() {
   const [sent, setSent] = useState(false)
   const [captcha, setCaptcha] = useState('')
   const [captchaReset, setCaptchaReset] = useState(0)
-  const { loading, error, execute } = useApi()
+  const { loading, error, execute, fail: showError } = useApi()
 
   async function handleSubmit() {
     if (!email.trim()) {
-      await execute(() => Promise.reject(new Error('Please enter your email.')), { fallback: 'Please enter your email.' }).catch(() => {})
+      await showError('Please enter your email.')
       return
     }
     if (TURNSTILE_ENABLED && !captcha) {
-      await execute(() => Promise.reject(new Error('Please complete the security check below.')),
-        { fallback: 'Please complete the security check below.' }).catch(() => {})
+      await showError('Please complete the security check below.')
       return
     }
     try {

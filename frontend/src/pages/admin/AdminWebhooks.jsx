@@ -411,7 +411,7 @@ export default function AdminWebhooks() {
                     </Button>
                   )}
                   {ev.dismissable && (
-                    <Button size="sm" variant="ghost" className="ml-2" disabled={busyId === ev.id} onClick={() => { setDismissNote(''); setDismissing(ev) }}>
+                    <Button size="sm" variant="ghost" className="ml-2" pending={busyId === ev.id} onClick={() => { setDismissNote(''); setDismissing(ev) }}>
                       Dismiss
                     </Button>
                   )}

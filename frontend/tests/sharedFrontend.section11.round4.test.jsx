@@ -210,9 +210,11 @@ describe('Toast', () => {
   })
 
   it('an Error or object message renders as text instead of crashing', () => {
-    act(() => { toast.error(new Error('Boom')); toast.info({ weird: true }) })
+    act(() => { toast.error(new Error('Boom')); toast.info({ message: 'From a body' }); toast.info({ weird: true }) })
     expect(screen.getByText('Boom')).toBeInTheDocument()
-    expect(screen.getByText('[object Object]')).toBeInTheDocument()
+    expect(screen.getByText('From a body')).toBeInTheDocument()
+    // Section 11 round 24: a plain object with no message used to print "[object Object]"; it is a blank toast now, which is not shown.
+    expect(screen.queryByText('[object Object]')).toBeNull()
   })
 
   it('still caps at 5 and clears the timers of what was pushed off', () => {

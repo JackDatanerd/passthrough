@@ -101,7 +101,7 @@ export default function AdminStories() {
                 onToggle={open => { if (open) setRead(r => ({ ...r, [s.scanId]: s.text })) }} />
               <div className="mt-3 flex gap-2">
                 {s.status !== 'APPROVED' && <Button size="sm" loading={busyId === s.scanId} disabled={unread(s)} onClick={() => moderate(s.scanId, 'approve')}>Approve</Button>}
-                {s.status !== 'REJECTED' && <Button size="sm" variant="danger" disabled={busyId === s.scanId} onClick={() => moderate(s.scanId, 'reject')}>{s.status === 'APPROVED' ? 'Take down' : 'Reject'}</Button>}
+                {s.status !== 'REJECTED' && <Button size="sm" variant="danger" pending={busyId === s.scanId} onClick={() => moderate(s.scanId, 'reject')}>{s.status === 'APPROVED' ? 'Take down' : 'Reject'}</Button>}
               </div>
               {s.status !== 'APPROVED' && unread(s) && (
                 <p className="mt-2 text-xs text-amber-800" data-testid="read-to-approve">Open the full story to approve it. Approving publishes all of it.</p>

@@ -765,22 +765,22 @@ export default function AdminLeads() {
               cell: l => (
                 <>
                   {!l.confirmedAt && l.status !== 'ARCHIVED' && (
-                    <Button size="sm" variant="secondary" disabled={busyId === l.id} onClick={() => requestConfirmation(l)} className="mr-2">
+                    <Button size="sm" variant="secondary" pending={busyId === l.id} onClick={() => requestConfirmation(l)} className="mr-2">
                       Send confirm link
                     </Button>
                   )}
                   {!l.confirmedAt && (
-                    <Button size="sm" variant="secondary" disabled={busyId === l.id} onClick={() => setPendingMarkConfirmed(l)} className="mr-2">
+                    <Button size="sm" variant="secondary" pending={busyId === l.id} onClick={() => setPendingMarkConfirmed(l)} className="mr-2">
                       Mark confirmed
                     </Button>
                   )}
                   <Button size="sm" variant="secondary" onClick={() => setDetailId(l.id)} className="mr-2">
                     Details
                   </Button>
-                  <Button size="sm" variant="secondary" disabled={busyId === l.id} onClick={() => setEditing(l)} className="mr-2">
+                  <Button size="sm" variant="secondary" pending={busyId === l.id} onClick={() => setEditing(l)} className="mr-2">
                     Edit
                   </Button>
-                  <Button size="sm" variant="danger" disabled={busyId === l.id} onClick={() => setPendingDelete(l)}>
+                  <Button size="sm" variant="danger" pending={busyId === l.id} onClick={() => setPendingDelete(l)}>
                     Delete
                   </Button>
                 </>
@@ -1028,17 +1028,17 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
         )}
         {error && <p className="text-sm text-red-600" role="alert">{error}</p>}
         {needsOverride && (
-          <Button variant="danger" onClick={() => submit({ override: true })} disabled={saving}>
+          <Button variant="danger" onClick={() => submit({ override: true })} pending={saving}>
             {needsOverride === 'REMOVAL_LIFT_FAILED' ? 'Try lifting the block again' : "They've asked me to add them — add anyway"}
           </Button>
         )}
         {needsDuplicate && (
-          <Button variant="secondary" onClick={() => submit({ allowDuplicate: true })} disabled={saving}>
+          <Button variant="secondary" onClick={() => submit({ allowDuplicate: true })} pending={saving}>
             {mode === 'add' ? 'Add it anyway' : 'Use this address anyway'}
           </Button>
         )}
         <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose} disabled={saving}>Cancel</Button>
+          <Button variant="secondary" onClick={onClose} pending={saving}>Cancel</Button>
           <Button type="submit" loading={saving}>{mode === 'add' ? 'Add lead' : 'Save'}</Button>
         </div>
       </Form>
@@ -1327,7 +1327,7 @@ function ImportLeadsModal({ open, onClose, onDone }) {
         )}
         {error && <p role="alert" className="text-red-600">{error}</p>}
         <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button variant="secondary" onClick={onClose} pending={busy}>Cancel</Button>
           <Button variant="secondary" loading={busy && !report} disabled={!rows.length || !!parseError || !attest || busy} onClick={() => run(true)}>Check file</Button>
           <Button loading={busy && !!report} disabled={!report || !report.wouldCreate || busy} onClick={() => run(false)}>
             Import{report ? ` ${report.wouldCreate}` : ''}

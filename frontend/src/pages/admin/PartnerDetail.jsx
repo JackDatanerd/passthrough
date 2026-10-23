@@ -42,7 +42,7 @@ function PayoutDetailsFields({ method, details }) {
 // Round 27: the detail view only carries the MASKED account number and tax ID. The full values come from a step-up gated endpoint that
 // writes a partner.details_viewed audit entry, so reading a partner's account leaves the same trace as exporting it.
 function RevealDetailsButton({ partnerId, onRevealed, label = 'Show full details' }) {
-  const { execute, loading, error } = useApi()
+  const { execute, loading, error, fail: showError } = useApi()
   async function reveal() {
     try {
       const data = await execute(() => api.get(`/partners/${partnerId}/payout-details`), { fallback: 'Could not load the full details.' })
@@ -97,17 +97,16 @@ function VoidPayoutModal({ partner, payout, onClose, onVoided }) {
   const toast = useToast()
   const [reason, setReason] = useState('')
   const [notify, setNotify] = useState(true)
-  const { loading, error, execute } = useApi()
+  const { loading, error, execute, fail: showError } = useApi()
 
   async function handleVoid() {
     if (reason.trim().length < 3) {
-      await execute(() => Promise.reject(new Error('Say why this payout is being voided.')),
-        { fallback: 'Say why this payout is being voided.' }).catch(() => {})
+      await showError('Say why this payout is being voided.')
       return
     }
     try {
       const data = await execute(() => api.post(`/partners/${partner.id}/payouts/${payout.id}/void`,
-        { reason: reason.trim(), notifyPartner: notify }), { fallback: 'Failed to void payout.' })
+        { reason: reason.trim(), notifyPartner: notify }), { keepAlive: true, fallback: 'Failed to void payout.' })
       toast({ message: data.message || 'Payout voided.', type: 'success' })
       onVoided()
       onClose()
@@ -262,11 +261,11 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
   const [website, setWebsite] = useState(partner.website || '')
   const [audience, setAudience] = useState(partner.audience || '')
   const [notes, setNotes] = useState(partner.internalNotes || '')
-  const { loading: saving, error, execute } = useApi()
+  const { loading: saving, error, execute, fail: showError } = useApi()
 
   async function handleSave() {
     function fail(message) {
-      return execute(() => Promise.reject(new Error(message)), { fallback: message }).catch(() => {})
+      return showError(message)
     }
     // AUDIT FIX (Admin panel re-audit): `!rateNum` rejected an intentional
     // 0% rate — the backend/DB both explicitly allow commissionRate === 0
@@ -291,7 +290,7 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
       if (notes.trim()    !== (partner.internalNotes || '')) patch.internalNotes = notes.trim()
       if (Object.keys(patch).length === 0) { onClose(); return }
       const out = await execute(() => api.patch(`/partners/${partner.id}`, patch),
-        { fallback: 'Failed to update partner.' })
+        { keepAlive: true, fallback: 'Failed to update partner.' })
       // Round 22: an email change replaces both links and mails them to the NEW address only — say so when that mail did not go.
       if (out?.linksEmailed === false) {
         const copied = await copyToClipboard([out.dashboardUrl, out.payoutUrl].filter(Boolean).join('\n'))
@@ -369,7 +368,7 @@ function AdjustBalanceModal({ partner, onClose, onAdjusted }) {
     setDirection('deduct'); setAmount((refundCommissionCents / 100).toFixed(2))
     if (!reason.trim()) setReason('Commission on a partial refund')
   }
-  const { loading, error, execute } = useApi()
+  const { loading, error, execute, fail: showError } = useApi()
 
   function writeOff() {
     // Whatever sign the unpaid balance has, the adjustment that brings it to zero is the opposite.
@@ -379,7 +378,7 @@ function AdjustBalanceModal({ partner, onClose, onAdjusted }) {
   }
 
   async function submit() {
-    const fail = message => execute(() => Promise.reject(new Error(message)), { fallback: message }).catch(() => {})
+    const fail = message => showError(message)
     const value = Number(amount)
     if (!amount.trim() || !Number.isFinite(value) || value <= 0) return fail('Enter an amount greater than zero.')
     const cents = Math.round(value * 100)
@@ -387,7 +386,7 @@ function AdjustBalanceModal({ partner, onClose, onAdjusted }) {
     try {
       const data = await execute(() => api.post(`/partners/${partner.id}/adjustments`, {
         amountCents: direction === 'deduct' ? -cents : cents, reason: reason.trim(), notify: removed ? false : notify
-      }), { fallback: 'Failed to record the adjustment.' })
+      }), { keepAlive: true, fallback: 'Failed to record the adjustment.' })
       toast({ message: data.emailed ? 'Adjustment recorded; partner emailed.' : 'Adjustment recorded.', type: 'success' })
       onAdjusted()
       onClose()
@@ -460,7 +459,7 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
   // Round 6: within the server's hold window after a payout-details change (partner.payoutDetailsHoldHours, 48 by
   // default) the payout is REFUSED unless the admin states they confirmed the change with the partner directly.
   const [confirmedWithPartner, setConfirmedWithPartner] = useState(false)
-  const { loading: saving, error, execute } = useApi()
+  const { loading: saving, error, execute, fail: showError } = useApi()
   const holdHours = partner.payoutDetailsHoldHours ?? 48
   const inHold = holdHours > 0 && withinHours(partner.payoutDetailsSubmittedAt, holdHours)
   const amountCentsNow = Math.round(Number(amount || 0) * 100)
@@ -469,20 +468,18 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
   async function handleRecord() {
     const parsed = Number(amount)
     if (!parsed || parsed <= 0) {
-      await execute(() => Promise.reject(new Error('Enter a valid amount.')),
-        { fallback: 'Enter a valid amount.' }).catch(() => {})
+      await showError('Enter a valid amount.')
       return
     }
 
     if (differs && (!ack || !(note.trim() || internalNote.trim()))) {
-      await execute(() => Promise.reject(new Error('Amount differs from the commission being settled — tick the confirmation and add an internal note explaining why.')),
-        { fallback: 'Confirm the difference and add a note.' }).catch(() => {})
+      await showError('Confirm the difference and add a note.')
       return
     }
 
     if (inHold && !confirmedWithPartner) {
       const why = `Payout details changed in the last ${holdHours} hours — confirm the change with ${partner.name} and tick the box.`
-      await execute(() => Promise.reject(new Error(why)), { fallback: why }).catch(() => {})
+      await showError(why)
       return
     }
 
@@ -506,7 +503,7 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
         note: note.trim() || undefined,
         internalNote: internalNote.trim() || undefined,
         ...(cycle ? { periodStart: cycle.start, periodEnd: cycle.end } : {})
-      }), { fallback: 'Failed to record payout.' })
+      }), { keepAlive: true, fallback: 'Failed to record payout.' })
       // AUDIT FIX (bug): ledgerSettlementFailed means the payout row was
       // created but the commission_ledger rows it was meant to settle are
       // still marked unpaid (see adminRecordPayout's comment) — a real,
@@ -602,11 +599,11 @@ function CreateReferralCodeModal({ partner, onClose, onCreated }) {
   const [usageLimit, setUsageLimit] = useState('')
   const [expiresAt, setExpiresAt] = useState('')
   const [confirmLow, setConfirmLow] = useState(false)
-  const { loading: saving, error, execute } = useApi()
+  const { loading: saving, error, execute, fail: showError } = useApi()
 
   async function handleCreate() {
     function fail(message) {
-      return execute(() => Promise.reject(new Error(message)), { fallback: message }).catch(() => {})
+      return showError(message)
     }
     const cleanCode = code.trim()
     if (!cleanCode) return fail('Code is required.')
@@ -626,7 +623,7 @@ function CreateReferralCodeModal({ partner, onClose, onCreated }) {
         // date was picked.
         ...(expiresAt ? { expiresAt: dateToExpiresAt(expiresAt) } : {}),
         ...(confirmLow ? { confirmLowPrice: true } : {})
-      }), { fallback: 'Failed to create code.' })
+      }), { keepAlive: true, fallback: 'Failed to create code.' })
       toast(res?.partnerPaused
         ? { message: `Code ${cleanCode.toUpperCase()} created, but ${partner.name} is PAUSED — it won't apply or earn until they're reactivated, and no email was sent.`, type: 'warning' }
         : { message: `Code ${cleanCode.toUpperCase()} created — ${partner.name} has been emailed.`, type: 'success' })
@@ -682,7 +679,7 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
   const [usageLimit, setUsageLimit] = useState(codeRow.usageLimit != null ? String(codeRow.usageLimit) : '')
   const [expiresAt, setExpiresAt] = useState(expiresAtToDateInput(codeRow.expiresAt))
   const [confirmLow, setConfirmLow] = useState(false)
-  const { loading: saving, error, execute } = useApi()
+  const { loading: saving, error, execute, fail: showError } = useApi()
 
   async function handleSave() {
     const tierPrices = {}
@@ -690,8 +687,7 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
     if (badge)    tierPrices.BADGE     = Math.round(Number(badge) * 100)
     if (fixPlain) tierPrices.FIX_PLAIN = Math.round(Number(fixPlain) * 100)
     if (Object.keys(tierPrices).length === 0) {
-      await execute(() => Promise.reject(new Error('Set at least one tier price.')),
-        { fallback: 'Set at least one tier price.' }).catch(() => {})
+      await showError('Set at least one tier price.')
       return
     }
 
@@ -699,8 +695,7 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
     // still allow price/limit edits without tripping the future-date check.
     const expiresChanged = expiresAt !== expiresAtToDateInput(codeRow.expiresAt)
     if (expiresChanged && expiresAt && new Date(dateToExpiresAt(expiresAt)) <= new Date()) {
-      await execute(() => Promise.reject(new Error('Expiry date must be in the future.')),
-        { fallback: 'Expiry date must be in the future.' }).catch(() => {})
+      await showError('Expiry date must be in the future.')
       return
     }
 
@@ -709,8 +704,7 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
     const cleanCode = codeText.trim().toUpperCase()
     const codeChanged = cleanCode !== codeRow.code
     if (codeChanged && !/^[A-Z0-9_-]{2,50}$/.test(cleanCode)) {
-      await execute(() => Promise.reject(new Error('Code must be 2-50 characters: letters, numbers, hyphens or underscores only.')),
-        { fallback: 'Invalid code.' }).catch(() => {})
+      await showError('Invalid code.')
       return
     }
     const pricesChanged = ['FIX', 'BADGE', 'FIX_PLAIN'].some(k => (tierPrices[k] ?? null) !== (tp[k] ?? null))
@@ -725,7 +719,7 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
         // an explicit null here is how an admin clears an existing
         // expiration, same convention as usageLimit right above.
         ...(expiresChanged ? { expiresAt: expiresAt ? dateToExpiresAt(expiresAt) : null } : {})
-      }), { fallback: 'Failed to update code.' })
+      }), { keepAlive: true, fallback: 'Failed to update code.' })
       toast({ message: codeChanged ? `Code renamed to ${cleanCode}.` : `Code ${codeRow.code} updated.`, type: 'success' })
       for (const w of res?.warnings || []) toast({ message: w, type: 'warning' })
       onSaved()
@@ -951,13 +945,13 @@ function CyclesTab({ partner, onChanged }) {
 // released) without touching the buyer's payment. The reason stays in the audit log; the partner is emailed the amount.
 function ReverseSaleModal({ partner, sale, onClose, onDone }) {
   const toast = useToast()
-  const { execute, loading, error } = useApi()
+  const { execute, loading, error, fail: showError } = useApi()
   const [reason, setReason] = useState('')
   async function submit() {
-    if (reason.trim().length < 5) return execute(() => Promise.reject(new Error('Say why (at least 5 characters). It is kept in the audit log.')), { fallback: 'Say why.' }).catch(() => {})
+    if (reason.trim().length < 5) return showError('Say why.')
     try {
       const data = await execute(() => api.post(`/partners/${partner.id}/ledger/${sale.id}/reverse`, { reason: reason.trim() }),
-        { fallback: 'Failed to reverse the sale.' })
+        { keepAlive: true, fallback: 'Failed to reverse the sale.' })
       toast({ message: data.alreadyPaidOut ? 'Sale reversed. It was already paid, so it becomes a refund credit against the next payout.' : 'Sale reversed.', type: 'success' })
       onDone()
       onClose()
@@ -987,15 +981,15 @@ function ReverseSaleModal({ partner, sale, onClose, onDone }) {
 // reverse + a hand-written adjustment. This moves one UNPAID sale to another partner's code in a single step, at THEIR current rate.
 function MoveSaleModal({ partner, sale, onClose, onDone }) {
   const toast = useToast()
-  const { execute, loading, error } = useApi()
+  const { execute, loading, error, fail: showError } = useApi()
   const [toCode, setToCode] = useState('')
   const [reason, setReason] = useState('')
   async function submit() {
-    if (!toCode.trim()) return execute(() => Promise.reject(new Error('Enter the code that should get this sale.')), { fallback: 'Enter the code that should get this sale.' }).catch(() => {})
-    if (reason.trim().length < 5) return execute(() => Promise.reject(new Error('Say why (at least 5 characters). It is kept in the audit log.')), { fallback: 'Say why (at least 5 characters). It is kept in the audit log.' }).catch(() => {})
+    if (!toCode.trim()) return showError('Enter the code that should get this sale.')
+    if (reason.trim().length < 5) return showError('Say why (at least 5 characters). It is kept in the audit log.')
     try {
       await execute(() => api.post(`/partners/${partner.id}/ledger/${sale.id}/reattribute`, { toCode: toCode.trim().toUpperCase(), reason: reason.trim() }),
-        { fallback: 'Failed to move the sale.' })
+        { keepAlive: true, fallback: 'Failed to move the sale.' })
       toast({ message: 'Sale moved.', type: 'success' })
       onDone()
       onClose()
@@ -1153,17 +1147,16 @@ function RemoveDataModal({ partner, onClose, onRemoved }) {
   const toast = useToast()
   const [reason, setReason] = useState('')
   const [typed, setTyped] = useState('')
-  const { loading, error, execute } = useApi()
+  const { loading, error, execute, fail: showError } = useApi()
 
   async function handleRemove() {
     if (reason.trim().length < 3) {
-      await execute(() => Promise.reject(new Error('Say why this partner\u2019s data is being removed.')),
-        { fallback: 'Say why this partner\u2019s data is being removed.' }).catch(() => {})
+      await showError('Say why this partner\u2019s data is being removed.')
       return
     }
     try {
       const data = await execute(() => api.post(`/partners/${partner.id}/anonymize`, { reason: reason.trim() }),
-        { fallback: 'Failed to remove partner data.' })
+        { keepAlive: true, fallback: 'Failed to remove partner data.' })
       toast({ message: data.message || 'Partner data removed.', type: 'success' })
       onRemoved()
       onClose()

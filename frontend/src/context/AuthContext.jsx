@@ -1,5 +1,6 @@
 import { createContext, useState, useEffect } from 'react'
-import api, { SESSION_ENDED_EVENT, clearStepUp } from '../lib/api'
+import api, { SESSION_ENDED_EVENT, clearStepUp, resumeEndedSession } from '../lib/api'
+import { hasUnsavedWork } from '../lib/unsavedGuard'
 import { signedOutElsewhereTarget, failureScope } from '../lib/session'
 import { getAnonScanTokens, removeAnonScanToken, clearAnonScanTokens } from '../lib/anonScans'
 import { clearBrainDumpDraft, dropForeignBrainDumpDraft } from '../lib/brainDumpDraft'
@@ -113,19 +114,28 @@ export function AuthProvider({ children }) {
     function onStorage(e) {
       // e.key === null is localStorage.clear() in another tab.
       if ((e.key === TOKEN_KEY && !e.newValue) || e.key === null) {
-        setUser(null)
-        // Another tab signed out. A tab sitting on a page that needs a session must follow:
-        // AuthProvider lives outside the router, so a hard replace is the way. Re-check the
-        // token first — a sign-out immediately followed by a sign-in elsewhere (token removed,
-        // then set again) must not bounce this tab.
-        if (!getToken()) {
-          const to = signedOutElsewhereTarget(window.location.pathname, window.location.search)
-          if (to) window.location.replace(to)
+        // Another tab signed out. A tab holding UNSAVED work is not thrown out: the person signs in again right here (the same
+        // in-place prompt a server-side expiry uses) and the draft survives. Only "discard" — or no editor being dirty — leaves.
+        if (hasUnsavedWork() && !getToken()) {
+          resumeEndedSession().then(ok => { if (!ok) leaveSignedOut() })
+          return
         }
+        leaveSignedOut()
       }
       if (e.key === USER_KEY) {
+        // The same sign-out also removes the cached user; while the resume prompt is deciding, `user` must stay (it names the account).
+        if (!e.newValue && hasUnsavedWork() && !getToken()) return
         try { setUser(e.newValue ? JSON.parse(e.newValue) : null) } catch (_) {}
       }
+    }
+    // Drops the in-memory user and, on a page that needs a session, follows the other tab out. AuthProvider lives outside the
+    // router, so a hard replace is the way. The token is re-checked first: a sign-out immediately followed by a sign-in elsewhere
+    // (token removed, then set again) must not bounce this tab.
+    function leaveSignedOut() {
+      if (getToken()) return
+      setUser(null)
+      const to = signedOutElsewhereTarget(window.location.pathname, window.location.search)
+      if (to) window.location.replace(to)
     }
     window.addEventListener('storage', onStorage)
     return () => window.removeEventListener('storage', onStorage)

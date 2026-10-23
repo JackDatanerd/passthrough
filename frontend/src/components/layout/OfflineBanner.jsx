@@ -9,7 +9,7 @@ import useOnlineStatus from '../../hooks/useOnlineStatus'
 export default function OfflineBanner() {
   const online = useOnlineStatus()
   return (
-    <div role="status">
+    <div role="status" data-live-region="">
       {!online && (
         <div className="bg-amber-100 border-b border-amber-300 px-4 py-2 text-center text-sm text-amber-900">
           You're offline. Anything you save or upload will fail until your connection is back.

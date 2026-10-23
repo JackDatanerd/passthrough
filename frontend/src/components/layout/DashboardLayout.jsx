@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import Footer from './Footer'
+import SkipLink from './SkipLink'
 import { cn } from '../../lib/utils'
 import Alert from '../ui/Alert'
 import { useAuth } from '../../hooks/useAuth'
@@ -31,17 +32,6 @@ function isActive(pathname, to) {
   return path === to || (to !== '/dashboard' && path.startsWith(`${to}/`))
 }
 
-// Moves keyboard focus past the header into the page's <main>, so a keyboard user does not tab through the
-// tabs on every page.
-function skipToMain(e) {
-  const main = document.querySelector('main')
-  if (!main) return
-  e.preventDefault()
-  if (!main.hasAttribute('tabindex')) main.setAttribute('tabindex', '-1')
-  main.focus()
-  main.scrollIntoView?.()
-}
-
 export default function DashboardLayout({ children }) {
   const { pathname } = useLocation()
   const { user } = useAuth()
@@ -56,13 +46,7 @@ export default function DashboardLayout({ children }) {
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
       <header className="bg-white border-b border-gray-200">
-        <a
-          href="#main"
-          onClick={skipToMain}
-          className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-[70] focus:rounded-md focus:bg-white focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-blue-700 focus:shadow"
-        >
-          Skip to content
-        </a>
+        <SkipLink />
         {/* AUDIT FIX (Section 6): the tab strip is the only route to /dashboard/settings anywhere in the app, so it
             must never be hidden. One row from sm upward (logo, tabs, sign out); on a phone the tabs drop to their
             own row and scroll sideways rather than wrap. */}

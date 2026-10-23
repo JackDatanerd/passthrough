@@ -33,7 +33,8 @@ import { getErrorMessage, getRetryAfterSeconds, isCancelError } from '../lib/err
 // Rate limits: `retryAfter` is the number of seconds the server asked the client to wait after a 429 / 503 (its Retry-After header), or
 // null. `error` already says so in words; use the number to keep a button disabled (see useCooldown).
 //
-//   const { loading, error, retryAfter, progress, execute, reset } = useApi()
+//   const { loading, error, retryAfter, progress, execute, reset, fail } = useApi()
+//   fail('Enter a valid amount.')                                   // a client-side message, no request
 //   const data = await execute(() => api.post('/scan', formData))   // returns res.data; rethrows on failure
 export function useApi() {
   const [pending, setPending] = useState(0)
@@ -120,5 +121,15 @@ export function useApi() {
 
   const reset = useCallback(() => { errorMark.current = -1; setError(null); setRetryAfter(null) }, [])
 
-  return { loading: pending > 0, error, retryAfter, progress, execute, reset }
+  // Shows a message the CALLER worked out (a form that is not valid yet) as this hook's `error`, without a request. About two dozen
+  // screens did `execute(() => Promise.reject(new Error(msg)))` for this, which flipped `loading` on for a tick and burned a call id.
+  // Like a failure, it is not wiped by an older call that finishes later.
+  const fail = useCallback(message => {
+    if (!mounted.current) return
+    errorMark.current = callId.current
+    setError(typeof message === 'string' && message ? message : getErrorMessage(null))
+    setRetryAfter(null)
+  }, [])
+
+  return { loading: pending > 0, error, retryAfter, progress, execute, reset, fail }
 }

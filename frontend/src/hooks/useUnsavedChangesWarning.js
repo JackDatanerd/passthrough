@@ -44,7 +44,9 @@ export function useUnsavedChangesWarning(dirty) {
 
   useEffect(() => {
     if (!dirty) return undefined
-    const warn = e => { e.preventDefault(); e.returnValue = '' }
+    // leaveAllowed(): the person already agreed to discard (the session-resume prompt's "Discard my changes"), so the hard
+    // redirect that follows must not ask the browser's own "Leave site?" question a second time.
+    const warn = e => { if (leaveAllowed()) return; e.preventDefault(); e.returnValue = '' }
     window.addEventListener('beforeunload', warn)
     return () => window.removeEventListener('beforeunload', warn)
   }, [dirty])

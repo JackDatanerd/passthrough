@@ -110,9 +110,9 @@ function Question({ item, onAnswered }) {
         <>
           <p className="font-semibold text-gray-900 mb-3">Did it lead to an interview?</p>
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" disabled={busy} onClick={yes}>Yes, I got an interview</Button>
-            <Button size="sm" variant="secondary" disabled={busy} onClick={() => answer('NO_INTERVIEW')}>Not yet</Button>
-            <Button size="sm" variant="secondary" disabled={busy} onClick={() => answer('STILL_APPLYING')}>Still applying</Button>
+            <Button size="sm" pending={busy} onClick={yes}>Yes, I got an interview</Button>
+            <Button size="sm" variant="secondary" pending={busy} onClick={() => answer('NO_INTERVIEW')}>Not yet</Button>
+            <Button size="sm" variant="secondary" pending={busy} onClick={() => answer('STILL_APPLYING')}>Still applying</Button>
           </div>
         </>
       )}
@@ -144,7 +144,7 @@ function Question({ item, onAnswered }) {
           )}
 
           <div>
-            <Button size="sm" disabled={busy} onClick={() => onAnswered('Thank you — that genuinely helps.')}>Done</Button>
+            <Button size="sm" pending={busy} onClick={() => onAnswered('Thank you — that genuinely helps.')}>Done</Button>
           </div>
         </div>
       )}

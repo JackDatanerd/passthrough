@@ -7,7 +7,7 @@ import {
 } from './session'
 import { getToken, getDeviceId, storageRemove } from './storage'
 import { setFlash, FLASH_ADMIN_DENIED } from './flash'
-import { hasUnsavedWork } from './unsavedGuard'
+import { hasUnsavedWork, allowNextLeave } from './unsavedGuard'
 
 // Re-exported so pages can `import api, { getErrorMessage } from '../lib/api'`.
 export { getErrorMessage } from './errors'
@@ -186,11 +186,21 @@ function resumeSession() {
   return sessionResumePending
 }
 
+// Section 11 (G1): the session ended in a way api.js never sees — another tab of this browser signed out, so the token vanished from
+// shared storage. AuthProvider asks the same in-place sign-in used for a server-side expiry; resolves true once the person signed
+// in again as the same account, false when there is nothing to ask with (no prompt mounted, no account) or they chose to discard.
+export function resumeEndedSession() {
+  if (!sessionResumePrompt) return Promise.resolve(false)
+  return resumeSession()
+}
+
 let sessionEnding = false
 
 function endSession(reason) {
   if (sessionEnding) return            // several in-flight requests can all fail at once
   sessionEnding = true
+  // A banned account is sent away whether or not an editor is dirty: the browser's "Leave site?" prompt must not stand in the way.
+  if (reason === 'banned') allowNextLeave()
   resumedSessions.clear()
   clearStepUp()                         // an elevation belongs to the session that just ended
   storageRemove(TOKEN_KEY)

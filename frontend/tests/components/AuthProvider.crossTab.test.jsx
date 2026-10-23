@@ -8,8 +8,10 @@ vi.mock('../../src/lib/api', () => ({
   default: { get: vi.fn(), post: vi.fn() },
   SESSION_ENDED_EVENT: 'passthrough:session-ended',
   clearStepUp: vi.fn(),
+  resumeEndedSession: vi.fn(() => Promise.resolve(false)),
 }))
-import api from '../../src/lib/api'
+import api, { resumeEndedSession } from '../../src/lib/api'
+import { markUnsaved, resetLeaveGuard } from '../../src/lib/unsavedGuard'
 
 function Probe() {
   const { user, logout } = useAuth()
@@ -86,5 +88,33 @@ describe('AuthProvider — logout()', () => {
     await act(async () => { screen.getByText('out').click() })
     await expect(window.__p).resolves.toBeUndefined()
     expect(api.post).not.toHaveBeenCalled()
+  })
+})
+
+describe('AuthProvider — another tab signs out while this one holds a draft (section 11, G1)', () => {
+  afterEach(() => resetLeaveGuard())
+  it('keeps the account and asks to sign in again in place instead of redirecting', async () => {
+    setLocation('/dashboard/settings')
+    resumeEndedSession.mockReturnValue(new Promise(() => {}))   // the prompt is still open
+    markUnsaved()
+    render(<AuthProvider><Probe /></AuthProvider>)
+    await screen.findByText('a@b.co')
+    localStorage.removeItem('passthrough_token'); localStorage.removeItem('passthrough_user')
+    fire('passthrough_token', null); fire('passthrough_user', null)
+    expect(resumeEndedSession).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('u').textContent).toBe('a@b.co')
+    expect(replace).not.toHaveBeenCalled()
+  })
+  it('discarding falls back to the normal sign-out and redirect', async () => {
+    setLocation('/dashboard')
+    resumeEndedSession.mockResolvedValue(false)
+    markUnsaved()
+    render(<AuthProvider><Probe /></AuthProvider>)
+    await screen.findByText('a@b.co')
+    localStorage.removeItem('passthrough_token')
+    fire('passthrough_token', null)
+    await act(async () => {})
+    expect(screen.getByTestId('u').textContent).toBe('none')
+    expect(replace).toHaveBeenCalledWith('/login?next=%2Fdashboard')
   })
 })

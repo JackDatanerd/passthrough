@@ -3,17 +3,7 @@ import { Link, useLocation } from 'react-router-dom'
 import { useAuth } from '../../hooks/useAuth'
 import useSignOut from '../../hooks/useSignOut'
 import LogoMark from './LogoMark'
-
-// Moves keyboard focus past the nav into the page's <main> (every page that renders this Navbar
-// has one). Without it a keyboard user tabs through the nav links on every single page.
-function skipToMain(e) {
-  const main = document.querySelector('main')
-  if (!main) return
-  e.preventDefault()
-  if (!main.hasAttribute('tabindex')) main.setAttribute('tabindex', '-1')
-  main.focus()
-  main.scrollIntoView?.()
-}
+import SkipLink from './SkipLink'
 
 // The page a top-level link points at, for assistive tech. Hash links (/#stories) never count: the page is Home either way.
 const here = (pathname, to) => (pathname === to || pathname.startsWith(`${to}/`) ? 'page' : undefined)
@@ -67,13 +57,7 @@ export default function Navbar() {
 
   return (
     <nav ref={navRef} aria-label="Main" className="sticky top-0 z-50 bg-paper/90 backdrop-blur-md border-b border-gray-200">
-      <a
-        href="#main"
-        onClick={skipToMain}
-        className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-[70] focus:rounded-md focus:bg-white focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-blue-700 focus:shadow-lg focus:ring-2 focus:ring-blue-500"
-      >
-        Skip to content
-      </a>
+      <SkipLink />
       <div className="max-w-[1180px] mx-auto px-4 max-[359px]:px-3 sm:px-6 h-16 flex items-center justify-between gap-3 sm:gap-4">
         <Link to="/" className="flex items-center gap-2 max-[359px]:gap-1.5 sm:gap-2.5 font-display font-extrabold text-ink text-xl max-[359px]:text-[1.05rem] sm:text-[1.4rem] tracking-[-0.03em]">
           <LogoMark className="w-[26px] h-[26px] sm:w-[30px] sm:h-[30px]" />

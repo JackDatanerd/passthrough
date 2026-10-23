@@ -46,22 +46,20 @@ function AddPartnerModal({ onClose, onCreated }) {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [rate, setRate] = useState('')
-  const { loading: saving, error, execute } = useApi()
+  const { loading: saving, error, execute, fail: showError } = useApi()
 
   async function handleCreate() {
     if (!name || !email) {
-      await execute(() => Promise.reject(new Error('Name and email are required.')),
-        { fallback: 'Name and email are required.' }).catch(() => {})
+      await showError('Name and email are required.')
       return
     }
     const commissionRate = percentToRate(rate)
     if (commissionRate === null) {
-      await execute(() => Promise.reject(new Error('Commission rate must be between 0 and 100.')),
-        { fallback: 'Commission rate must be between 0 and 100.' }).catch(() => {})
+      await showError('Commission rate must be between 0 and 100.')
       return
     }
     try {
-      const data = await execute(() => api.post('/partners', { name, email, ...(commissionRate !== undefined ? { commissionRate } : {}) }), { fallback: 'Failed to add partner.' })
+      const data = await execute(() => api.post('/partners', { name, email, ...(commissionRate !== undefined ? { commissionRate } : {}) }), { keepAlive: true, fallback: 'Failed to add partner.' })
       await announceDelivery(toast, `${name} added`, data)
       onCreated()
       onClose()
@@ -108,11 +106,11 @@ function ApproveApplicationModal({ app, onClose, onDone }) {
   const [usageLimit, setUsageLimit] = useState('')
   const [expiresOn, setExpiresOn] = useState('')
   const [confirmLow, setConfirmLow] = useState(false)
-  const { loading: saving, error, execute } = useApi()
+  const { loading: saving, error, execute, fail: showError } = useApi()
 
   async function handleApprove() {
     const commissionRate = percentToRate(rate)
-    const fail = msg => execute(() => Promise.reject(new Error(msg)), { fallback: msg }).catch(() => {})
+    const fail = msg => showError(msg)
     if (commissionRate === null) return fail('Commission rate must be between 0 and 100.')
     const body = commissionRate !== undefined ? { commissionRate } : {}
     if (withCode) {
@@ -133,7 +131,7 @@ function ApproveApplicationModal({ app, onClose, onDone }) {
       body.referralCode = { code: code.trim(), tierPrices, ...(limit !== null ? { usageLimit: limit } : {}), ...(expiresAt ? { expiresAt } : {}), ...(confirmLow ? { confirmLowPrice: true } : {}) }
     }
     try {
-      const data = await execute(() => api.post(`/partners/applications/${app.id}/approve`, body), { fallback: 'Failed to approve application.' })
+      const data = await execute(() => api.post(`/partners/applications/${app.id}/approve`, body), { keepAlive: true, fallback: 'Failed to approve application.' })
       if (data.emailed === false) {
         await announceDelivery(toast, `${app.name} approved`, data)
         // Round 7 (bug): this branch used to drop `codeError`, so when the email AND the first code both failed
@@ -190,11 +188,11 @@ function ApproveApplicationModal({ app, onClose, onDone }) {
 function RejectApplicationModal({ app, cooldownDays = 30, onClose, onDone }) {
   const toast = useToast()
   const [reason, setReason] = useState('')
-  const { loading: saving, error, execute } = useApi()
+  const { loading: saving, error, execute, fail: showError } = useApi()
 
   async function handleReject() {
     try {
-      const data = await execute(() => api.post(`/partners/applications/${app.id}/reject`, reason.trim() ? { reason: reason.trim() } : {}), { fallback: 'Failed to reject application.' })
+      const data = await execute(() => api.post(`/partners/applications/${app.id}/reject`, reason.trim() ? { reason: reason.trim() } : {}), { keepAlive: true, fallback: 'Failed to reject application.' })
       toast({ message: data.emailed ? `${app.name}'s application rejected — they've been emailed.` : `${app.name}'s application rejected (the notification email failed to send).`, type: data.emailed ? 'success' : 'warning' })
       onDone()
       onClose()

@@ -184,28 +184,28 @@ export default function AdminUsers() {
               cell: u => (
                 <>
                   <div className="flex gap-2 justify-end flex-wrap">
-                    <Button size="sm" variant="secondary" disabled={busyId === u.id}
+                    <Button size="sm" variant="secondary" pending={busyId === u.id}
                       onClick={() => updateUser(u, { resetScansToday: true })}>
                       Reset quota
                     </Button>
                     {u.status === 'ACTIVE' ? (
-                      <Button size="sm" variant="danger" disabled={busyId === u.id}
+                      <Button size="sm" variant="danger" pending={busyId === u.id}
                         onClick={() => updateUser(u, { status: 'BANNED' }, `Ban ${u.email}?`, true)}>
                         Ban
                       </Button>
                     ) : (
-                      <Button size="sm" variant="secondary" disabled={busyId === u.id}
+                      <Button size="sm" variant="secondary" pending={busyId === u.id}
                         onClick={() => updateUser(u, { status: 'ACTIVE' })}>
                         Unban
                       </Button>
                     )}
                     {u.role === 'ADMIN' ? (
-                      <Button size="sm" variant="secondary" disabled={busyId === u.id}
+                      <Button size="sm" variant="secondary" pending={busyId === u.id}
                         onClick={() => updateUser(u, { role: 'SEEKER' }, `Remove admin access from ${u.email}?`, true)}>
                         Demote
                       </Button>
                     ) : (
-                      <Button size="sm" variant="secondary" disabled={busyId === u.id}
+                      <Button size="sm" variant="secondary" pending={busyId === u.id}
                         onClick={() => updateUser(u, { role: 'ADMIN' }, `Make ${u.email} an admin?`, false)}>
                         Promote
                       </Button>
