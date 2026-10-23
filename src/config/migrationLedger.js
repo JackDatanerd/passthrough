@@ -35,6 +35,7 @@ const LEDGER_NAMES = {
   108: '0108_partners_section4_round28',
   109: '0109_model_stamp',
   110: '0110_webhooks_round27',
+  111: '0111_partners_section4_round29',
 }
 
 module.exports = { LEDGER_NAMES }

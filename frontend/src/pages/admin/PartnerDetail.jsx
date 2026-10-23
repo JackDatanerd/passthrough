@@ -21,6 +21,10 @@ import Select from '../../components/ui/Select'
 import { Tabs, TabPanel } from '../../components/ui/Tabs'
 import useLatestRequest from '../../hooks/useLatestRequest'
 
+// Round 30: the server says WHY an admin action was refused (partner erased, internal welcome-code record, details changed...). These
+// handlers used to show a fixed "Failed to..." and drop it.
+const whyFailed = (err, fallback) => err?.response?.data?.message || fallback
+
 function PayoutDetailsFields({ method, details }) {
   const d = details || {}
   if (method === 'BANK') {
@@ -626,7 +630,9 @@ function CreateReferralCodeModal({ partner, onClose, onCreated }) {
       }), { keepAlive: true, fallback: 'Failed to create code.' })
       toast(res?.partnerPaused
         ? { message: `Code ${cleanCode.toUpperCase()} created, but ${partner.name} is PAUSED — it won't apply or earn until they're reactivated, and no email was sent.`, type: 'warning' }
-        : { message: `Code ${cleanCode.toUpperCase()} created — ${partner.name} has been emailed.`, type: 'success' })
+        : res?.notified === false
+          ? { message: `Code ${cleanCode.toUpperCase()} created, but the email to ${partner.name} did not go out — tell them yourself.`, type: 'warning' }
+          : { message: `Code ${cleanCode.toUpperCase()} created — ${partner.name} has been emailed.`, type: 'success' })
       for (const w of res?.warnings || []) toast({ message: w, type: 'warning' })
       onCreated()
       onClose()
@@ -771,8 +777,8 @@ function ReferralCodesTab({ partner, onChanged }) {
     try {
       await api.patch(`/partners/referral-codes/${codeRow.id}`, { active: !codeRow.active })
       onChanged()
-    } catch (_) {
-      toast({ message: 'Failed to update code.', type: 'error' })
+    } catch (err) {
+      toast({ message: whyFailed(err, 'Failed to update code.'), type: 'error' })
     }
   }
 
@@ -1238,8 +1244,8 @@ export default function PartnerDetail() {
           : `${res.data.message || 'Email not sent.'}${copied ? ' Link copied to your clipboard instead.' : ''}`,
         type: res.data.success ? 'success' : 'warning'
       })
-    } catch (_) {
-      toast({ message: 'Failed to resend link.', type: 'error' })
+    } catch (err) {
+      toast({ message: whyFailed(err, 'Failed to resend link.'), type: 'error' })
     }
   }
 
@@ -1265,8 +1271,8 @@ export default function PartnerDetail() {
       }
       const ok = await copyToClipboard(url)
       toast({ message: ok ? `${which === 'dashboard' ? 'Dashboard' : 'Payout-details'} link copied.` : 'Could not copy — your browser blocked clipboard access.', type: ok ? 'success' : 'warning' })
-    } catch (_) {
-      toast({ message: 'Failed to get the link.', type: 'error' })
+    } catch (err) {
+      toast({ message: whyFailed(err, 'Failed to get the link.'), type: 'error' })
     }
   }
 
@@ -1290,8 +1296,8 @@ export default function PartnerDetail() {
         type: res.data.emailed ? 'success' : 'warning'
       })
       setConfirmRegenerate(false)
-    } catch (_) {
-      toast({ message: 'Failed to regenerate link.', type: 'error' })
+    } catch (err) {
+      toast({ message: whyFailed(err, 'Failed to regenerate link.'), type: 'error' })
       setConfirmRegenerate(false)
     } finally {
       setRegenerating(false)

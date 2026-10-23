@@ -1177,7 +1177,10 @@ Operator notes for the newest migrations. Apply each migration before deploying 
 #   * Neither column has a default and nothing reads them unguarded: a Worker deployed before the migration skips the stamp / falls back a tier
 #     (Admin -> Payments, the dispute sweep and delivery health all retry without them), and the webhook self-test names 0103 until it is applied.
 
-# PARTNERS ROUND 29 (migration 0110): record_payout_settlement re-checks the payout details under the partner lock. Apply 0110
+# PARTNERS ROUND 29 (migration 0111; first shipped as 0110, which collided with 0110_webhooks_round27): record_payout_settlement re-checks
+# the payout details under the partner lock. If your database already recorded this file as 110, apply 0110_webhooks_round27.sql FIRST (it is
+# idempotent), then 0111, which repairs the ledger row. Check with: select version, name from applied_migrations where version >= 110;
+# Apply 0111
 # BEFORE or WITH this Worker (a Worker that sends the new arguments to an unmigrated database fails the payout call).
 # Set a dedicated PARTNER_LINK_SECRET (`wrangler secret put PARTNER_LINK_SECRET`). Without it partner dashboard links are derived from
 # JWT_SECRET, and rotating JWT_SECRET would invalidate every dashboard link already emailed. Setting it NOW changes the derived links,

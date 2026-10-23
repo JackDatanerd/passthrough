@@ -159,3 +159,15 @@ describe('payout recording re-checks the payout details under the lock', () => {
     expect(rpcs[0].args).toMatchObject({ p_check_details: true, p_expected_details_submitted_at: '2026-01-01T00:00:00+00:00' })
   })
 })
+
+// ---- Round 30 --------------------------------------------------------------------------------------------------------------
+describe('round 30: finding a personal code, and the migration number', () => {
+  it('a text search still finds a personal welcome code and flags it; the plain list keeps hiding them', async () => {
+    let db = createFakeSupabase(q => q.table === 'referral_codes' ? { data: [{ id: 'c1', partner_id: WELCOME, user_id: 'u1', code: 'FN-ABCDE', tier_prices: {}, active: true, partners: { name: 'Passthrough welcome codes (system)', email: 'welcome-codes@system.invalid', status: 'ACTIVE' } }], count: 1, error: null } : undefined)
+    const res = await load(db).mod.adminListReferralCodes(ctxOf({ query: { q: 'fn-abc' } }))
+    expect(db.calls[0].filters).not.toContainEqual(['is', 'user_id', null])
+    expect(res.body.data[0]).toMatchObject({ code: 'FN-ABCDE', personal: true })
+    t.restore(); db = createFakeSupabase(); await load(db).mod.adminListReferralCodes(ctxOf())
+    expect(db.calls[0].filters).toContainEqual(['is', 'user_id', null])
+  })
+})

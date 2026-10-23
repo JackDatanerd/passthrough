@@ -2696,10 +2696,12 @@ async function adminListReferralCodes(ctx) {
   const { limit, offset } = pageParams(ctx)
   const q = LIKE_ESCAPE(String(ctx.req.query('q') || '').slice(0, 50)).toUpperCase()
   let query = supabase.from('referral_codes')
-    .select('id, partner_id, code, tier_prices, active, usage_limit, uses_so_far, clicks, expires_at, created_at, partners(name, email, status)', { count: 'exact' })
+    .select('id, partner_id, user_id, code, tier_prices, active, usage_limit, uses_so_far, clicks, expires_at, created_at, partners(name, email, status)', { count: 'exact' })
   if (q) query = query.ilike('code', `%${q}%`)
   // Round 29: one personal welcome code exists per account and used to bury every partner code in this list. Hidden unless asked for.
-  query = ctx.req.query('personal') === 'true' ? query.not('user_id', 'is', null) : query.is('user_id', null)
+  // A search by text still finds a personal code (support: "my code FN-ABCDE did not work"); only the unfiltered list hides them.
+  if (ctx.req.query('personal') === 'true') query = query.not('user_id', 'is', null)
+  else if (!q) query = query.is('user_id', null)
   const active = ctx.req.query('active')
   if (active === 'true' || active === 'false') query = query.eq('active', active === 'true')
   const partnerId = ctx.req.query('partnerId')
@@ -2708,6 +2710,7 @@ async function adminListReferralCodes(ctx) {
   if (error) throw error
   return ctx.json({ success: true, total: count ?? null, data: (data || []).map(r => ({
     ...referralCodeRowToCamel(r),
+    personal: !!r.user_id || isSystemPartnerId(r.partner_id),
     partnerName: r.partners?.name ?? null, partnerEmail: r.partners?.email ?? null, partnerStatus: r.partners?.status ?? null
   })) })
 }

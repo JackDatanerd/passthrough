@@ -1,0 +1,10 @@
+Partners / Referral program, section 4 round 30 (migration 0111)
+
+- Migration number collision: round 29's file was numbered 0110, the same as 0110_webhooks_round27. Renamed to 0111_partners_section4_round29.sql
+  (EXPECTED_SCHEMA_VERSION 111, ledger names 110 = webhooks, 111 = partners). 0111 repairs the ledger row of a database that recorded the
+  file as 110, but only once the webhooks trigger exists. Tested on a real Postgres (tests/migrations.0111.pglite.test.js), including the
+  seven-argument record_payout_settlement and its lock-time details check.
+- Admin code list: a text search still finds a personal welcome code (support lookups); rows carry `personal`; the lookup page shows
+  "Personal welcome code" instead of a link to a partner page that does not exist.
+- Create-code toast uses the server's `notified` flag.
+- PartnerDetail actions (toggle code, resend / copy / regenerate link) show the server's reason instead of a fixed "Failed to...".

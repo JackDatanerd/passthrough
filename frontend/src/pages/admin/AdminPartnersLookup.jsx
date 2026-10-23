@@ -97,8 +97,10 @@ function CodeLookup() {
               header: 'Partner',
               cell: r => (
                 <>
-                  <Link to={`/admin/partners/${r.partnerId}`} className="text-blue-600 hover:underline">{r.partnerName || 'Partner'}</Link>
-                  <div className="text-xs text-gray-400">{r.partnerEmail}</div>
+                  {r.personal
+                    ? <span className="text-gray-500" data-testid="personal-code">Personal welcome code</span>   /* the owner is a customer, not a partner: there is no partner page */
+                    : <Link to={`/admin/partners/${r.partnerId}`} className="text-blue-600 hover:underline">{r.partnerName || 'Partner'}</Link>}
+                  {!r.personal && <div className="text-xs text-gray-400">{r.partnerEmail}</div>}
                 </>
               ),
             },
