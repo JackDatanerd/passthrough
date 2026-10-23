@@ -51,7 +51,7 @@ function cleanNotes(input) {
   return String(input ?? '').replace(NOTE_CONTROL_CHARS, '').replace(INVISIBLE_FILLER, '').replace(DIRECTIONAL_MARKS, '').trim()
 }
 
-// Titles and credentials that open a name on a resume ("Dr. Priya Patel", "Eng. John Kamau",
+// Titles and credentials that open a name on a resume ("Dr. Priya Patel", "Eng. John Walker",
 // "CPA Jane Doe"). They are not a first name, and the PUBLIC verification page prints the first token
 // under "Passthrough Verified" and in the link preview.
 //  * HONORIFICS_ANY: unmistakable with or without a dot.
@@ -76,7 +76,7 @@ const isHonorific = tok => {
 // VERIFY ROUND 12 (bug): "Surname, First" was only recognised when the comma sat in the FIRST word, so a leading title
 // ("Dr. Doe, John" -> "Doe") or a surname with particles ("van der Berg, Jan" -> "van") printed the wrong word under
 // "Passthrough Verified". A comma after a short run of lower-case-style particles + one word is now read as surname-first.
-// What follows the comma decides it: a credential or suffix ("John Smith, PhD", "Kimani, Jr.") means the comma only
+// What follows the comma decides it: a credential or suffix ("John Smith, PhD", "Walker, Jr.") means the comma only
 // separated a trailing qualification, so the name stays as written.
 const NAME_PARTICLES = new Set(['van', 'von', 'der', 'den', 'de', 'del', 'della', 'di', 'da', 'dos', 'das', 'du', 'la', 'le', 'el', 'al', 'bin', 'ibn', 'ter', 'ten', 'op', 'het', 'st'])
 const NAME_QUALIFIERS = new Set(['phd', 'md', 'mba', 'cpa', 'cfa', 'pmp', 'esq', 'jr', 'sr', 'ii', 'iii', 'iv', 'dds', 'rn', 'cissp', 'cisa', 'msc', 'bsc', 'mphil', 'llb', 'llm', 'dvm'])

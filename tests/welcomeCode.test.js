@@ -18,14 +18,14 @@ const iso = ms => new Date(ms).toISOString()
 const STANDARD = { PAYSTACK_CURRENCY: 'USD' }
 // Promo on until `daysLeft` days from NOW: $29 full fix -> 30% off = $20.30.
 const promoEnv = daysLeft => ({ PAYSTACK_CURRENCY: 'USD', PROMO_ACTIVE: 'true', PROMO_ENDS_AT: iso(NOW + daysLeft * DAY) })
-const USER = { id: 'u1', name: 'Faith Njeri', email: 'faith@example.com' }
+const USER = { id: 'u1', name: 'Faith Nelson', email: 'faith@example.com' }
 
 afterEach(() => vi.useRealTimers())
 const freezeTime = () => vi.useFakeTimers({ toFake: ['Date'], now: NOW })
 
 describe('code format', () => {
   it('takes initials from the name, never the name itself', () => {
-    expect(welcome.initialsOf('Faith Njeri')).toBe('FN')
+    expect(welcome.initialsOf('Faith Nelson')).toBe('FN')
     expect(welcome.initialsOf('Cher')).toBe('C')
     expect(welcome.initialsOf("  mary-jane o'neil ")).toBe('MO')
     expect(welcome.initialsOf('Émile Zola')).toBe('EZ')
@@ -40,7 +40,7 @@ describe('code format', () => {
   it('is initials, a dash and five unambiguous characters (no 0, O, 1 or I in the random part)', () => {
     const seen = new Set()
     for (let i = 0; i < 400; i++) {
-      const code = welcome.generateCode('Faith Njeri')
+      const code = welcome.generateCode('Faith Nelson')
       expect(code).toMatch(/^FN-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{5}$/)
       seen.add(code)
     }

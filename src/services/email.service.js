@@ -750,7 +750,7 @@ async function sendPartnerConversionEarned(env, supabase, email, name, code, com
 async function sendPayoutDetailsChanged(env, supabase, email, name, method) {
   return send(env, supabase, email, 'Your Passthrough payout details were updated', 'partner_payout_details_changed', {
     NAME:   name,
-    METHOD: method === 'BANK' ? 'Bank transfer' : 'Mobile money'
+    METHOD: require('../lib/payoutRails').methodLabel(method) || 'Bank transfer'
   })
 }
 

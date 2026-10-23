@@ -22,10 +22,10 @@ const parts = async buf => {
   const z = await JSZip.loadAsync(buf)
   return { doc: await z.file('word/document.xml').async('string'), styles: await z.file('word/styles.xml').async('string') }
 }
-const JOB = (n, b = 2) => ({ title: `Analyst ${n}`, company: 'Acme', location: 'Nairobi', dates: '2020 – 2022', bullets: Array.from({ length: b }, (_, i) => `Built dashboard ${i} that cut reporting time by ${10 + i}%`) })
+const JOB = (n, b = 2) => ({ title: `Analyst ${n}`, company: 'Acme', location: 'Austin', dates: '2020 – 2022', bullets: Array.from({ length: b }, (_, i) => `Built dashboard ${i} that cut reporting time by ${10 + i}%`) })
 const FULL = {
-  name: 'Wanjiru Mwangi', email: 'w@mail.com', phone: '+254 712 345 678', location: 'Nairobi, Kenya',
-  linkedin: 'linkedin.com/in/wanjiru', portfolio: 'wanjiru.design',
+  name: 'Emily Carter', email: 'w@mail.com', phone: '+1 415 555 0132', location: 'Austin, TX',
+  linkedin: 'linkedin.com/in/emily', portfolio: 'emily.design',
   summary: 'Analyst.', experience: [JOB(1), JOB(2)],
   education: [{ degree: 'MSc X', institution: 'Uni A', dates: '2020' }, { degree: 'BSc Y', institution: 'Uni B', dates: '2016', details: 'Honours.' }],
   skills: ['SQL', 'Python'], certifications: ['AWS CP', 'Google DA'],
@@ -41,9 +41,9 @@ describe('lib/links hrefFor', () => {
       expect(hrefFor(h)).toBe(`https://${h}`)
   })
   it('turns a phone number into tel: only when asked, and never produces another scheme', () => {
-    expect(hrefFor('+254 712 345 678')).toBeNull()
-    expect(hrefFor('+254 712 345 678', { phone: true })).toBe('tel:+254712345678')
-    for (const bad of ['javascript:alert(1)', 'data:text/html,x', 'ftp://x.com', 'Nairobi, Kenya', 'a b.com', '3.5', '', null, undefined, 'x'.repeat(400) + '.com'])
+    expect(hrefFor('+1 415 555 0132')).toBeNull()
+    expect(hrefFor('+1 415 555 0132', { phone: true })).toBe('tel:+14155550132')
+    for (const bad of ['javascript:alert(1)', 'data:text/html,x', 'ftp://x.com', 'Austin, TX', 'a b.com', '3.5', '', null, undefined, 'x'.repeat(400) + '.com'])
       expect(hrefFor(bad, { phone: true })).toBeNull()
   })
   it('displayUrl drops the scheme and trailing slash', () => {
@@ -68,10 +68,10 @@ describe('lib/fileStems', () => {
 // Shapes whose real page counts were measured (LibreOffice for the DOCX, WeasyPrint for the template): jobs x bullets.
 const bl = n => Array.from({ length: n }, (_, i) => `Delivered project ${i} that improved reporting accuracy and reduced manual effort across the finance team by ${10 + i} percent.`)
 const SHAPE = (jobs, b) => ({
-  name: 'Test Person', email: 't@x.com', phone: '+254 700 000 000', location: 'Nairobi, Kenya', linkedin: 'linkedin.com/in/t',
+  name: 'Test Person', email: 't@x.com', phone: '+1 415 555 0100', location: 'Austin, TX', linkedin: 'linkedin.com/in/t',
   summary: 'Analyst with experience across several industries and a record of measurable delivery for stakeholders.',
-  experience: Array.from({ length: jobs }, (_, i) => ({ title: 'Analyst ' + i, company: 'Company ' + i, location: 'Nairobi', dates: '2015 – 2018', bullets: bl(b) })),
-  education: [{ degree: 'BSc Statistics', institution: 'University of Nairobi', dates: '2010 – 2014' }], skills: ['SQL', 'Python', 'Excel', 'Power BI', 'Tableau'], certifications: ['AWS CP'],
+  experience: Array.from({ length: jobs }, (_, i) => ({ title: 'Analyst ' + i, company: 'Company ' + i, location: 'Austin', dates: '2015 – 2018', bullets: bl(b) })),
+  education: [{ degree: 'BSc Statistics', institution: 'University of Leeds', dates: '2010 – 2014' }], skills: ['SQL', 'Python', 'Excel', 'Power BI', 'Tableau'], certifications: ['AWS CP'],
 })
 
 describe('lib/docFit', () => {
@@ -123,7 +123,7 @@ describe('generateAtsDocx — design layer', () => {
     expect(doc).toMatch(/<w:tab w:val="right"/)
     const lines = (await extractText(buf, DOCX)).split('\n')
     const job = lines.find(l => l.includes('Analyst 1'))
-    expect(job).toBe('Analyst 1 — Acme — Nairobi\t2020 – 2022')
+    expect(job).toBe('Analyst 1 — Acme — Austin\t2020 – 2022')
   })
   it('keeps a title with its first bullet and leaves no trailing blank paragraph', async () => {
     const { doc } = await parts(await generateAtsDocx(FULL, null))
@@ -141,7 +141,7 @@ describe('generateAtsDocx — design layer', () => {
   it('puts the credential on its own line and links every contact detail that is a link', async () => {
     const { doc } = await parts(await generateAtsDocx(FULL, 'https://passthrough.app/verify/AB12'))
     const rels = await (await JSZip.loadAsync(await generateAtsDocx(FULL, 'https://passthrough.app/verify/AB12'))).file('word/_rels/document.xml.rels').async('string')
-    for (const t of ['mailto:w@mail.com', 'tel:+254712345678', 'https://linkedin.com/in/wanjiru', 'https://wanjiru.design', 'https://github.com/w/matatu', 'https://passthrough.app/verify/AB12'])
+    for (const t of ['mailto:w@mail.com', 'tel:+14155550132', 'https://linkedin.com/in/emily', 'https://emily.design', 'https://github.com/w/matatu', 'https://passthrough.app/verify/AB12'])
       expect(rels).toContain(t)
     const text = await extractText(await generateAtsDocx(FULL, 'https://passthrough.app/verify/AB12'), DOCX)
     const lines = text.split('\n')
@@ -162,13 +162,13 @@ describe('generateAtsDocx — design layer', () => {
 
 describe('generateCoverLetterDocx — letterhead', () => {
   it('shares the resume letterhead, with a rule and the date', async () => {
-    const buf = await generateCoverLetterDocx('Dear X,\n\nHello there.\n\nSincerely,\nWanjiru', 'Wanjiru Mwangi', { contact: FULL, date: '16 October 2026', paper: 'a4' })
+    const buf = await generateCoverLetterDocx('Dear X,\n\nHello there.\n\nSincerely,\nEmily', 'Emily Carter', { contact: FULL, date: '16 October 2026', paper: 'a4' })
     const { doc, styles } = await parts(buf)
     expect(doc).toMatch(/w:pBdr/)
     expect(doc).toMatch(/w:pgSz[^>]*w:w="11906"/)
     expect(styles).toMatch(/Calibri/)
     const text = await extractText(buf, DOCX)
-    expect(text).toContain('Wanjiru Mwangi')
+    expect(text).toContain('Emily Carter')
     expect(text).toContain('16 October 2026')
     expect(text).toContain('Hello there.')
   })
@@ -181,9 +181,9 @@ describe('generateCoverLetterDocx — letterhead', () => {
 describe('buildResumeHTML — links, credential, fit, print rules', () => {
   const html = buildResumeHTML(FULL, { paper: 'a4' }, 'https://passthrough.app/verify/AB12', { verified: true })
   it('links the contact line and project link like the DOCX does', () => {
-    for (const h of ['mailto:w@mail.com', 'tel:+254712345678', 'https://linkedin.com/in/wanjiru', 'https://wanjiru.design', 'https://github.com/w/matatu'])
+    for (const h of ['mailto:w@mail.com', 'tel:+14155550132', 'https://linkedin.com/in/emily', 'https://emily.design', 'https://github.com/w/matatu'])
       expect(html).toContain(`href="${h}"`)
-    expect(html).not.toContain('href="Nairobi')
+    expect(html).not.toContain('href="Austin')
   })
   it('prints the verification address next to the credential', () => {
     expect(html).toContain('class="credurl"')
@@ -209,7 +209,7 @@ describe('buildResumeHTML — links, credential, fit, print rules', () => {
 describe('buildCoverLetterHTML', () => {
   const html = buildCoverLetterHTML('Dear X,\n\nHi <b>there</b>.\nSecond line.\n\nSincerely,\nJane', FULL, { paper: 'a4' }, { date: '16 October 2026' })
   it('has the letterhead, date and one paragraph per block with line breaks kept', () => {
-    expect(html).toContain('<h1>Wanjiru Mwangi</h1>')
+    expect(html).toContain('<h1>Emily Carter</h1>')
     expect(html).toContain('href="mailto:w@mail.com"')
     expect(html).toContain('16 October 2026')
     expect(html).toContain('Hi &lt;b&gt;there&lt;/b&gt;.<br>Second line.')
@@ -335,7 +335,7 @@ describe('a running footer after page one', () => {
     const withText = xmls.filter(x => /PAGE/.test(x))
     expect(withText.length).toBe(1)
     expect(withText[0]).toMatch(/NUMPAGES/)
-    expect(withText[0]).toContain('Wanjiru Mwangi')
+    expect(withText[0]).toContain('Emily Carter')
     expect(xmls.find(x => !/PAGE/.test(x)).replace(/<[^>]+>/g, '').trim()).toBe('')
     const doc = await z.file('word/document.xml').async('string')
     expect(doc).toMatch(/<w:titlePg\/>/)
@@ -347,8 +347,8 @@ describe('a running footer after page one', () => {
     expect(xmls.some(x => /Page /.test(x) && /PAGE/.test(x))).toBe(true)
   })
   it('PDF template: margin-box footer after page one, with the name safely escaped', () => {
-    const html = buildResumeHTML({ name: 'Wanjiru "Wa\\" <Mwangi>' , skills: ['x'] }, { paper: 'a4' }, null)
-    expect(html).toMatch(/@bottom-center \{ content: "Wanjiru Wa Mwangi  \\00B7  Page " counter\(page\) " of " counter\(pages\)/)
+    const html = buildResumeHTML({ name: 'Emily "Wa\\" <Carter>' , skills: ['x'] }, { paper: 'a4' }, null)
+    expect(html).toMatch(/@bottom-center \{ content: "Emily Wa Carter  \\00B7  Page " counter\(page\) " of " counter\(pages\)/)
     expect(html).toMatch(/@page :first \{ @bottom-center \{ content: none \} \}/)
     expect(buildResumeHTML({ skills: ['x'] }, {}, null)).toMatch(/content: "Page " counter\(page\)/)
   })
@@ -364,10 +364,10 @@ describe('very long unbroken strings stay on the page', () => {
 // ── pass 5 ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 describe('phone links', () => {
   it('links a number with the plus anywhere before the first digit, and keeps the plus', () => {
-    for (const [i, o] of [['+254 712 345 678', 'tel:+254712345678'], ['(+254) 712 345 678', 'tel:+254712345678'], ['+(254) 712-345-678', 'tel:+254712345678'],
-      ['+1 (415) 555-0100', 'tel:+14155550100'], ['(415) 555-0100', 'tel:4155550100'], ['0712 345 678', 'tel:0712345678']])
+    for (const [i, o] of [['+1 415 555 0132', 'tel:+14155550132'], ['(+1) 415 555 0132', 'tel:+14155550132'], ['+(1) 415-555-0132', 'tel:+14155550132'],
+      ['+1 (415) 555-0100', 'tel:+14155550100'], ['(415) 555-0100', 'tel:4155550100'], ['07700 900123', 'tel:07700900123']])
       expect(hrefFor(i, { phone: true })).toBe(o)
-    for (const bad of ['12345', '(+) 1234567', '2020 – 2022', '+', '(+254) call me', '1234567890123456789'])
+    for (const bad of ['12345', '(+) 1234567', '2020 – 2022', '+', '(+1) call me', '1234567890123456789'])
       expect(hrefFor(bad, { phone: true })).toBeNull()
   })
 })
@@ -395,8 +395,8 @@ describe('the Word files take the PDF\'s palette colour', () => {
 })
 
 // ── pass 6 ─────────────────────────────────────────────────────────────────────────────────────────────────────────
-const SHORT = { name: 'A B', email: 'a@b.co', phone: '+254 712 345 678', location: 'Nairobi', linkedin: 'linkedin.com/in/ab', summary: 'S.', skills: ['x'] }
-const LONG = { ...SHORT, email: 'wanjiru.mwangi.analytics@gmail.com', location: 'Nairobi, Kenya (open to relocation)', linkedin: 'linkedin.com/in/wanjirumwangi-data-analyst', portfolio: 'wanjiru-mwangi.portfolio.dev/projects' }
+const SHORT = { name: 'A B', email: 'a@b.co', phone: '+1 415 555 0132', location: 'Austin', linkedin: 'linkedin.com/in/ab', summary: 'S.', skills: ['x'] }
+const LONG = { ...SHORT, email: 'emily.mwangi.analytics@gmail.com', location: 'Austin, TX (open to relocation)', linkedin: 'linkedin.com/in/emilycarter-data-analyst', portfolio: 'emily-mwangi.portfolio.dev/projects' }
 
 describe('contact rows', () => {
   it('one row when it fits, two (details, then links) when it would not, never an empty row', () => {
@@ -406,7 +406,7 @@ describe('contact rows', () => {
     expect(rows[0].map(i => i.text)).toEqual([LONG.email, LONG.phone, LONG.location])
     expect(rows[1].map(i => i.text)).toEqual([LONG.linkedin, LONG.portfolio])
     // all-details or all-links stay on one row however long
-    expect(contactRows(contactItems({ email: 'x'.repeat(60) + '@mail.com', phone: '+254 712 345 678', location: 'y'.repeat(40) }))).toHaveLength(1)
+    expect(contactRows(contactItems({ email: 'x'.repeat(60) + '@mail.com', phone: '+1 415 555 0132', location: 'y'.repeat(40) }))).toHaveLength(1)
     expect(contactRows(contactItems({ linkedin: 'linkedin.com/in/' + 'a'.repeat(60), portfolio: 'b'.repeat(60) + '.dev' }))).toHaveLength(1)
     expect(contactRows([])).toEqual([])
     expect(contactRows(null)).toEqual([])
@@ -427,7 +427,7 @@ describe('contact rows', () => {
     const text = await extractText(await generateAtsDocx(LONG, null), DOCX)
     expect(text).toContain(`${LONG.email} | ${LONG.phone} | ${LONG.location}\n${LONG.linkedin} | ${LONG.portfolio}`)
     const short = await extractText(await generateAtsDocx(SHORT, null), DOCX)
-    expect(short).toContain('a@b.co | +254 712 345 678 | Nairobi | linkedin.com/in/ab')
+    expect(short).toContain('a@b.co | +1 415 555 0132 | Austin | linkedin.com/in/ab')
     const letter = await extractText(await generateCoverLetterDocx('Dear X,\n\nHi.', 'A B', { contact: LONG }), DOCX)
     expect(letter).toContain(`${LONG.location}\n${LONG.linkedin} | ${LONG.portfolio}`)
   })
@@ -588,10 +588,10 @@ describe('ligature code points are letters again', () => {
 describe('Word does not mark the applicant\'s own details as spelling errors', () => {
   const lang = xml => (xml.match(/<w:lang w:val="([^"]+)"/) || [])[1]
   const para = (doc, needle) => doc.match(/<w:p>[\s\S]*?<\/w:p>/g).find(p => p.includes(needle))
-  const RD = { name: 'Wanjiru Mwangi', email: 'w@mail.com', linkedin: 'linkedin.com/in/wanjirumwangi-data', summary: 'We optimise the colour programme.',
-    skills: ['SQL', 'dbt'], languages: ['Swahili'], certifications: ['AWS Cloud Practitioner'], awards: ['Safaricom Innovation Award'],
-    experience: [{ title: 'Analyst', company: 'Safaricom', dates: '2020', bullets: ['Optimised the pricing model.'] }],
-    education: [{ degree: 'BSc', institution: 'University of Nairobi', dates: '2014', details: 'Dissertation on forecasting.' }],
+  const RD = { name: 'Emily Carter', email: 'w@mail.com', linkedin: 'linkedin.com/in/emilycarter-data', summary: 'We optimise the colour programme.',
+    skills: ['SQL', 'dbt'], languages: ['Swahili'], certifications: ['AWS Cloud Practitioner'], awards: ['Verizon Innovation Award'],
+    experience: [{ title: 'Analyst', company: 'Verizon', dates: '2020', bullets: ['Optimised the pricing model.'] }],
+    education: [{ degree: 'BSc', institution: 'University of Leeds', dates: '2014', details: 'Dissertation on forecasting.' }],
     projects: [{ name: 'Matatu Optimiser', technologies: ['OR-Tools'], description: 'Route tool.', link: 'github.com/w/matatu' }] }
   it('sets the document language from the paper: A4 is en-GB, Letter is en-US', async () => {
     expect(lang((await parts(await generateAtsDocx(RD, null, { paper: 'a4' }))).styles)).toBe('en-GB')
@@ -602,7 +602,7 @@ describe('Word does not mark the applicant\'s own details as spelling errors', (
   })
   it('exempts names, links, title lines, skills, certifications and awards - and still checks the prose', async () => {
     const { doc } = await parts(await generateAtsDocx(RD, 'https://usepassthrough.com/verify/AB12', { paper: 'a4' }))
-    for (const needle of ['Wanjiru Mwangi', 'w@mail.com', 'linkedin.com/in/wanjirumwangi-data', 'verify/AB12', 'Safaricom', 'University of Nairobi', 'Matatu Optimiser', 'OR-Tools', 'github.com/w/matatu', 'dbt', 'Swahili', 'AWS Cloud Practitioner', 'Safaricom Innovation Award'])
+    for (const needle of ['Emily Carter', 'w@mail.com', 'linkedin.com/in/emilycarter-data', 'verify/AB12', 'Verizon', 'University of Leeds', 'Matatu Optimiser', 'OR-Tools', 'github.com/w/matatu', 'dbt', 'Swahili', 'AWS Cloud Practitioner', 'Verizon Innovation Award'])
       expect(para(doc, needle), needle).toMatch(/<w:noProof\/>/)
     for (const needle of ['We optimise the colour programme.', 'Optimised the pricing model.', 'Dissertation on forecasting.', 'Route tool.'])
       expect(para(doc, needle), needle).not.toMatch(/<w:noProof\/>/)
@@ -611,8 +611,8 @@ describe('Word does not mark the applicant\'s own details as spelling errors', (
     const z = await JSZip.loadAsync(await generateAtsDocx(RD, null))
     const footers = await Promise.all(Object.keys(z.files).filter(n => /word\/footer\d+\.xml$/.test(n)).map(n => z.file(n).async('string')))
     expect(footers.find(x => /PAGE/.test(x))).toMatch(/<w:noProof\/>/)
-    const { doc } = await parts(await generateCoverLetterDocx('Dear X,\n\nWe optimise the colour.', 'Wanjiru Mwangi', { contact: RD }))
-    expect(para(doc, 'Wanjiru Mwangi')).toMatch(/<w:noProof\/>/)
+    const { doc } = await parts(await generateCoverLetterDocx('Dear X,\n\nWe optimise the colour.', 'Emily Carter', { contact: RD }))
+    expect(para(doc, 'Emily Carter')).toMatch(/<w:noProof\/>/)
     expect(para(doc, 'w@mail.com')).toMatch(/<w:noProof\/>/)
     expect(para(doc, 'We optimise the colour.')).not.toMatch(/<w:noProof\/>/)
   })

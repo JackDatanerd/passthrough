@@ -582,7 +582,7 @@ function shapeExtraction(data) {
 // Deliberately scoped to certifications only, not every field: institution/
 // company names are legitimately abbreviated or normalized by the model
 // often enough (e.g. "IBM" for "International Business Machines
-// Corporation", "Cape Town" for "University of Cape Town") that the same
+// Corporation", "Leeds" for "University of Leeds") that the same
 // check there would false-positive against honest resumes and quietly
 // delete real history. A certification's title is normally a fixed,
 // well-known credential name that appears in the source close to verbatim,
@@ -942,8 +942,8 @@ function detectFabrication(orig, rewritten) {
     ...(rewritten.projects   || []).map(p => norm(p.name))
   ].filter(Boolean)
   // BUG FIX (audit): only the o.includes(n) direction is safe here — it
-  // catches a rewrite that shortens a real name (e.g. "Cape Town
-  // University" -> "Cape Town"), which is the one legitimate case
+  // catches a rewrite that shortens a real name (e.g. "Leeds
+  // University" -> "Leeds"), which is the one legitimate case
   // normalization alone (corporate-suffix stripping, above) doesn't already
   // handle. The other direction, n.includes(o), was also being accepted:
   // it means the NEW name contains the ORIGINAL as a substring, i.e. the
@@ -973,9 +973,9 @@ function detectFabrication(orig, rewritten) {
   // look, but that's a passive display, not a gate on what gets delivered.
   // Symmetric with the loop above: every `o` in the original must trace
   // forward to something in the rewrite (o.includes(n) — a real name is
-  // allowed to be quoted more briefly, e.g. "Cape Town University" ->
-  // "Cape Town" still matches here since some `n` will still equal/contain
-  // "cape town").
+  // allowed to be quoted more briefly, e.g. "Leeds University" ->
+  // "Leeds" still matches here since some `n` will still equal/contain
+  // "leeds").
   for (const o of origAll)
     if (!newAll.some(n => o.includes(n))) return true
 

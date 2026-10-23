@@ -15,7 +15,7 @@ module.exports = {
   // migration ends by writing its number to system_state.schema_version (see 0059); the Worker
   // compares the two (lib/health.js). Bump it in the same commit as the migration —
   // the schema-version test in tests/crossCutting.round1.test.js fails when the newest migration and this value disagree.
-  EXPECTED_SCHEMA_VERSION: 112,
+  EXPECTED_SCHEMA_VERSION: 113,
 
   // Standard (post-promo) prices — these are what priceForTier() falls back
   // to once PROMO_ENDS_AT passes, and what the frontend shows crossed-out as
@@ -35,7 +35,7 @@ module.exports = {
 
   // PRICE TABLE PER CURRENCY (Payments & Pricing round 12, G1). Every price above is in USD cents, but
   // env.PAYSTACK_CURRENCY is honoured by the quote, the charge, the verify/webhook amount check and the
-  // receipt alike — so switching it to e.g. "KES" used to charge 4900 KES-cents (49.00 KES) for a $49
+  // receipt alike — so switching it to e.g. "EUR" used to charge 4900 EUR-cents (49.00 EUR) for a $49
   // product with every check agreeing and no alert. A currency now needs its own row here; an unlisted
   // one makes priceForTier() throw a 503 (see unsupportedCurrencyError) instead of mis-pricing. To sell in
   // another currency, add a row with prices in that currency's minor units (and mind Paystack's per-currency

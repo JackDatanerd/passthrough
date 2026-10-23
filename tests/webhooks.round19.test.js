@@ -88,7 +88,7 @@ describe('B2: dispute evidence describes what the tier actually delivered', () =
   const evidenceText = async tier => {
     let fields
     const { mod } = load(world(tier), { addDisputeEvidence: async (e, id, f) => { fields = f; return { data: { id: 5 } } } })
-    await mod.submitDisputeEvidence(jsonCtx({ req: { param: () => 'ref1', json: async () => ({ customerPhone: '+254700000000' }) } }))
+    await mod.submitDisputeEvidence(jsonCtx({ req: { param: () => 'ref1', json: async () => ({ customerPhone: '+1700000000' }) } }))
     return fields.service_details
   }
   const proofLines = async tier => {
@@ -121,7 +121,7 @@ describe('G2: the merchant\'s answer is recorded', () => {
   })
   it('accept and contest stamp the payment; evidence alone does not (it does not close the dispute)', async () => {
     let w = world(); let { mod } = load(w, { fetchDispute: async () => ({ data: { refund_amount: 2900 } }), acceptDispute: async () => ({ status: true }), addDisputeEvidence: async () => ({ data: { id: 1 } }) })
-    await mod.submitDisputeEvidence(jsonCtx({ req: { param: () => 'ref1', json: async () => ({ customerPhone: '+254700000000' }) } }))
+    await mod.submitDisputeEvidence(jsonCtx({ req: { param: () => 'ref1', json: async () => ({ customerPhone: '+1700000000' }) } }))
     expect(w.t.payments[0].dispute_answered_at).toBeUndefined()
     await mod.acceptPaymentDispute(jsonCtx())
     expect(w.t.payments[0].dispute_answer).toBe('accepted'); expect(w.t.payments[0].dispute_answered_at).toBeTruthy()

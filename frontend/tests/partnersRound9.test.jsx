@@ -41,11 +41,14 @@ describe('PartnerPayoutDetails (round 9)', () => {
   it('saving after re-typing the number posts exactly the details (no extra fields)', async () => {
     h.get = () => Promise.resolve(saved())
     payoutPage()
-    await userEvent.type(await screen.findByLabelText('Account number'), '0123456789')
+    // Bank details now say which country the account is in, which decides the routing details asked for.
+    await userEvent.selectOptions(await screen.findByLabelText('Country your bank account is in'), 'US')
+    await userEvent.type(screen.getByLabelText('ACH routing number'), '021000021')
+    await userEvent.type(screen.getByLabelText('Account number'), '0123456789')
     await userEvent.type(screen.getByLabelText('Re-enter account number'), '0123456789')
     await userEvent.click(screen.getByRole('button', { name: /save payout details/i }))
     await waitFor(() => expect(h.post).toHaveBeenCalled())
-    expect(h.post.mock.calls[0][1]).toEqual({ payoutMethod: 'BANK', bankName: 'Equity', accountName: 'Coach K', accountNumber: '0123456789' })
+    expect(h.post.mock.calls[0][1]).toEqual({ payoutMethod: 'BANK', bankName: 'Equity', accountName: 'Coach K', accountNumber: '0123456789', bankCountry: 'US', routingCode: '021000021' })
   })
 
   it('refuses to save an edit that leaves the number blank (it is no longer prefilled)', async () => {

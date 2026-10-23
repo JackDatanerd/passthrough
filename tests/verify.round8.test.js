@@ -10,8 +10,8 @@ const CODE = 'AB3XY7K2PQ'
 
 describe('B1: a title or surname-first name is never the public first name', () => {
   const cases = [
-    ['Dr. Priya Patel', 'Priya'], ['Eng. John Kamau', 'John'], ['Mr. Otieno Odhiambo', 'Otieno'], ['CPA Jane Doe', 'Jane'],
-    ['Hon. Amina Yusuf', 'Amina'], ['Rev. Peter Njoroge', 'Peter'], ['Prof. Dr. Ing. Hans', 'Hans'], ['Er. Rahul Sharma', 'Rahul'],
+    ['Dr. Priya Patel', 'Priya'], ['Eng. John Kamau', 'John'], ['Mr. Walker Odhiambo', 'Walker'], ['CPA Jane Doe', 'Jane'],
+    ['Hon. Hannah Yusuf', 'Hannah'], ['Rev. Peter Brooks', 'Peter'], ['Prof. Dr. Ing. Hans', 'Hans'], ['Er. Rahul Sharma', 'Rahul'],
     ['Doe, Jane', 'Jane'], ['Smith, John A.', 'John'], ['Jane Doe, CPA', 'Jane'],
     ['JOHN SMITH', 'John'], ["O'BRIEN Tom", "O'Brien"], ['ANNE-MARIE LEE', 'Anne-Marie'],
     // left exactly as written

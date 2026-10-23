@@ -109,14 +109,14 @@ describe('getPartnerByToken — what a link holder can read (B5)', () => {
     return t.mod.getPartnerByToken(ctxOf({ token: 'tok' }))
   }
   it('returns only the last four digits of a bank account, never the full number', async () => {
-    const res = await run({ name: 'K', payout_method: 'BANK', payout_details: { bankName: 'Equity', accountName: 'Coach K', accountNumber: '0123 4567 89' }, dashboard_token: 'dash' })
-    expect(res.body.data.payoutDetails).toEqual({ bankName: 'Equity', accountName: 'Coach K', accountNumber: '…6789' })
+    const res = await run({ name: 'K', payout_method: 'BANK', payout_details: { bankName: 'Chase', accountName: 'Coach K', accountNumber: '0123 4567 89' }, dashboard_token: 'dash' })
+    expect(res.body.data.payoutDetails).toEqual({ bankName: 'Chase', accountName: 'Coach K', accountNumber: '…6789' })
     expect(res.body.data.payoutDetailsMasked).toBe(true)
     expect(JSON.stringify(res.body)).not.toContain('0123')
   })
   it('returns only the last four digits of a phone number', async () => {
-    const res = await run({ name: 'K', payout_method: 'MOBILE_MONEY', payout_details: { provider: 'M-Pesa', accountName: 'K', phoneNumber: '+254 712 345 678' }, dashboard_token: 'dash' })
-    expect(res.body.data.payoutDetails).toEqual({ provider: 'M-Pesa', accountName: 'K', phoneNumber: '…5678' })
+    const res = await run({ name: 'K', payout_method: 'MOBILE_MONEY', payout_details: { provider: 'M-Pesa', accountName: 'K', phoneNumber: '+1 415 555 0132' }, dashboard_token: 'dash' })
+    expect(res.body.data.payoutDetails).toEqual({ provider: 'M-Pesa', accountName: 'K', phoneNumber: '…0132' })
     expect(JSON.stringify(res.body)).not.toContain('712')
   })
   it('nothing is masked (and nothing is invented) when nothing is saved', async () => {

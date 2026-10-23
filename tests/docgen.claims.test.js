@@ -14,7 +14,7 @@ const { computeChecklistScore } = require('../src/lib/atsChecklist.js')
 
 const clone = o => JSON.parse(JSON.stringify(o))
 const orig = {
-  name: 'Ada Njoroge', email: 'a@x.com', summary: null, skills: ['Excel', 'SQL'],
+  name: 'Ada Brooks', email: 'a@x.com', summary: null, skills: ['Excel', 'SQL'],
   experience: [{ company: 'Acme Ltd', title: 'Support Analyst', dates: '2019 - 2023', bullets: ['Helped the senior analyst build weekly SQL reports', 'Assisted with triaging tickets in Zendesk', 'Supported onboarding of new agents'] }],
   education: [], projects: [], volunteer: [], certifications: [], languages: [], awards: [], publications: [],
 }
@@ -98,7 +98,7 @@ describe('letter guards — leadership, large spelled counts, horizons', () => {
   const resume = clone(orig)
   const jd = 'Data Analyst at Beta Corp. SQL required. Tableau a plus.'
   const run = text => claude.checkLetter(text, { resumeData: resume, jdText: jd, details: {}, allowedNumbers: claude.numbersIn(JSON.stringify(resume) + jd), facts: { years: 4 }, haveNumbers: claude.numbersIn(JSON.stringify(resume)), corpus: JSON.stringify(resume) + jd })
-  const wrap = body => `Dear Hiring Manager,\n\n${body}\n\nSincerely,\nAda Njoroge`
+  const wrap = body => `Dear Hiring Manager,\n\n${body}\n\nSincerely,\nAda Brooks`
   it('"a team of eleven analysts" and "I led ... owned the strategy" are hard failures', () => {
     expect(run(wrap('At Acme Ltd I trained eleven analysts and ran forty workshops using SQL.')).hard.join(' ')).toMatch(/figures/)
     expect(run(wrap('At Acme Ltd I led the support team and owned the reporting strategy using SQL.')).hard.join(' ')).toMatch(/claims "/)

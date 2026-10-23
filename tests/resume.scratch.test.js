@@ -32,7 +32,7 @@ async function docText(buf) {
 
 const FULL = {
   name: 'Jane Doe', email: 'j@x.com', phone: '555', summary: 'Engineer.',
-  experience: [{ company: 'Acme', title: 'Dev', dates: '2020-2022', location: 'Lagos', bullets: ['Built things'] }],
+  experience: [{ company: 'Acme', title: 'Dev', dates: '2020-2022', location: 'Boston', bullets: ['Built things'] }],
   education: [{ institution: 'MIT', degree: 'BSc', dates: '2016', details: 'GPA 3.9 Honours' }],
   skills: ['Go'], certifications: [],
   languages: ['English', 'Yoruba'], awards: ['Dean\'s List'], publications: ['A Paper (2021)'],
@@ -85,7 +85,7 @@ describe('resumeData — new sections', () => {
     const r = parseClientResumeData(FULL)
     expect(r.ok).toBe(true)
     expect(r.data.education[0].details).toBe('GPA 3.9 Honours')
-    expect(r.data.experience[0].location).toBe('Lagos')
+    expect(r.data.experience[0].location).toBe('Boston')
     expect(r.data.languages).toEqual(['English', 'Yoruba'])
   })
 })
@@ -103,7 +103,7 @@ describe('claude.service — factual fields survive a rewrite', () => {
     expect(out.awards).toEqual(['Dean\'s List'])
     expect(out.publications).toEqual(['A Paper (2021)'])
     expect(out.volunteer[0].organization).toBe('Red Cross')
-    expect(out.experience[0].location).toBe('Lagos')
+    expect(out.experience[0].location).toBe('Boston')
     expect(out.education[0].details).toBe('GPA 3.9 Honours')
   })
   it('an entry the model renamed gets no location rather than someone else\'s', () => {
@@ -114,7 +114,7 @@ describe('claude.service — factual fields survive a rewrite', () => {
     const out = sanitizeResumeShape({ ...FULL })
     expect(out.languages).toEqual(['English', 'Yoruba'])
     expect(out.volunteer[0].role).toBe('Helper')
-    expect(out.experience[0].location).toBe('Lagos')
+    expect(out.experience[0].location).toBe('Boston')
     expect(out.education[0].details).toBe('GPA 3.9 Honours')
   })
 })
@@ -122,17 +122,17 @@ describe('claude.service — factual fields survive a rewrite', () => {
 describe('renderers include the new sections', () => {
   it('docx', async () => {
     const t = await docText(await generateAtsDocx(FULL))
-    for (const s of ['Lagos', 'GPA 3.9 Honours', 'Red Cross', 'Packed boxes', 'Dean', 'A Paper', 'Yoruba']) expect(t, s).toContain(s)
+    for (const s of ['Boston', 'GPA 3.9 Honours', 'Red Cross', 'Packed boxes', 'Dean', 'A Paper', 'Yoruba']) expect(t, s).toContain(s)
     expect(t).not.toMatch(/\bnull\b|undefined/)
   })
   it('pdf html', () => {
     const h = buildResumeHTML(FULL, undefined, null, { verified: false })
-    for (const s of ['Lagos', 'GPA 3.9 Honours', 'Red Cross', 'Packed boxes', 'Dean', 'A Paper', 'Yoruba']) expect(h, s).toContain(s)
+    for (const s of ['Boston', 'GPA 3.9 Honours', 'Red Cross', 'Packed boxes', 'Dean', 'A Paper', 'Yoruba']) expect(h, s).toContain(s)
     expect(h).not.toMatch(/>null<|undefined/)
   })
   it('scoring text serialisation', () => {
     const t = serializeResumeData(FULL)
-    for (const s of ['Lagos', 'GPA 3.9 Honours', 'VOLUNTEER', 'AWARDS', 'PUBLICATIONS', 'LANGUAGES', 'Yoruba']) expect(t, s).toContain(s)
+    for (const s of ['Boston', 'GPA 3.9 Honours', 'VOLUNTEER', 'AWARDS', 'PUBLICATIONS', 'LANGUAGES', 'Yoruba']) expect(t, s).toContain(s)
   })
 })
 

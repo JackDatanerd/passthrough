@@ -4,7 +4,7 @@ import { detectFabrication, sanitizeResumeShape, scoreResumeWithAI, generateBeau
 const orig = {
   name: 'Jane', email: 'j@x.com',
   experience: [{ company: 'Acme Corp', title: 'Software Engineer', dates: 'Jan 2019 - Mar 2022', bullets: ['a'] }],
-  education: [{ institution: 'Cape Town University', degree: 'BSc Computer Science', dates: '2015 - 2018' }],
+  education: [{ institution: 'Leeds University', degree: 'BSc Computer Science', dates: '2015 - 2018' }],
   skills: ['Go'], certifications: ['AWS Solutions Architect'], projects: [],
 }
 const clone = () => JSON.parse(JSON.stringify(orig))
@@ -160,7 +160,7 @@ describe('detectFabrication — honest rewrites must not be flagged (Scan/ATS pa
   })
   it.each([
     ['Acme Ltd', 'Acme Limited'], ['Johnson & Johnson', 'Johnson and Johnson'],
-    ['Ford Motor Company', 'Ford Motor Co.'], ['Safaricom', 'Safaricom PLC'],
+    ['Ford Motor Company', 'Ford Motor Co.'], ['Verizon', 'Verizon PLC'],
   ])('%s vs %s is the same employer', (a, b) => {
     expect(detectFabrication(oneJob(a, '2019'), oneJob(b, '2019'))).toBe(false)
   })

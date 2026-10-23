@@ -20,8 +20,8 @@ function hrefFor(text, { phone = false } = {}) {
   if (EMAIL.test(t)) return `mailto:${t}`
   if (SCHEME.test(t)) return t
   if (BARE.test(t)) return `https://${t}`
-  // "+254 712 345 678", "(+254) 712 345 678", "+1 (415) 555-0100": the plus counts wherever it stands before the first digit
-  // (it used to be required at the very start, so "(+254) ..." was not linked at all).
+  // "+44 7700 900123", "(+44) 7700 900123", "+1 (415) 555-0100": the plus counts wherever it stands before the first digit
+  // (it used to be required at the very start, so "(+44) ..." was not linked at all).
   if (phone && /^[\s(]*\+?[\s(]*\d[\d\s().-]{5,23}$/.test(t)) {
     const digits = t.replace(/\D/g, '')
     if (digits.length >= 7 && digits.length <= 15) return `tel:${/^[\s(]*\+/.test(t) ? '+' : ''}${digits}`

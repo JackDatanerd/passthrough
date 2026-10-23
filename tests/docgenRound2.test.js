@@ -27,14 +27,14 @@ describe('a bare YYYY-YY is a school year, never a month', () => {
 describe('years from text: a job is not education because its title or employer says so', () => {
   it.each([
     ['Scrum Master — Acme Ltd\tJan 2019 – Dec 2022', 4], ['Graduate Engineer — Acme\tJan 2019 – Dec 2021', 3],
-    ['Lecturer — University of Nairobi\tJan 2018 – Present', 8], ['Teacher — Kenya High School\t2015 – 2020', 5],
+    ['Lecturer — University of Leeds\tJan 2018 – Present', 8], ['Teacher — Lincoln High School\t2015 – 2020', 5],
     ['Quality Engineer — Degree Controls Ltd\t2015 – 2020', 5],
   ])('%j -> %i', (t, y) => expect(yearsFromText(t, NOW)).toBe(y))
   it('still skips education entries, by heading and by degree word', () => {
-    expect(yearsFromText('EXPERIENCE\nAnalyst — Acme\tJan 2019 – Dec 2021\nEDUCATION\nUniversity of Nairobi\t2012 – 2016\nSKILLS\nSQL', NOW)).toBe(3)
+    expect(yearsFromText('EXPERIENCE\nAnalyst — Acme\tJan 2019 – Dec 2021\nEDUCATION\nUniversity of Leeds\t2012 – 2016\nSKILLS\nSQL', NOW)).toBe(3)
     expect(yearsFromText('BSc Statistics 2012 – 2016', NOW)).toBeNull()
-    expect(yearsFromText('University of Nairobi 2012 – 2016', NOW)).toBeNull()
-    expect(yearsFromText('Kenya High School 2008 – 2012', NOW)).toBeNull()
+    expect(yearsFromText('University of Leeds 2012 – 2016', NOW)).toBeNull()
+    expect(yearsFromText('Lincoln High School 2008 – 2012', NOW)).toBeNull()
   })
   it('counts every range a single role lists', () => {
     expect(careerFacts({ experience: [{ dates: 'Jan 2019 – Jun 2020; Mar 2021 – Present' }] }, NOW).years).toBe(7)

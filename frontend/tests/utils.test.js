@@ -29,7 +29,7 @@ describe('formatDate', () => {
   // "2026-09-01" is UTC midnight when parsed with new Date(); west of UTC that displayed as Aug 31.
   it('renders a date-only string as that exact calendar day in ANY timezone', () => {
     const original = process.env.TZ
-    for (const tz of ['America/Los_Angeles', 'Pacific/Honolulu', 'Asia/Tokyo', 'Africa/Nairobi', 'UTC']) {
+    for (const tz of ['America/Los_Angeles', 'Pacific/Honolulu', 'Asia/Tokyo', 'Australia/Brisbane', 'UTC']) {
       process.env.TZ = tz
       expect(formatDate('2026-09-01')).toBe('Sep 1, 2026')
     }

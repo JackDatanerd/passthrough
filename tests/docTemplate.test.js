@@ -120,7 +120,7 @@ describe('version 2: the signature presets', () => {
     expect(b.paper).toBe('letter')
   })
   it('both documents of a set render with the preset: the PDF carries its ink and its type', () => {
-    const data = { name: 'Amina Otieno', email: 'a@b.co', summary: 'Counsel.', experience: [{ title: 'Associate', company: 'Firm', bullets: ['Won it.'] }] }
+    const data = { name: 'Hannah Walker', email: 'a@b.co', summary: 'Counsel.', experience: [{ title: 'Associate', company: 'Firm', bullets: ['Won it.'] }] }
     const t = v2('u1', 's1', 'legal')
     const html = pdfTemplate.buildResumeHTML(data, t, null, { verified: false })
     expect(html).toContain(t.palette.primary)

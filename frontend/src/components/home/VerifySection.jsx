@@ -96,7 +96,7 @@ function PlacementMock({ id }) {
     <div className={frame}>
       <div className="text-[12.5px] text-gray-500 border-b border-gray-100 pb-2 mb-2.5">To: Sam (Recruiting) · Subject: Product Manager application</div>
       <p className="mb-2.5">Hi Sam, I&rsquo;m applying for the Product Manager role. My resume and score are linked below.</p>
-      <p><b>Alex Kimani</b> · Product Manager<br />
+      <p><b>Alex Morgan</b> · Product Manager<br />
         <span className="inline-flex items-center gap-1.5 bg-green-50 text-green-800 border border-green-100 font-bold text-xs px-2 py-0.5 rounded-md">✓ Passthrough Verified · {SAMPLE_VERIFICATION.score}</span>{' '}
         <span className="font-mono text-[12.5px] text-blue-700 break-all">{link}</span></p>
     </div>
@@ -113,7 +113,7 @@ function PlacementMock({ id }) {
     </div>
   )
   if (id === 'header') return (
-    <div className={`${frame} text-center`}><b>Alex Kimani</b><br />Nairobi · alex@email.com<br />Verified resume: <span className="font-mono text-[12.5px] text-blue-700 break-all">{link}</span></div>
+    <div className={`${frame} text-center`}><b>Alex Morgan</b><br />Austin, TX · alex@email.com<br />Verified resume: <span className="font-mono text-[12.5px] text-blue-700 break-all">{link}</span></div>
   )
   return (
     <div className={frame}>

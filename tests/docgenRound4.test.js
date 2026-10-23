@@ -10,9 +10,9 @@ const cs = require('../src/services/claude.service')
 const NOW = new Date('2026-10-22T12:00:00Z')
 
 describe('cover letter: employer praise and the applicant\'s own tastes are not fabrication', () => {
-  const resumeData = { name: 'Wanjiru Mwangi', summary: null, experience: [{ company: 'Acme', title: 'Analyst', dates: 'Jan 2022 – Present', bullets: ['Handled customer escalations for the billing team.', 'Built weekly reports in Power BI.'] }], education: [], skills: ['Power BI'] }
-  const corpus = 'Wanjiru Mwangi Acme Analyst Handled customer escalations for the billing team. Built weekly reports in Power BI. Billing analyst. Power BI.'
-  const run = body => cs.checkLetter(`Dear Hiring Manager,\n\n${body}\n\nSincerely,\nWanjiru Mwangi`, { resumeData, jdText: 'Billing analyst. Power BI.', details: {}, allowedNumbers: new Set(), facts: { years: 4 }, haveNumbers: new Set(), corpus })
+  const resumeData = { name: 'Emily Carter', summary: null, experience: [{ company: 'Acme', title: 'Analyst', dates: 'Jan 2022 – Present', bullets: ['Handled customer escalations for the billing team.', 'Built weekly reports in Power BI.'] }], education: [], skills: ['Power BI'] }
+  const corpus = 'Emily Carter Acme Analyst Handled customer escalations for the billing team. Built weekly reports in Power BI. Billing analyst. Power BI.'
+  const run = body => cs.checkLetter(`Dear Hiring Manager,\n\n${body}\n\nSincerely,\nEmily Carter`, { resumeData, jdText: 'Billing analyst. Power BI.', details: {}, allowedNumbers: new Set(), facts: { years: 4 }, haveNumbers: new Set(), corpus })
   it.each([
     'Your cutting-edge billing platform is exactly what I want to work on.', 'I enjoy solving complex problems with data.',
     'I am comfortable working in a fast-paced environment.', 'I handle compliance questions from customers on the billing team.',
@@ -32,7 +32,7 @@ describe('cover letter: employer praise and the applicant\'s own tastes are not 
 
 describe('an all-caps education sub-line is not a heading', () => {
   it.each([
-    ['EDUCATION\nUNIVERSITY OF NAIROBI\nSTATISTICS AND ACTUARIAL SCIENCE\n2012 – 2016', null],
+    ['EDUCATION\nUNIVERSITY OF LEEDS\nSTATISTICS AND ACTUARIAL SCIENCE\n2012 – 2016', null],
     ['EDUCATION\nKENYA CERTIFICATE OF SECONDARY EDUCATION\nSTARE HIGH\n2008 – 2012', null],
     ['EDUCATION\nBSc Statistics\nFIRST CLASS HONOURS\n2012 – 2016', null],
     ['EXPERIENCE\nAnalyst — Acme\tJan 2018 – Dec 2022\nEDUCATION\nSTATISTICS\n2012 – 2016', 5],

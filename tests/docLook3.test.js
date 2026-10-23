@@ -11,10 +11,10 @@ const URL_ = 'https://passthrough.dev/verify/ABC123'
 const sha = s => crypto.createHash('sha256').update(s).digest('hex').slice(0, 16)
 const BUL = 'Led migration of the settlement engine to an event-driven design, processing 2.4M transactions daily with zero downtime across three regions.'
 const resume = (jobs = 2, bullets = 2, extra = {}) => ({
-  name: 'Amina Otieno', email: 'amina.otieno@example.com', phone: '+254 712 345 678', location: 'Nairobi, Kenya', linkedin: 'linkedin.com/in/aminaotieno',
+  name: 'Hannah Walker', email: 'amina.otieno@example.com', phone: '+1 415 555 0132', location: 'Austin, TX', linkedin: 'linkedin.com/in/aminaotieno',
   summary: 'Senior backend engineer with 8 years building payment and identity platforms.',
-  experience: Array.from({ length: jobs }, (_, i) => ({ title: i ? 'Engineer' : 'Staff Engineer', company: i ? 'Kopa' : 'Payfast', location: 'Nairobi', dates: i ? '2019 – 2023' : '2023 – Present', bullets: Array.from({ length: bullets }, () => BUL) })),
-  education: [{ degree: 'BSc Computer Science', institution: 'University of Nairobi', dates: '2014 – 2018' }],
+  experience: Array.from({ length: jobs }, (_, i) => ({ title: i ? 'Engineer' : 'Staff Engineer', company: i ? 'Kopa' : 'Payfast', location: 'Austin', dates: i ? '2019 – 2023' : '2023 – Present', bullets: Array.from({ length: bullets }, () => BUL) })),
+  education: [{ degree: 'BSc Computer Science', institution: 'University of Leeds', dates: '2014 – 2018' }],
   skills: ['Node.js', 'PostgreSQL', 'Kafka'], certifications: ['AWS SA'], ...extra,
 })
 const CAT = { traditional: 'legal', professional: 'healthcare', modern: 'software_engineering', creative: 'design' }
@@ -27,13 +27,13 @@ describe('looks 1 and 2 render exactly as they were delivered', () => {
   // emailed would come back different the next time it is regenerated.
   const b = BUL
   const data = {
-    name: 'Amina Otieno', email: 'amina.otieno@example.com', phone: '+254 712 345 678', location: 'Nairobi, Kenya', linkedin: 'linkedin.com/in/aminaotieno',
+    name: 'Hannah Walker', email: 'amina.otieno@example.com', phone: '+1 415 555 0132', location: 'Austin, TX', linkedin: 'linkedin.com/in/aminaotieno',
     summary: 'Senior backend engineer with 8 years building payment and identity platforms.',
-    experience: [{ title: 'Staff Engineer', company: 'Payfast', location: 'Nairobi', dates: '2023 – Present', bullets: [b, b] }, { title: 'Engineer', company: 'Kopa', dates: '2019 – 2023', bullets: [b] }],
-    education: [{ degree: 'BSc Computer Science', institution: 'University of Nairobi', dates: '2014 – 2018' }], skills: ['Node.js', 'PostgreSQL', 'Kafka'], certifications: ['AWS SA'],
+    experience: [{ title: 'Staff Engineer', company: 'Payfast', location: 'Austin', dates: '2023 – Present', bullets: [b, b] }, { title: 'Engineer', company: 'Kopa', dates: '2019 – 2023', bullets: [b] }],
+    education: [{ degree: 'BSc Computer Science', institution: 'University of Leeds', dates: '2014 – 2018' }], skills: ['Node.js', 'PostgreSQL', 'Kafka'], certifications: ['AWS SA'],
   }
-  const letter = 'Dear Hiring Manager,\n\nI am applying.\n\nSincerely,\nAmina'
-  it.each([[1, '2e971d0b8b4eea47', '5e9dd729dd5761b2'], [2, 'dbe6c7cd793dff09', '771caee0668eedb5']])('look %i', (version, r, l) => {
+  const letter = 'Dear Hiring Manager,\n\nI am applying.\n\nSincerely,\nHannah'
+  it.each([[1, '941f60b0a1394a22', '2813c02e140ea023'], [2, 'd837ca6ac2854d66', 'ed66c1e1296c433d']])('look %i', (version, r, l) => {
     const t = getDesignTokens('u1', 's1', 'legal', { version })
     expect(sha(pdfTemplate.buildResumeHTML(data, t, URL_, { verified: true }))).toBe(r)
     expect(sha(pdfTemplate.buildCoverLetterHTML(letter, data, t, { date: 'October 20, 2026' }))).toBe(l)
@@ -63,7 +63,7 @@ describe('the signature resume', () => {
     expect(html).not.toMatch(/<(table|img|canvas|iframe|script|object|embed|svg(?![^>]*class="ck"))/i)
     expect(html).not.toMatch(/url\((?!["']?data:)/i)                       // no remote resource
     const t = text(html)
-    expect(t.indexOf('Amina Otieno')).toBeLessThan(t.indexOf('amina.otieno@example.com'))
+    expect(t.indexOf('Hannah Walker')).toBeLessThan(t.indexOf('amina.otieno@example.com'))
     expect(t.indexOf('amina.otieno@example.com')).toBeLessThan(t.indexOf('Passthrough Verified'))
     expect(t.indexOf('Staff Engineer')).toBeLessThan(t.indexOf('Payfast'))
     expect(t.indexOf('Payfast')).toBeLessThan(t.indexOf('2023 – Present'))
@@ -85,7 +85,7 @@ describe('the signature resume', () => {
   })
   it('role, employer and dates are three levels; the employer falls back sensibly', () => {
     const html = render('professional')
-    expect(html).toMatch(/<span class="role">Staff Engineer<\/span><span class="org">Payfast<span class="loc"> &middot; Nairobi<\/span><\/span><span class="dates">2023 – Present<\/span>/)
+    expect(html).toMatch(/<span class="role">Staff Engineer<\/span><span class="org">Payfast<span class="loc"> &middot; Austin<\/span><\/span><span class="dates">2023 – Present<\/span>/)
     const only = render('professional', resume(1, 1, { experience: [{ company: 'Solo Co', location: 'Remote', bullets: ['Did it.'] }] }))
     expect(only).toMatch(/<span class="role">Solo Co<\/span><span class="org"><span class="loc">Remote<\/span><\/span>/)
   })
@@ -133,7 +133,7 @@ describe('the signature resume', () => {
     expect(render('professional', resume(1, 1), {}, { density: 'compact' })).toMatch(/line-height: 1\.38/)   // a forced density is honoured
   })
   it('prints the continuation-page footer with the name, safely', () => {
-    expect(render('modern')).toMatch(/@bottom-center \{ content: "Amina Otieno  \\00B7  Page " counter\(page\) " of " counter\(pages\)/)
+    expect(render('modern')).toMatch(/@bottom-center \{ content: "Hannah Walker  \\00B7  Page " counter\(page\) " of " counter\(pages\)/)
     // A hostile name stays inside ONE string literal (no quote, backslash or angle bracket can close it or start a tag).
     const content = /@bottom-center \{ content: (.*?); font:/.exec(render('modern', resume(1, 1, { name: 'A"; } body { display:none } /*\\" <b>' })))[1]
     expect(content).toMatch(/^"[^"\\<>&]*\\00B7  Page " counter\(page\) " of " counter\(pages\)$/)
@@ -145,7 +145,7 @@ describe('the signature resume', () => {
 })
 
 describe('the signature cover letter', () => {
-  const letter = 'Dear Hiring Manager,\n\nI am applying for the role.\nSecond line.\n\nSincerely,\nAmina'
+  const letter = 'Dear Hiring Manager,\n\nI am applying for the role.\nSecond line.\n\nSincerely,\nHannah'
   it.each(Object.keys(CAT))('%s: the same letterhead, no credential seal, paragraphs kept', preset => {
     const html = pdfTemplate.buildCoverLetterHTML(letter, resume(), tok(preset), { date: 'October 20, 2026' })
     expect(html).toContain('<header class="top">')

@@ -2,7 +2,7 @@ import Select from '../ui/Select'
 
 // Page size for the delivered documents (resume .docx and .pdf, cover letter). Scan/ATS round 12: it used to be guessed from
 // the job posting alone, with no way to correct a wrong guess - a US posting that mentions a UK office printed on A4, an
-// applicant in Nairobi sending to a firm that names no country got Letter. '' means "Auto": the posting decides, as before.
+// applicant in Sydney sending to a firm that names no country got Letter. '' means "Auto": the posting decides, as before.
 export const PAPER_OPTIONS = [
   { value: '',       label: 'Automatic (from the job posting)' },
   { value: 'letter', label: 'US Letter (8.5 × 11 in) - US and Canada' },

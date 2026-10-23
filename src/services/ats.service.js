@@ -856,7 +856,7 @@ function scoreSections(resumeText) {
     .map(l => l.normalize('NFD').replace(/\p{M}+/gu, '').toLowerCase().replace(/[^a-z& ]+/g, ' ').replace(/\s+/g, ' ').trim())
     .filter(l => l && l.split(' ').length <= 6)
   // SCAN/ATS ROUND 17 (bug, reproduced): a heading had to be a short line on its own, so the compact layout
-  // "Education: BSc Computer Science, University of Nairobi, 2014 - 2018" / "Skills: Node.js, TypeScript, ..." (the
+  // "Education: BSc Computer Science, University of Leeds, 2014 - 2018" / "Skills: Node.js, TypeScript, ..." (the
   // label and its content on one line, very common) was reported as MISSING both sections: sections 58 instead of 100,
   // and the rewrite was told to add sections the resume already had. The label before the first colon (or spaced
   // dash) of a line is a heading candidate too - when it is one word, or made only of heading vocabulary, so a job
@@ -927,7 +927,7 @@ function stripDateNoise(line) {
     // Round 14: a standard's number is a name, not a result ("ISO 9001", "RFC 7231", "SOC 2").
     .replace(/\b(?:ISO|IEC|RFC|ANSI|IEEE|NIST|SOC|PCI|DSS|HIPAA|GDPR)[\s\-/:]*\d[\d.:\-]*/g, ' ')
 }
-// Round 14: a skills list ("Python 3, Java 17, Node 18") and a postal line ("Nairobi, Kenya 00100") are full of numbers
+// Round 14: a skills list ("Python 3, Java 17, Node 18") and a postal line ("Austin, TX 78701") are full of numbers
 // that are not results; they used to count and fed both the +10 content bonus and the "quantified results" figure.
 const SKILLS_SECTION_RE = /(?:^| )(?:skills?|technical|competencies|competency|expertise|technologies|technology|tools|tech|stack|languages?|proficiencies|proficiency)(?: |$)/
 const SKILLS_LABEL_LINE = /^\s*(?:[-*\u2022]\s*)?(?:(?:technical|key|core)\s+)?(?:skills?|technologies|tools|tech stack|stack|languages?|certifications?)\s*[:\u2013\u2014-]/i

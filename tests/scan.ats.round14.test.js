@@ -122,7 +122,7 @@ describe('B6 - the scan start time is never 1970', () => {
 describe('B7 - numbers that are not results are not counted as quantified', () => {
   it.each([
     ['Skills: Python 3, Java 17, Node 18'], ['Technical skills - Python 3.11, PostgreSQL 15'], ['ISO 9001 certified auditor'],
-    ['SOC 2 and RFC 7231 compliant APIs'], ['Nairobi, Kenya 00100'], ['Austin, TX 78701'],
+    ['SOC 2 and RFC 7231 compliant APIs'], ['Denver, CO 80202'], ['Austin, TX 78701'],
   ])('%s counts as nothing', text => { expect(countQuantifiedFigures(text)).toBe(0) })
   it('a skills section is skipped, the experience after it is not', () => {
     expect(countQuantifiedFigures('Skills\nPython 3, Java 17, Node 18\nExperience\nCut costs by 30%\nLed 12 engineers')).toBe(2)

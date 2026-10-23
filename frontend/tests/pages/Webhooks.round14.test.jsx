@@ -53,9 +53,9 @@ describe('AdminPayments — answer a dispute (G2)', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Send evidence' }))
     expect(api.post).not.toHaveBeenCalled()
     expect(within(dialog).getByRole('alert').textContent).toMatch(/phone/i)
-    await user.type(within(dialog).getByLabelText(/phone/i), '+254 700 000000')
+    await user.type(within(dialog).getByLabelText(/phone/i), '+1 700 000000')
     await user.click(within(dialog).getByRole('button', { name: 'Send evidence' }))
-    expect(api.post).toHaveBeenCalledWith('/admin/payments/ref1/dispute/evidence', { customerPhone: '+254 700 000000', serviceDetails: undefined })
+    expect(api.post).toHaveBeenCalledWith('/admin/payments/ref1/dispute/evidence', { customerPhone: '+1 700 000000', serviceDetails: undefined })
   })
 })
 

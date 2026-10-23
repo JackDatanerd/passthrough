@@ -85,7 +85,7 @@ describe('B2 — sanitizeDocxXml', () => {
     }, 20000)
   }
   it('a real generated document extracts exactly as before', async () => {
-    const data = { name: 'Jane Doe', email: 'jane@x.com', phone: null, location: 'Nairobi', linkedin: null, portfolio: null, summary: 'Backend engineer with six years of experience building services.',
+    const data = { name: 'Jane Doe', email: 'jane@x.com', phone: null, location: 'Austin', linkedin: null, portfolio: null, summary: 'Backend engineer with six years of experience building services.',
       experience: [{ company: 'Acme', title: 'Engineer', dates: '2019 - 2024', location: null, bullets: ['Built Python services for 2M users & more', 'Cut deploy time by 40%'] }],
       education: [{ institution: 'UoN', degree: 'BSc CS', dates: '2012 - 2016' }], skills: ['Python', 'Go'], certifications: [], languages: [], awards: [], publications: [], volunteer: [], projects: [] }
     const r = await analyzeUpload(await generateAtsDocx(data, null), DOCX, {})

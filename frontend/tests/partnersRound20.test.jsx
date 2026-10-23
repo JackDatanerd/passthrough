@@ -71,7 +71,7 @@ describe('dashboard: ended membership (gap 6)', () => {
 describe('partner-facing dates are UTC like the cycles (bug 3)', () => {
   it('a sale at 22:00 UTC on the 15th is listed as the 15th, not the 16th, for a viewer east of UTC', async () => {
     const realTz = process.env.TZ
-    process.env.TZ = 'Africa/Nairobi'
+    process.env.TZ = 'Australia/Brisbane'
     try {
       expect(formatDate('2026-10-15T22:00:00Z')).toBe('Oct 16, 2026')      // the old rendering
       expect(formatDateUtc('2026-10-15T22:00:00Z')).toBe('Oct 15, 2026')
@@ -81,7 +81,7 @@ describe('partner-facing dates are UTC like the cycles (bug 3)', () => {
   })
   it('the conversions list uses it', async () => {
     const realTz = process.env.TZ
-    process.env.TZ = 'Africa/Nairobi'
+    process.env.TZ = 'Australia/Brisbane'
     try {
       mountDash(dash({ conversions: [{ id: 'c1', code: 'COACH', sub: null, grossAmountCents: 1000, commissionRate: 0.2, commissionAmountCents: 200, paid: false, isReversal: false, createdAt: '2026-10-15T22:00:00Z' }], conversionsTotal: 1 }))
       expect(await screen.findByText(/Oct 15, 2026/)).toBeTruthy()
@@ -92,9 +92,11 @@ describe('partner-facing dates are UTC like the cycles (bug 3)', () => {
 
 describe('payout page: tax details (gap 7)', () => {
   const saved = (over = {}) => ({ data: { data: { name: 'K', payoutMethod: 'BANK', payoutDetailsMasked: true, payoutDetailsSubmittedAt: '2026-10-01T00:00:00Z',
-    payoutDetails: { bankName: 'Equity', accountName: 'K', accountNumber: '…6789' }, dashboardToken: 'd', taxCountry: 'KE', taxIdMasked: '…789B', ...over } } })
+    payoutDetails: { bankName: 'Chase', accountName: 'K', accountNumber: '…6789' }, dashboardToken: 'd', taxCountry: 'KE', taxIdMasked: '…789B', ...over } } })
   const page = () => render(<MemoryRouter initialEntries={['/partner/payout-details?token=tok']}><PartnerPayoutDetails /></MemoryRouter>)
   const fillNumber = async () => {
+    await userEvent.selectOptions(await screen.findByLabelText('Country your bank account is in'), 'US')
+    await userEvent.type(screen.getByLabelText('ACH routing number'), '021000021')
     await userEvent.type(await screen.findByLabelText('Account number'), '0123456789')
     await userEvent.type(screen.getByLabelText('Re-enter account number'), '0123456789')
   }

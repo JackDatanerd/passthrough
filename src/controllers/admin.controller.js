@@ -114,7 +114,7 @@ async function adminDashboardStats(ctx) {
   if (ledgerErr) throw ledgerErr
 
   // SHARED FRONTEND (section 11, round 8): the totals below are shown with ONE currency symbol, but the rows can
-  // carry several (PAYSTACK_CURRENCY changed mid-life, old rows in another currency). Adding 5,000 KES to 40 USD
+  // carry several (PAYSTACK_CURRENCY changed mid-life, old rows in another currency). Adding 5,000 JPY to 40 USD
   // gives a number that means nothing, so only rows in the ACTIVE currency are summed, a row with no currency
   // (older ledger rows) counts as the active one, and what was left out is reported instead of silently merged.
   const activeCurrency = c.activeCurrency(ctx.env)

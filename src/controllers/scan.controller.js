@@ -1644,8 +1644,8 @@ async function loadCoverLetter(ctx) {
   let chosenPaper = null
   try { chosenPaper = (await supabase.from('scans').select('paper_size').eq('id', row.id).maybeSingle())?.data?.paper_size || null } catch (_) {}
   const paper = chosenPaper || designService.detectPaper(row.job_description_text)
-  // "Today" is the applicant's today: the browser sends its IANA zone (?tz=Africa/Nairobi). In UTC the letter carried
-  // yesterday's date for anyone ahead of it for part of the day (Nairobi 00:00-03:00, Sydney until 11:00) and tomorrow's for
+  // "Today" is the applicant's today: the browser sends its IANA zone (?tz=America/New_York). In UTC the letter carried
+  // yesterday's date for anyone ahead of it for part of the day (Berlin 00:00-02:00 in summer, Sydney until 11:00) and tomorrow's for
   // anyone behind it in the evening. An unknown or missing zone is UTC.
   const timeZone = safeTimeZone(ctx.req.query('tz'))
   const now = new Date()

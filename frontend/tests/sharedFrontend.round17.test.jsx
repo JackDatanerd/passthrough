@@ -10,7 +10,7 @@ afterEach(cleanup)
 
 describe('utils (Section 11, round 17)', () => {
   const realTZ = process.env.TZ
-  beforeAll(() => { process.env.TZ = 'Africa/Nairobi' })
+  beforeAll(() => { process.env.TZ = 'Australia/Brisbane' })
   afterAll(() => { if (realTZ === undefined) delete process.env.TZ; else process.env.TZ = realTZ })
 
   it('formatDate({utc:true}) shows the calendar day a UTC instant names, east of UTC', () => {

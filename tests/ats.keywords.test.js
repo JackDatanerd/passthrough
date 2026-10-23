@@ -177,7 +177,7 @@ describe('scan/ats round 5: aliases, title zone, quantification, bullets', () =>
     for (const z of splitJdZones(t)) for (const w of z.text.split(/\s+/).filter(Boolean)) expect(words.has(w.replace(/[.]/g, ''))).toBe(true)
   })
   it('counts counts, multipliers and magnitudes as quantification, not years or phone numbers', () => {
-    const q = bul => scoreResume(`Jane Doe\njane@x.com | +254 700 000000\n\nExperience\nEngineer — Acme 2019 - 2023\n${bul.map(b => '• ' + b).join('\n')}\n`, 'Engineer').detail.content.quantifiedCount
+    const q = bul => scoreResume(`Jane Doe\njane@x.com | +1 700 000000\n\nExperience\nEngineer — Acme 2019 - 2023\n${bul.map(b => '• ' + b).join('\n')}\n`, 'Engineer').detail.content.quantifiedCount
     expect(q(['Managed a team of 12 engineers across 14 countries', 'Made the report 3x faster for 1,200 users'])).toBeGreaterThanOrEqual(4)
     expect(q(['Worked on the platform for 5 years', 'Built things between 2019 and 2023'])).toBe(0)
   })

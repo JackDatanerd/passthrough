@@ -133,7 +133,7 @@ export default function CoverLetterPanel({ scan, onUpdated }) {
         {tailor && (
           <div className="mt-3 grid gap-3 sm:grid-cols-2" data-testid="cover-letter-options">
             <Input label="Company" value={company} onChange={e => setCompany(e.target.value)} maxLength={80} placeholder="Northwind Logistics" />
-            <Input label="Hiring manager's name" value={recipient} onChange={e => setRecipient(e.target.value)} maxLength={80} placeholder="Ms. Njeri" hint="Leave blank for “Dear Hiring Manager”." />
+            <Input label="Hiring manager's name" value={recipient} onChange={e => setRecipient(e.target.value)} maxLength={80} placeholder="Ms. Alvarez" hint="Leave blank for “Dear Hiring Manager”." />
             <Textarea wrapperClassName="sm:col-span-2" label="Lead with" rows={2} value={lead} onChange={e => setLead(e.target.value)} maxLength={300} showCount
               hint="The one thing you most want them to read first — it must already be true of your resume." />
             <Select label="Tone" value={tone} onChange={e => setTone(e.target.value)}>

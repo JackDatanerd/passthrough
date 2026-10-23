@@ -19,7 +19,7 @@ Requirements
 - 5+ years of experience with TypeScript, Node.js, PostgreSQL, Kubernetes, Terraform, Kafka
 - Strong knowledge of distributed systems, system design and API design`
 const BASE = `Jane Doe
-jane@example.com | Nairobi
+jane@example.com | Austin
 SUMMARY
 Backend developer with experience building web services.
 EXPERIENCE
@@ -29,7 +29,7 @@ Developer — Foo Ltd — 2019 - 2024
 • Led a team of 3 engineers delivering a billing migration ahead of schedule
 • Maintained deployment scripts and monitored production services for the platform team
 EDUCATION
-BSc Computer Science — University of Nairobi — 2015 - 2019
+BSc Computer Science — University of Leeds — 2015 - 2019
 SKILLS
 JavaScript, SQL, Git, Linux, REST APIs`
 const FILLER = '\nPROJECTS\nSide work\n• Wrote documentation and tutorials for open source contributors worldwide\n• Presented talks at local meetups about software testing practices and code review habits\n'
@@ -181,7 +181,7 @@ describe('detectFabrication: a dropped role is caught', () => {
     expect(claude.detectFabrication(o, r)).toBe(false)
   })
   it('dropping the MSc beside a BSc at one university is caught', () => {
-    const o = resumeOf([], { education: [{ institution: 'University of Nairobi', degree: 'BSc Computer Science', dates: '2011 - 2015' }, { institution: 'University of Nairobi', degree: 'MSc Computer Science', dates: '2016 - 2018' }] })
+    const o = resumeOf([], { education: [{ institution: 'University of Leeds', degree: 'BSc Computer Science', dates: '2011 - 2015' }, { institution: 'University of Leeds', degree: 'MSc Computer Science', dates: '2016 - 2018' }] })
     const r = clone(o); r.education.splice(1, 1)
     expect(claude.detectFabrication(o, r)).toBe(true)
     expect(claude.detectFabrication(o, clone(o))).toBe(false)
@@ -194,11 +194,11 @@ describe('detectFabrication: a dropped role is caught', () => {
 })
 
 describe('restoreFactualFields keeps a location when the title is tidied', () => {
-  const input = { experience: [{ company: 'Foo Ltd', title: 'Software Developer', location: 'Nairobi' }, { company: 'Bar Inc', title: 'Analyst', location: 'Mombasa' }],
+  const input = { experience: [{ company: 'Foo Ltd', title: 'Software Developer', location: 'Austin' }, { company: 'Bar Inc', title: 'Analyst', location: 'Denver' }],
                   education: [{ institution: 'Uni A', degree: 'BSc Computer Science', details: 'First class' }] }
   it('re-attaches by employer when the (company, title) pair no longer matches', () => {
     const out = claude.restoreFactualFields(input, { experience: [{ company: 'Foo Ltd', title: 'Software Engineer' }, { company: 'Bar Inc', title: 'Analyst' }], education: [] })
-    expect(out.experience.map(e => e.location)).toEqual(['Nairobi', 'Mombasa'])
+    expect(out.experience.map(e => e.location)).toEqual(['Austin', 'Denver'])
   })
   it('re-attaches an education detail when the degree wording changes', () => {
     const out = claude.restoreFactualFields(input, { experience: [], education: [{ institution: 'Uni A', degree: 'Bachelor of Science in Computer Science' }] })
@@ -211,7 +211,7 @@ describe('restoreFactualFields keeps a location when the title is tidied', () =>
   })
   it('the exact pair still wins', () => {
     const out = claude.restoreFactualFields(input, { experience: [{ company: 'Bar Inc', title: 'Analyst' }], education: [] })
-    expect(out.experience[0].location).toBe('Mombasa')
+    expect(out.experience[0].location).toBe('Denver')
   })
 })
 

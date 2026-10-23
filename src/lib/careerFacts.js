@@ -158,7 +158,7 @@ function tenureClaimOk(n, facts, sourceNumbers) {
 // education line, merged into a union of year intervals (overlapping jobs count once, gaps are not counted), with an
 // open range ending at the current year. Year granularity only; null when the text carries no usable range.
 // Which lines are EDUCATION, not work. A line used to be skipped on any education word, which also dropped real jobs: "Scrum Master",
-// "Graduate Trainee", "Lecturer - University of Nairobi", "Teacher - ... High School", "Degree Controls Ltd". Now: everything under an
+// "Graduate Trainee", "Lecturer - University of Leeds", "Teacher - ... High School", "Degree Controls Ltd". Now: everything under an
 // EDUCATION heading, plus any line with a degree word only an education entry has (BSc, MBA, diploma, "Bachelor's", GPA). With no
 // section headings at all (a pasted block), a school-name line counts as education unless it also names a job title.
 const EDU_HEADING = /^\s*(?:education(?:\s*(?:and|&)\s*(?:training|certifications?|qualifications))?|academic(?:\s+(?:background|qualifications|history))?|qualifications|education\s+history)\s*:?\s*$/i
@@ -172,7 +172,7 @@ const TITLE_WORDS = /\b(?:teacher|lecturer|professor|tutor|instructor|trainee|en
 
 // Any other ALL-CAPS heading-like line also ends an education block ("PROFESSIONAL BACKGROUND", "TEACHING EXPERIENCE", "INTERNSHIPS"):
 // a heading list can never be complete, and a block that never ended dropped every job under an unlisted heading. An all-caps school
-// or degree line ("UNIVERSITY OF NAIROBI") is an entry, not a heading.
+// or degree line ("UNIVERSITY OF LEEDS") is an entry, not a heading.
 const CAPS_HEADING = line => {
   const t = String(line || '').trim()
   return t.length >= 4 && t.length <= 48 && !/\d/.test(t) && !/[.,;:()@|]/.test(t.replace(/:\s*$/, '')) && /^[A-Z][A-Z &/'’-]+$/.test(t) && !SCHOOL_WORDS.test(t) && !DEGREE_WORDS.test(t)

@@ -700,7 +700,7 @@ describe('adminListPartners', () => {
     const old = new Date(); old.setUTCMonth(old.getUTCMonth() - 2)
     const row = {
       id: 'p1', name: 'Coach K', email: 'k@x.co', status: 'ACTIVE', commission_rate: '0.2500', payouts: [], referral_codes: [],
-      payout_method: 'BANK', payout_details: { bankName: 'Equity', accountName: 'Coach K', accountNumber: '0123456789' },
+      payout_method: 'BANK', payout_details: { bankName: 'Chase', accountName: 'Coach K', accountNumber: '0123456789' },
       payout_details_submitted_at: old.toISOString(), tax_country: 'KE', tax_id: 'A123456789B',
       commission_ledger: [{ id: 'l1', partner_id: 'p1', gross_amount_cents: 4900, commission_amount_cents: 500, payout_id: null, created_at: old.toISOString() }],
     }
@@ -1067,8 +1067,8 @@ describe('submitPayoutDetails', () => {
   it('rejects whitespace-only fields and trims what it stores', async () => {
     t = setupSubmit({ updated: { name: 'K', email: 'k@x.co' } })
     await expect(t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'BANK', bankName: '   ', accountName: 'K', accountNumber: '12345678' } }))).rejects.toThrow()
-    await t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'BANK', bankName: ' Equity ', accountName: ' K ', accountNumber: ' 12345678 ' } }))
-    expect(t.state.patch.payout_details).toEqual({ bankName: 'Equity', accountName: 'K', accountNumber: '12345678' })
+    await t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'BANK', bankName: ' Chase ', accountName: ' K ', accountNumber: ' 12345678 ' } }))
+    expect(t.state.patch.payout_details).toEqual({ bankName: 'Chase', accountName: 'K', accountNumber: '12345678' })
   })
 
   it('rejects a body missing required BANK fields', async () => {
@@ -1113,7 +1113,7 @@ describe('submitPayoutDetails', () => {
       previous: { payout_method: 'BANK', payout_details: { bankName: 'Old', accountName: 'K', accountNumber: '1111222233334444' } },
       updated: { name: 'Coach K', email: 'k@x.co' }
     })
-    await t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'MOBILE_MONEY', provider: 'M-Pesa', accountName: 'K', phoneNumber: '+254 700 123 456' } }))
+    await t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'MOBILE_MONEY', provider: 'M-Pesa', accountName: 'K', phoneNumber: '+1 700 123 456' } }))
     const [, subject, body] = t.state.alerts[0]
     expect(subject).toBe('Partner payout details changed')
     expect(body).toContain('before: BANK ...4444')

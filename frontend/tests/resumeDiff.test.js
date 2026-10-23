@@ -81,8 +81,8 @@ describe('buildResumeDiff', () => {
 
 describe('buildResumeDiff — education, projects, contact (Auth/Scan round)', () => {
   it('diffs a promoted degree and an invented date on education', () => {
-    const original = { education: [{ institution: 'Cape Town University', degree: 'BSc Computer Science', dates: '2015 - 2018' }] }
-    const rewritten = { education: [{ institution: 'Cape Town University', degree: 'MSc Computer Science', dates: '2013 - 2018' }] }
+    const original = { education: [{ institution: 'Leeds University', degree: 'BSc Computer Science', dates: '2015 - 2018' }] }
+    const rewritten = { education: [{ institution: 'Leeds University', degree: 'MSc Computer Science', dates: '2013 - 2018' }] }
     const diff = buildResumeDiff(original, rewritten)
     expect(diff.education[0].titleChanged).toBe(true)
     expect(diff.education[0].datesChanged).toBe(true)

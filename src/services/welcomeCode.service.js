@@ -15,7 +15,7 @@ const SUFFIX_LENGTH = 5
 const MAX_CODE_TRIES = 5
 const DAY_MS = 24 * 60 * 60 * 1000
 
-// Up to two capital letters from the name (first and last word): "Faith Njeri" -> "FN", "Cher" -> "C", "李雷" -> "". Initials, not
+// Up to two capital letters from the name (first and last word): "Faith Nelson" -> "FN", "Cher" -> "C", "李雷" -> "". Initials, not
 // the name itself, so a code left behind in a payment record after the account is erased says nothing about who it was.
 function initialsOf(name) {
   const words = String(name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').split(/[\s\-_.]+/)

@@ -15,7 +15,7 @@ const body = (headerLines) => [
 describe('B1: a phone number is contact information (it used to need an email)', () => {
   const sections = t => ats.scoreResume(t, JD).detail.sections
   it('phone, location and profile link but no email: Contact is found', () => {
-    const s = sections(body(['+254 712 345 678 | Nairobi | linkedin.com/in/jane']))
+    const s = sections(body(['+1 415 555 0132 | Austin | linkedin.com/in/jane']))
     expect(s.missing).not.toContain('Contact'); expect(s.found).toContain('Contact')
   })
   it('common phone shapes count', () => {
@@ -23,7 +23,7 @@ describe('B1: a phone number is contact information (it used to need an email)',
       expect(sections(body([p])).missing, p).not.toContain('Contact')
   })
   it('date ranges, years and short numbers are not a phone', () => {
-    for (const h of ['2019 - 2023', '2015 2019 2021', 'Nairobi 00100', 'Page 1 of 2'])
+    for (const h of ['2019 - 2023', '2015 2019 2021', 'Austin 00100', 'Page 1 of 2'])
       expect(sections(body([h])).missing, h).toContain('Contact')
   })
   it('an email still counts, and no contact at all is still reported', () => {

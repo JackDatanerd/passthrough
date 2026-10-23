@@ -7,6 +7,8 @@ import Button from '../components/ui/Button'
 import Form from '../components/ui/Form'
 import Input from '../components/ui/Input'
 import Checkbox from '../components/ui/Checkbox'
+import Select from '../components/ui/Select'
+import { BANK_COUNTRIES, OTHER_COUNTRY, bankRail, routingInfo, bankProblem, EMAIL_RE } from '../lib/payoutRails'
 import Spinner from '../components/ui/Spinner'
 import PartnerLayout from '../components/partner/PartnerLayout'
 import { formatDateTime } from '../lib/utils'
@@ -41,6 +43,12 @@ export default function PartnerPayoutDetails() {
   const [accountNumber, setAccountNumber] = useState('')
   const [provider, setProvider] = useState('')
   const [phoneNumber, setPhoneNumber] = useState('')
+  const [paypalEmail, setPaypalEmail] = useState('')
+  // Where the bank account is held decides which routing details are needed (ACH routing number, sort code, BSB, IBAN, SWIFT/BIC).
+  const [bankCountry, setBankCountry] = useState('')
+  const [otherCountry, setOtherCountry] = useState('')
+  const [routingCode, setRoutingCode] = useState('')
+  const [swiftBic, setSwiftBic] = useState('')
   const [confirmNumber, setConfirmNumber] = useState('')
   // Round 9: the server returns the saved account / phone as its last four digits only (the link is a bearer
   // credential), so what is on file is shown as a reference and the number has to be typed again to save.
@@ -76,13 +84,22 @@ export default function PartnerPayoutDetails() {
           setBankName(d.bankName || '')
           setAccountName(d.accountName || '')
           setProvider(d.provider || '')
-          setLoadedPayout({ method: p.payoutMethod, bankName: d.bankName || '', accountName: d.accountName || '', provider: d.provider || '' })
+          const savedCountry = d.bankCountry || ''
+          const known = BANK_COUNTRIES.some(([code]) => code === savedCountry)
+          setBankCountry(!savedCountry ? '' : known ? savedCountry : OTHER_COUNTRY)
+          setOtherCountry(savedCountry && !known ? savedCountry : '')
+          setRoutingCode(d.routingCode || '')
+          setSwiftBic(d.swiftBic || '')
+          setLoadedPayout({ method: p.payoutMethod, bankName: d.bankName || '', accountName: d.accountName || '', provider: d.provider || '',
+            bankCountry: savedCountry, routingCode: d.routingCode || '', swiftBic: d.swiftBic || '' })
           if (p.payoutDetailsMasked) {
-            setOnFile(`${p.payoutMethod === 'BANK' ? 'Bank account' : 'Mobile money'} ${d.accountNumber || d.phoneNumber || ''}`.trim())
+            const kind = p.payoutMethod === 'BANK' ? 'Bank account' : p.payoutMethod === 'PAYPAL' ? 'PayPal' : 'Mobile money'
+            setOnFile(`${kind} ${d.accountNumber || d.phoneNumber || d.paypalEmail || ''}`.trim())
           } else {
             setAccountNumber(d.accountNumber || '')
             setPhoneNumber(d.phoneNumber || '')
-            setConfirmNumber(d.accountNumber || d.phoneNumber || '')
+            setPaypalEmail(d.paypalEmail || '')
+            setConfirmNumber(d.accountNumber || d.phoneNumber || d.paypalEmail || '')
           }
         }
       })
@@ -97,10 +114,17 @@ export default function PartnerPayoutDetails() {
 
   const fail0 = msg => showError(msg)
 
+  const countryCode = bankCountry === OTHER_COUNTRY ? otherCountry.trim().toUpperCase() : bankCountry
+  const rail = bankRail(countryCode, accountNumber)
+  const routing = routingInfo(countryCode)
+  // The one value the partner has to type twice, whatever the method.
+  const idValue = method === 'BANK' ? accountNumber : method === 'PAYPAL' ? paypalEmail : phoneNumber
+  const idLabel = method === 'BANK' ? (rail === 'iban' ? 'IBAN' : 'account number') : method === 'PAYPAL' ? 'PayPal email' : 'phone number'
+
   async function handleSubmit() {
     // Tax-only save: details are already on file and the partner has not retyped the account number, so only the
     // tax fields are sent (the server leaves the payout destination untouched).
-    const numberBlank = method === 'BANK' ? !accountNumber.trim() : !phoneNumber.trim()
+    const numberBlank = !idValue.trim()
     const taxChanged = clearTaxId || taxId.trim() || taxCountry.trim().toUpperCase() !== taxCountryLoaded
     if (onFile && numberBlank && !confirmNumber.trim()) {
       // Round 22: a tax-only save used to swallow edits to the bank / provider / account name (and a switch of method) — it saved
@@ -109,12 +133,14 @@ export default function PartnerPayoutDetails() {
       const edited = !!loadedPayout && (
         method !== loadedPayout.method ||
         accountName.trim() !== loadedPayout.accountName ||
-        (method === 'BANK' ? bankName.trim() !== loadedPayout.bankName : provider.trim() !== loadedPayout.provider))
-      if (edited) return fail0(`Re-enter your ${method === 'BANK' ? 'account number' : 'phone number'} (twice) to save the change to your payout details.`)
+        (method === 'BANK' ? (bankName.trim() !== loadedPayout.bankName || countryCode !== loadedPayout.bankCountry ||
+          routingCode.trim() !== loadedPayout.routingCode || swiftBic.trim() !== loadedPayout.swiftBic)
+          : method === 'MOBILE_MONEY' ? provider.trim() !== loadedPayout.provider : false))
+      if (edited) return fail0(`Re-enter your ${idLabel} (twice) to save the change to your payout details.`)
     }
     if (onFile && numberBlank && !confirmNumber.trim() && taxChanged) {
       const c = taxCountry.trim().toUpperCase()
-      if (c && !/^[A-Z]{2}$/.test(c)) return fail0('Use the 2-letter country code for your tax country, e.g. KE.')
+      if (c && !/^[A-Z]{2}$/.test(c)) return fail0('Use the 2-letter country code for your tax country, e.g. US.')
       if (taxId.trim() && taxId.trim().length < 3) return fail0('That tax ID looks too short — enter it in full, or leave it blank.')
       const patch = { ...(c !== taxCountryLoaded ? { taxCountry: c } : {}), ...(clearTaxId ? { taxId: '' } : taxId.trim() ? { taxId: taxId.trim() } : {}) }
       try {
@@ -128,8 +154,12 @@ export default function PartnerPayoutDetails() {
     }
     setTaxSaved(false)
     const body = method === 'BANK'
-      ? { payoutMethod: 'BANK', bankName: bankName.trim(), accountName: accountName.trim(), accountNumber: accountNumber.trim() }
-      : { payoutMethod: 'MOBILE_MONEY', provider: provider.trim(), accountName: accountName.trim(), phoneNumber: phoneNumber.trim() }
+      ? { payoutMethod: 'BANK', bankName: bankName.trim(), accountName: accountName.trim(), accountNumber: accountNumber.trim(), bankCountry: countryCode,
+          ...(rail === 'routing' && routingCode.trim() ? { routingCode: routingCode.trim() } : {}),
+          ...(rail === 'swift' && swiftBic.trim() ? { swiftBic: swiftBic.trim() } : {}) }
+      : method === 'PAYPAL'
+        ? { payoutMethod: 'PAYPAL', accountName: accountName.trim(), paypalEmail: paypalEmail.trim() }
+        : { payoutMethod: 'MOBILE_MONEY', provider: provider.trim(), accountName: accountName.trim(), phoneNumber: phoneNumber.trim() }
 
     // Tax details are optional and only sent when touched: a blank ID keeps the one on file; a changed country (even to blank) is sent.
     const country = taxCountry.trim().toUpperCase()
@@ -141,15 +171,20 @@ export default function PartnerPayoutDetails() {
     }
 
     const fail = msg => showError(msg)
-    const number = method === 'BANK' ? body.accountNumber : body.phoneNumber
-    if (method === 'BANK' && !ACCOUNT_NUMBER_RE.test(body.accountNumber))
-      return fail('That account number doesn\'t look right — use 4–34 letters, digits, spaces or dashes.')
+    const number = idValue
+    if (method === 'BANK') {
+      if (!ACCOUNT_NUMBER_RE.test(body.accountNumber))
+        return fail('That account number doesn\'t look right — use 4–34 letters, digits, spaces or dashes.')
+      const problem = bankProblem(body)
+      if (problem) return fail(problem)
+    }
+    if (method === 'PAYPAL' && !EMAIL_RE.test(body.paypalEmail)) return fail('Enter the email address of your PayPal account.')
     if (method === 'MOBILE_MONEY' && !PHONE_RE.test(body.phoneNumber))
-      return fail('That phone number doesn\'t look right — include the country code, e.g. +254 712 345 678.')
-    if (country && !/^[A-Z]{2}$/.test(country)) return fail('Use the 2-letter country code for your tax country, e.g. KE.')
+      return fail('That phone number doesn\'t look right — include the country code, e.g. +1 415 555 0132.')
+    if (country && !/^[A-Z]{2}$/.test(country)) return fail('Use the 2-letter country code for your tax country, e.g. US.')
     if (taxId.trim() && taxId.trim().length < 3) return fail('That tax ID looks too short — enter it in full, or leave it blank.')
-    if (squash(number) !== squash(confirmNumber))
-      return fail(`The two ${method === 'BANK' ? 'account numbers' : 'phone numbers'} don't match — please re-enter to confirm.`)
+    if (squash(number).toLowerCase() !== squash(confirmNumber).toLowerCase())
+      return fail(`The two ${method === 'BANK' ? (rail === 'iban' ? 'IBANs' : 'account numbers') : method === 'PAYPAL' ? 'PayPal emails' : 'phone numbers'} don't match — please re-enter to confirm.`)
 
     try {
       const out = await execute(() => api.post('/partners/payout-details', { ...body, ...taxExtra }, partnerAuth(token)),
@@ -226,33 +261,56 @@ export default function PartnerPayoutDetails() {
               )}
 
               <div className="flex gap-2 mb-6">
-                <button type="button"
-                  onClick={() => { setMethod('BANK'); setConfirmNumber('') }}
-                  className={`flex-1 py-2 rounded-md text-sm font-medium border transition-colors ${
-                    method === 'BANK' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300'}`}>
-                  Bank account
-                </button>
-                <button type="button"
-                  onClick={() => { setMethod('MOBILE_MONEY'); setConfirmNumber('') }}
-                  className={`flex-1 py-2 rounded-md text-sm font-medium border transition-colors ${
-                    method === 'MOBILE_MONEY' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300'}`}>
-                  Mobile money
-                </button>
+                {[['BANK', 'Bank account'], ['PAYPAL', 'PayPal'], ['MOBILE_MONEY', 'Mobile money']].map(([m, text]) => (
+                  <button key={m} type="button"
+                    onClick={() => { setMethod(m); setConfirmNumber('') }}
+                    className={`flex-1 py-2 rounded-md text-sm font-medium border transition-colors ${
+                      method === m ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300'}`}>
+                    {text}
+                  </button>
+                ))}
               </div>
 
               <Form onSubmit={handleSubmit} className="flex flex-col gap-4">
                 {method === 'BANK' ? (
                   <>
+                    <Select label="Country your bank account is in" value={bankCountry}
+                      onChange={e => { setBankCountry(e.target.value); setConfirmNumber('') }}>
+                      <option value="">Select a country…</option>
+                      {BANK_COUNTRIES.map(([code, name]) => <option key={code} value={code}>{name}</option>)}
+                      <option value={OTHER_COUNTRY}>Another country…</option>
+                    </Select>
+                    {bankCountry === OTHER_COUNTRY && (
+                      <Input label="Country code (2 letters)" value={otherCountry} maxLength={2} autoComplete="off"
+                        onChange={e => setOtherCountry(e.target.value.toUpperCase())} placeholder="e.g. SG" />
+                    )}
                     <Input label="Bank name" value={bankName} onChange={e => setBankName(e.target.value)} />
                     <Input label="Account name" value={accountName} onChange={e => setAccountName(e.target.value)} />
-                    <Input label="Account number" value={accountNumber} onChange={e => setAccountNumber(e.target.value)} inputMode="text" autoComplete="off" />
-                    <Input label="Re-enter account number" value={confirmNumber} onChange={e => setConfirmNumber(e.target.value)} autoComplete="off" />
+                    {countryCode && rail === 'routing' && routing && (
+                      <Input label={routing.label} value={routingCode} onChange={e => setRoutingCode(e.target.value)}
+                        placeholder={routing.placeholder} inputMode="numeric" autoComplete="off" />
+                    )}
+                    <Input label={rail === 'iban' ? 'IBAN' : 'Account number'} value={accountNumber}
+                      onChange={e => setAccountNumber(e.target.value)} inputMode="text" autoComplete="off"
+                      placeholder={rail === 'iban' ? 'DE89 3704 0044 0532 0130 00' : ''} />
+                    <Input label={rail === 'iban' ? 'Re-enter IBAN' : 'Re-enter account number'} value={confirmNumber} onChange={e => setConfirmNumber(e.target.value)} autoComplete="off" />
+                    {countryCode && rail === 'swift' && (
+                      <Input label="SWIFT/BIC code" value={swiftBic} onChange={e => setSwiftBic(e.target.value.toUpperCase())}
+                        placeholder="e.g. CHASUS33" autoComplete="off" maxLength={14} hint="International transfers need your bank's SWIFT/BIC code." />
+                    )}
+                  </>
+                ) : method === 'PAYPAL' ? (
+                  <>
+                    <Input label="Name on the PayPal account" value={accountName} onChange={e => setAccountName(e.target.value)} />
+                    <Input label="PayPal email" type="email" value={paypalEmail} onChange={e => setPaypalEmail(e.target.value)}
+                      placeholder="you@example.com" autoComplete="off" hint="We send payouts to the email address your PayPal account is registered with." />
+                    <Input label="Re-enter PayPal email" type="email" value={confirmNumber} onChange={e => setConfirmNumber(e.target.value)} autoComplete="off" />
                   </>
                 ) : (
                   <>
                     <Input label="Provider (e.g. M-Pesa, MTN MoMo)" value={provider} onChange={e => setProvider(e.target.value)} />
                     <Input label="Account name" value={accountName} onChange={e => setAccountName(e.target.value)} />
-                    <Input label="Phone number (with country code)" value={phoneNumber} onChange={e => setPhoneNumber(e.target.value)} inputMode="tel" placeholder="+254 712 345 678" autoComplete="off" />
+                    <Input label="Phone number (with country code)" value={phoneNumber} onChange={e => setPhoneNumber(e.target.value)} inputMode="tel" placeholder="+1 415 555 0132" autoComplete="off" />
                     <Input label="Re-enter phone number" value={confirmNumber} onChange={e => setConfirmNumber(e.target.value)} inputMode="tel" autoComplete="off" />
                   </>
                 )}
@@ -261,7 +319,7 @@ export default function PartnerPayoutDetails() {
                   <legend className="text-sm font-medium text-gray-700 pr-2">Tax details (optional)</legend>
                   <p className="text-xs text-gray-500 -mt-2">Some countries require us to collect these before paying you. Adding or changing them does not pause your payouts.</p>
                   <Input label="Country of tax residence (2-letter code)" value={taxCountry} maxLength={2} autoComplete="off"
-                    onChange={e => setTaxCountry(e.target.value.toUpperCase())} placeholder="KE" />
+                    onChange={e => setTaxCountry(e.target.value.toUpperCase())} placeholder="US" />
                   <Input label="Tax ID" value={taxId} autoComplete="off" maxLength={40} onChange={e => setTaxId(e.target.value)}
                     placeholder={taxIdOnFile ? `On file: ${taxIdOnFile} — type a new one to replace it` : ''} disabled={clearTaxId} />
                   {taxIdOnFile && (

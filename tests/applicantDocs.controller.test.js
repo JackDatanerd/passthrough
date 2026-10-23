@@ -30,7 +30,7 @@ describe('downloadCoverLetterPdf', () => {
   }
   const SCAN = { id: 's1', user_id: 'u1', cover_letter_text: 'Dear Hiring Manager,\n\nHi.\n\nSincerely,\nJosé Núñez', role_category: 'default',
     job_description_text: 'We organise programmes with colour-coded centres; you will prioritise and analyse behaviour across a UK-wide team.',
-    rewritten_resume_data: { name: 'José Núñez', email: 'jose@x.com', phone: '+254 712 345 678' } }
+    rewritten_resume_data: { name: 'José Núñez', email: 'jose@x.com', phone: '+1 415 555 0132' } }
 
   it('renders the letter on the posting\'s paper, with the letterhead, and names the file for the applicant', async () => {
     t = setup(SCAN)
@@ -42,7 +42,7 @@ describe('downloadCoverLetterPdf', () => {
     expect(t.seen.opts.paper).toBe('a4')
     expect(t.seen.html).toContain('<h1>José Núñez</h1>')
     expect(t.seen.html).toContain('href="mailto:jose@x.com"')
-    expect(t.seen.html).toContain('href="tel:+254712345678"')
+    expect(t.seen.html).toContain('href="tel:+14155550132"')
     expect(t.seen.html).toMatch(/\d{1,2} \w+ \d{4}/)           // a UK posting gets "16 October 2026", not "October 16, 2026"
   })
   it('uses Letter and the US date form for a US posting', async () => {
@@ -59,10 +59,10 @@ describe('downloadCoverLetterPdf', () => {
     expect(headers['Content-Disposition']).toMatch(/^attachment; filename="cover-letter\.pdf"; filename\*=UTF-8''/)
     expect(decodeURIComponent(/filename\*=UTF-8''(.+)$/.exec(headers['Content-Disposition'])[1])).toBe('анна-иванова-cover-letter.pdf')
   })
-  it('dates the letter for the applicant\'s day, not UTC\'s (Nairobi is ahead; an unknown zone is UTC)', async () => {
+  it('dates the letter for the applicant\'s day, not UTC\'s (Brisbane is ahead; an unknown zone is UTC)', async () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-16T22:30:00Z'))
     const dateFor = async query => { t?.restore(); t = setup(SCAN); await t.mod.downloadCoverLetterPdf(ctxFor({ headers: {}, query })); return t.seen.html }
-    expect(await dateFor({ tz: 'Africa/Nairobi' })).toContain('17 October 2026')
+    expect(await dateFor({ tz: 'Australia/Brisbane' })).toContain('17 October 2026')
     expect(await dateFor({})).toContain('16 October 2026')
     expect(await dateFor({ tz: 'Mars/Phobos' })).toContain('16 October 2026')
     expect(await dateFor({ tz: 'x'.repeat(200) })).toContain('16 October 2026')
@@ -118,7 +118,7 @@ describe('saved-profile downloads', () => {
     })
     return { mod, restore, seen }
   }
-  const RD = { name: 'José Núñez', location: 'Nairobi, Kenya', skills: ['SQL'], experience: [{ title: 'Analyst', company: 'Acme', bullets: ['Built dashboards'] }] }
+  const RD = { name: 'José Núñez', location: 'London, UK', skills: ['SQL'], experience: [{ title: 'Analyst', company: 'Acme', bullets: ['Built dashboards'] }] }
 
   it('names the files with the shared accent-aware stem, and reads the paper from the applicant\'s location', async () => {
     t = setup(RD)

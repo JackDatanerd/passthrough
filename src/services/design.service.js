@@ -55,7 +55,7 @@ function djb2(str) {
 // against signals for Letter ("US", a US state or "City, ST", Canada and its provinces, 401(k), EEO wording); A4 wins only
 // when it has MORE signals, so a posting that is truly ambiguous ("US and UK customers") stays Letter, the US default.
 // Scan/ATS round 12: the old rule gave A4 to any posting that said "London", "Manchester" or "Birmingham" - Birmingham AL,
-// Manchester NH and London, Ontario - and "UK" anywhere, and gave Letter to Dublin, Berlin or Nairobi.
+// Manchester NH and London, Ontario - and "UK" anywhere, and gave Letter to Dublin, Berlin or Sydney.
 const US_STATES = 'alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new hampshire|new jersey|new mexico|new york|north carolina|north dakota|ohio|oklahoma|oregon|pennsylvania|rhode island|south carolina|south dakota|tennessee|texas|utah|vermont|virginia|washington|west virginia|wisconsin|wyoming'
 const CA_PROVINCES = 'ontario|quebec|british columbia|alberta|manitoba|saskatchewan|nova scotia|new brunswick|newfoundland'
 const US_ABBR = 'AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC'

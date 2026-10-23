@@ -13,7 +13,7 @@ vi.mock('../../src/lib/utils', async orig => ({ ...(await orig()), downloadBlob:
 
 beforeEach(() => { for (const k of ['get', 'post', 'patch', 'delete']) api[k].mockReset() })
 
-const LETTER = 'Dear Hiring Manager,\n\nLast year I rebuilt the weekly reporting pack that management used to chase, and vendor queries dropped.\n\nSincerely,\nAmina Otieno'
+const LETTER = 'Dear Hiring Manager,\n\nLast year I rebuilt the weekly reporting pack that management used to chase, and vendor queries dropped.\n\nSincerely,\nHannah Walker'
 
 describe('CoverLetterPanel — the person can edit the letter, and a new one never silently replaces their edits', () => {
   it('Edit opens the saved text; Save sends it to the letter endpoint and tells the parent', async () => {

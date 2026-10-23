@@ -5,7 +5,7 @@ import { csvCell, csvText, toCsv } from '../src/lib/utils'
 // a bank account must keep its leading zero, and nothing partner-controlled may become a formula.
 describe('csvText', () => {
   it('writes a +country-code phone number as Excel text, with no literal apostrophe', () => {
-    expect(csvCell(csvText('+254 712 345 678'))).toBe('"=""+254 712 345 678"""')
+    expect(csvCell(csvText('+1 415 555 0132'))).toBe('"=""+1 415 555 0132"""')
   })
   it('keeps the leading zero of a bank account', () => {
     expect(csvCell(csvText('0012345678'))).toBe('"=""0012345678"""')
@@ -25,11 +25,11 @@ describe('csvText', () => {
     expect(csvCell(csvText(null))).toBe('')
   })
   it('plain text cells keep the apostrophe rule (the regression this must not break)', () => {
-    expect(csvCell('+254 712')).toBe("'+254 712")
+    expect(csvCell('+1 712')).toBe("'+1 712")
     expect(csvCell('=HYPERLINK("x")')).toBe('"\'=HYPERLINK(""x"")"')
     expect(csvCell(-5)).toBe('-5')
   })
   it('works inside a row', () => {
-    expect(toCsv([['Ann', csvText('+254700000000'), '12.00']])).toBe('Ann,"=""+254700000000""",12.00')
+    expect(toCsv([['Ann', csvText('+1700000000'), '12.00']])).toBe('Ann,"=""+1700000000""",12.00')
   })
 })

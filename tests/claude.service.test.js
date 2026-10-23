@@ -53,7 +53,7 @@ describe('extractJson', () => {
 describe('detectFabrication', () => {
   const orig = {
     experience: [{ company: 'Acme Corp' }],
-    education: [{ institution: 'Cape Town University' }],
+    education: [{ institution: 'Leeds University' }],
     projects: [{ name: 'Internal Tools' }]
   }
 
@@ -72,7 +72,7 @@ describe('detectFabrication', () => {
   })
 
   it('does not flag a legitimate shortening of a real institution name', () => {
-    const rewritten = { experience: orig.experience, education: [{ institution: 'Cape Town' }], projects: orig.projects }
+    const rewritten = { experience: orig.experience, education: [{ institution: 'Leeds' }], projects: orig.projects }
     expect(detectFabrication(orig, rewritten)).toBe(false)
   })
 

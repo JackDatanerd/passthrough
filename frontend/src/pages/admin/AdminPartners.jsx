@@ -351,13 +351,13 @@ async function exportPayoutRun(partners, holdHours = 0) {
   const full = new Map((res.data.data || []).map(r => [r.id, r]))
   const payable = all.filter(p => !isHeld(p, holdHours) && full.has(p.id))
   const heldBack = all.filter(p => isHeld(p, holdHours)).length
-  const rows = [['Partner', 'Email', 'Method', 'Bank / provider', 'Account name', 'Account / phone', 'Amount', 'Currency', 'Details submitted', 'Tax country', 'Tax ID']]
+  const rows = [['Partner', 'Email', 'Method', 'Bank / provider', 'Account name', 'Account / phone / PayPal email', 'Bank country', 'Routing / sort code / BSB', 'SWIFT/BIC', 'Amount', 'Currency', 'Details submitted', 'Tax country', 'Tax ID']]
   for (const p of payable) {
     const f = full.get(p.id)
     const d = f.payoutDetails || {}
     rows.push([
-      p.name, p.email, f.payoutMethod, d.bankName || d.provider || '', d.accountName || '',
-      csvText(d.accountNumber || d.phoneNumber || ''), ((f.readyToPayCents || 0) / 100).toFixed(2), f.currency || p.currency || '',
+      p.name, p.email, f.payoutMethod, d.bankName || d.provider || (f.payoutMethod === 'PAYPAL' ? 'PayPal' : ''), d.accountName || '',
+      csvText(d.accountNumber || d.phoneNumber || d.paypalEmail || ''), d.bankCountry || '', csvText(d.routingCode || ''), d.swiftBic || '', ((f.readyToPayCents || 0) / 100).toFixed(2), f.currency || p.currency || '',
       f.payoutDetailsSubmittedAt || '', f.taxCountry || '', csvText(f.taxId || '')
     ])
   }

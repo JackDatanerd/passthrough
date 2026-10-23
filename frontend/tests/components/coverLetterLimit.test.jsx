@@ -12,7 +12,7 @@ vi.mock('../../src/lib/api', () => ({
 vi.mock('../../src/lib/utils', async orig => ({ ...(await orig()), downloadBlob: vi.fn(), copyToClipboard: vi.fn(async () => true) }))
 beforeEach(() => { for (const k of ['get', 'post', 'patch', 'delete']) api[k].mockReset() })
 
-const LETTER = 'Dear Hiring Manager,\n\nLast year I rebuilt the weekly reporting pack that management used to chase.\n\nSincerely,\nAmina Otieno'
+const LETTER = 'Dear Hiring Manager,\n\nLast year I rebuilt the weekly reporting pack that management used to chase.\n\nSincerely,\nHannah Walker'
 
 describe('CoverLetterPanel — a bonus with a visible allowance', () => {
   it('presents the letter as a bonus included with the purchase', () => {

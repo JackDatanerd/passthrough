@@ -88,7 +88,7 @@ describe('plain-text export', () => {
 })
 
 describe('the DOCX', () => {
-  const data = { name: 'Wanjiru Mwangi', email: 'w@example.com', experience: [{ title: 'Analyst', company: 'Acme', dates: 'January 2020 - current', bullets: ['Built things.'] }], skills: ['SQL', 'Python'] }
+  const data = { name: 'Emily Carter', email: 'w@example.com', experience: [{ title: 'Analyst', company: 'Acme', dates: 'January 2020 - current', bullets: ['Built things.'] }], skills: ['SQL', 'Python'] }
   const parts = async b => { const z = await JSZip.loadAsync(b); return { doc: await z.file('word/document.xml').async('string'), core: await z.file('docProps/core.xml').async('string') } }
   it('prints canonical dates and comma-separated skills', async () => {
     const { doc } = await parts(await generateAtsDocx(data, null))
@@ -98,6 +98,6 @@ describe('the DOCX', () => {
   it('carries no tool name or marketing line in its properties', async () => {
     const { core } = await parts(await generateAtsDocx(data, null))
     expect(core).not.toMatch(/ATS-friendly/)
-    expect(core).toMatch(/<cp:lastModifiedBy>Wanjiru Mwangi</)
+    expect(core).toMatch(/<cp:lastModifiedBy>Emily Carter</)
   })
 })

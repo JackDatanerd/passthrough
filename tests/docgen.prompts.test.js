@@ -16,12 +16,12 @@ const JSZip = require('jszip')
 const clone = o => JSON.parse(JSON.stringify(o))
 const NOW = new Date(Date.UTC(2026, 9, 16))
 const base = {
-  name: 'Amina Otieno', email: 'amina@example.com', phone: null, location: 'Nairobi', linkedin: null, portfolio: null, summary: null,
+  name: 'Hannah Walker', email: 'amina@example.com', phone: null, location: 'Austin', linkedin: null, portfolio: null, summary: null,
   experience: [
     { company: 'Acme Ltd', title: 'Operations Analyst', dates: '2016 - 2024', location: null, bullets: ['Responsible for weekly reporting to management', 'Managed vendor relationships for the logistics team', 'Worked on process improvement projects'] },
     { company: 'Beta Co', title: 'Intern', dates: '2015 - 2016', location: null, bullets: ['Helped with data entry and filing'] },
   ],
-  education: [{ institution: 'University of Nairobi', degree: 'BCom', dates: '2011 - 2015', details: null }],
+  education: [{ institution: 'University of Leeds', degree: 'BCom', dates: '2011 - 2015', details: null }],
   skills: ['Excel', 'SQL', 'Reporting'], certifications: [], projects: [], languages: [], awards: [], publications: [], volunteer: [],
 }
 
@@ -213,7 +213,7 @@ describe('rewrite prompt', () => {
 describe('cover letter v2', () => {
   const jd = 'Operations Analyst at Northwind Logistics. You will own weekly reporting and vendor management. SQL and Excel required. 5+ years preferred.'
   const letter = (mid = 'Last quarter I rebuilt the weekly reporting pack that management used to chase, and vendor queries dropped because the numbers were finally in one place.') =>
-    `Dear Hiring Manager,\n\n${mid}\n\nAt Acme Ltd I managed vendor relationships for the logistics team and ran process improvement projects. Your posting asks for someone to own reporting and vendors, and that is the work I have done every week.\n\nTwo things stand out about this role, and I would like to talk through how I would approach the first month. Thank you for your time.\n\nSincerely,\nAmina Otieno`
+    `Dear Hiring Manager,\n\n${mid}\n\nAt Acme Ltd I managed vendor relationships for the logistics team and ran process improvement projects. Your posting asks for someone to own reporting and vendors, and that is the work I have done every week.\n\nTwo things stand out about this role, and I would like to talk through how I would approach the first month. Thank you for your time.\n\nSincerely,\nHannah Walker`
   const opts = { ANTHROPIC_API_KEY: 'k' }
 
   it('"Two things", "three vendors" and similar ordinary prose no longer fail the figure guard', async () => {
@@ -224,13 +224,13 @@ describe('cover letter v2', () => {
   })
   it('the prompt asks for a hook and proof, bans the cliché openers, and uses the typed details as given', async () => {
     const f = captureFetch(letter()); vi.stubGlobal('fetch', f)
-    await claude.generateCoverLetter(opts, base, jd, { company: 'Northwind Logistics', recipient: 'Ms. Njeri', lead: 'the vendor cost work', tone: 'direct', jobTitle: 'Operations Analyst' })
+    await claude.generateCoverLetter(opts, base, jd, { company: 'Northwind Logistics', recipient: 'Ms. Nelson', lead: 'the vendor cost work', tone: 'direct', jobTitle: 'Operations Analyst' })
     const sys = f.bodies[0].system, user = f.bodies[0].messages[0].content
     expect(sys).toMatch(/hook/i)
     expect(sys).toMatch(/Never open with "I am writing to apply"/)
     expect(sys).toMatch(/TONE: direct/)
     expect(user).toContain('company: Northwind Logistics')
-    expect(user).toContain('hiring manager: Ms. Njeri')
+    expect(user).toContain('hiring manager: Ms. Nelson')
     expect(user).toContain('lead with: the vendor cost work')
     expect(user).toMatch(/career length from the job dates: \d+ years/)
   })
@@ -266,14 +266,14 @@ describe('cover letter v2', () => {
     const r = await claude.generateCoverLetter(opts, base, jd)
     expect(r.success).toBe(true)
     expect(r.data.startsWith('Dear Hiring Manager,')).toBe(true)
-    const noSign = letter().replace(/\n\nSincerely,\nAmina Otieno$/, '')
+    const noSign = letter().replace(/\n\nSincerely,\nHannah Walker$/, '')
     vi.stubGlobal('fetch', captureFetch(noSign))
     const repaired = await claude.generateCoverLetter(opts, base, jd)
     expect(repaired.success).toBe(true)
-    expect(repaired.data.endsWith('\n\nSincerely,\nAmina Otieno')).toBe(true)
-    const wrongName = letter().replace(/Amina Otieno$/, 'Someone Else')
+    expect(repaired.data.endsWith('\n\nSincerely,\nHannah Walker')).toBe(true)
+    const wrongName = letter().replace(/Hannah Walker$/, 'Someone Else')
     vi.stubGlobal('fetch', captureFetch(wrongName))
-    expect((await claude.generateCoverLetter(opts, base, jd)).data.endsWith('\n\nSincerely,\nAmina Otieno')).toBe(true)
+    expect((await claude.generateCoverLetter(opts, base, jd)).data.endsWith('\n\nSincerely,\nHannah Walker')).toBe(true)
   })
   it('never guesses an honorific: a typed recipient is used exactly as given; a UK posting gets Yours sincerely / Yours faithfully', async () => {
     const withMs = letter().replace('Dear Hiring Manager,', 'Dear Ms. Smith,')
@@ -284,10 +284,10 @@ describe('cover letter v2', () => {
     const ukJd = 'Operations analyst. Organisation of the programme and colour-coded reports in London.'
     vi.stubGlobal('fetch', captureFetch(letter()))
     const named = await claude.generateCoverLetter(opts, base, ukJd, { recipient: 'Sam Smith' })
-    expect(named.data.endsWith('\n\nYours sincerely,\nAmina Otieno')).toBe(true)
+    expect(named.data.endsWith('\n\nYours sincerely,\nHannah Walker')).toBe(true)
     const anon = await claude.generateCoverLetter(opts, base, ukJd)
     expect(anon.data.startsWith('Dear Hiring Manager,')).toBe(true)
-    expect(anon.data.endsWith('\n\nYours faithfully,\nAmina Otieno')).toBe(true)
+    expect(anon.data.endsWith('\n\nYours faithfully,\nHannah Walker')).toBe(true)
   })
   it('accepts the evidence-first JSON reply, and retries when an evidence quote is not in the resume', async () => {
     const ev = [{ need: 'weekly reporting', quote: 'Responsible for weekly reporting to management' }]
@@ -364,7 +364,7 @@ describe('cover letter v2', () => {
     expect(user).not.toMatch(/lead with: x{301}/)
   })
   it('unknownNames ignores sentence starts, salutations and known words', () => {
-    expect(claude.unknownNames('Dear Ms. Njeri,\n\nMy work at Acme Ltd began in 2016. Then I joined Beta.', 'Njeri Acme Ltd Beta 2016')).toEqual([])
+    expect(claude.unknownNames('Dear Ms. Nelson,\n\nMy work at Acme Ltd began in 2016. Then I joined Beta.', 'Nelson Acme Ltd Beta 2016')).toEqual([])
     expect(claude.unknownNames('I worked at Google and hold a PMP.', 'Acme')).toEqual(['Google', 'PMP'])
   })
 })
@@ -433,9 +433,9 @@ describe('PDF template and DOCX — paper size and section order', () => {
     for (const h of ['EXPERIENCE', 'PROJECTS', 'EDUCATION', 'SKILLS']) expect(t).toContain(h)
   })
   it('the cover letter DOCX carries a letterhead (name, contact line) and the date', async () => {
-    const z = await JSZip.loadAsync(await docx.generateCoverLetterDocx('Dear Hiring Manager,\n\nHello.\n\nSincerely,\nAmina Otieno', 'Amina Otieno', { contact: { email: 'amina@example.com', phone: '+1 555 0100', location: 'Austin, TX' }, date: 'October 16, 2026' }))
+    const z = await JSZip.loadAsync(await docx.generateCoverLetterDocx('Dear Hiring Manager,\n\nHello.\n\nSincerely,\nHannah Walker', 'Hannah Walker', { contact: { email: 'amina@example.com', phone: '+1 555 0100', location: 'Austin, TX' }, date: 'October 16, 2026' }))
     const xml = await z.file('word/document.xml').async('string')
-    expect(xml.indexOf('Amina Otieno')).toBeLessThan(xml.indexOf('Dear Hiring Manager'))
+    expect(xml.indexOf('Hannah Walker')).toBeLessThan(xml.indexOf('Dear Hiring Manager'))
     expect(xml).toContain('amina@example.com')
     expect(xml).toContain('October 16, 2026')
     // and the old two-argument call is unchanged
@@ -517,8 +517,8 @@ describe('model stamp (0109)', () => {
 
 describe('round-1 closeout regressions', () => {
   it("does not flag an apostrophe surname that is the candidate's own, but still flags an invented one", () => {
-    const letter = "Dear Hiring Manager,\n\nI ran reporting at Acme.\n\nSincerely,\nAmina O'Brien"
-    expect(claude.unknownNames(letter, "Amina O'Brien Acme reporting")).toEqual([])
+    const letter = "Dear Hiring Manager,\n\nI ran reporting at Acme.\n\nSincerely,\nHannah O'Brien"
+    expect(claude.unknownNames(letter, "Hannah O'Brien Acme reporting")).toEqual([])
     expect(claude.unknownNames("I worked with Mary O'Hara.", 'Acme')).toContain("O'Hara")
   })
   it('picks Letter for a US posting that says CV or names Dublin, Ohio; A4 for UK/Ireland', () => {

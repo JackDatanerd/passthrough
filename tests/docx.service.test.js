@@ -38,11 +38,11 @@ describe('generateAtsDocx', () => {
 
   it('joins contact fields with a separator and includes linkedin/portfolio when present', async () => {
     const text = await extractText(await generateAtsDocx({
-      name: 'Jane', email: 'jane@x.com', location: 'Nairobi', phone: '+254...',
+      name: 'Jane', email: 'jane@x.com', location: 'Austin', phone: '+1415...',
       linkedin: 'linkedin.com/in/jane', portfolio: 'jane.dev',
     }, null))
     expect(text).toContain('jane@x.com')
-    expect(text).toContain('Nairobi')
+    expect(text).toContain('Austin')
     expect(text).toContain('linkedin.com/in/jane')
     expect(text).toContain('jane.dev')
   })

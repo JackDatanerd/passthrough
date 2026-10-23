@@ -143,7 +143,7 @@ describe('G1: the unsaved-changes question is asked in the app dialog', () => {
 
 describe('B5/B6/G3: utils', () => {
   it('csvCell does not keep an over-long numeric-looking text as a formula-guarded cell', () => {
-    expect(csvCell({ __csvText: '+254712345678' })).toBe('"=""+254712345678"""')
+    expect(csvCell({ __csvText: '+1712345678' })).toBe('"=""+1712345678"""')
     const long = '1'.repeat(300)
     expect(csvCell({ __csvText: long })).toBe(long)
   })

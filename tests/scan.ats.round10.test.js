@@ -23,7 +23,7 @@ describe('JD JSON-LD: length-changing characters before the block', () => {
 import { restoreFactualFields, sanitizeResumeShape, detectFabrication } from '../src/services/claude.service.js'
 
 const base = () => ({
-  name: 'Jane Doe', email: 'jane@x.com', phone: '+254700111222', location: 'Nairobi', linkedin: 'linkedin.com/in/jane', portfolio: 'jane.dev',
+  name: 'Jane Doe', email: 'jane@x.com', phone: '+14155550111', location: 'Austin', linkedin: 'linkedin.com/in/jane', portfolio: 'jane.dev',
   summary: 'Engineer.',
   experience: [{ company: 'Acme', title: 'Developer', dates: '2019 - 2022', location: 'Remote', bullets: ['Built APIs for the billing team'] }],
   education: [{ institution: 'UoN', degree: 'BSc CS', dates: '2015 - 2019', details: null }],
@@ -36,10 +36,10 @@ describe('rewrite output: contact header and project links are carried over exac
   it('restores a name, email, phone, linkedin and project link the model changed or dropped', () => {
     const input = base()
     const out = JSON.parse(JSON.stringify(input))
-    out.name = 'Jane D.'; out.email = 'jane@y.com'; out.phone = null; out.linkedin = null; out.portfolio = 'other.dev'; out.location = 'Mombasa'
+    out.name = 'Jane D.'; out.email = 'jane@y.com'; out.phone = null; out.linkedin = null; out.portfolio = 'other.dev'; out.location = 'Denver'
     out.projects[0].link = 'https://evil.example/x'
     const r = restoreFactualFields(input, sanitizeResumeShape(out))
-    expect(r).toMatchObject({ name: 'Jane Doe', email: 'jane@x.com', phone: '+254700111222', location: 'Nairobi', linkedin: 'linkedin.com/in/jane', portfolio: 'jane.dev' })
+    expect(r).toMatchObject({ name: 'Jane Doe', email: 'jane@x.com', phone: '+14155550111', location: 'Austin', linkedin: 'linkedin.com/in/jane', portfolio: 'jane.dev' })
     expect(r.projects[0].link).toBe('https://github.com/jane/tool')
   })
   it('does not invent contact details the input never had', () => {
@@ -66,7 +66,7 @@ import { scoreResume } from '../src/services/ats.service.js'
 
 describe('content score: only experience-style sections feed the action-verb rate', () => {
   const jd = 'Backend engineer with Python, Docker, AWS and PostgreSQL experience building APIs.'
-  const exp = `JANE DOE\njane@x.com | Nairobi\n\nSUMMARY\nBackend engineer building APIs.\n\nEXPERIENCE\nAcme Corp - Developer 2019 - 2022\n• Built Python APIs serving 2M requests per day\n• Reduced deploy time by 40% using Docker\n• Led migration of 12 services to AWS\n• Designed PostgreSQL schemas for billing\n• Mentored 3 junior engineers\n\nEDUCATION\nUoN - BSc Computer Science 2015 - 2019\n\nSKILLS\nPython, Docker, AWS, PostgreSQL\n`
+  const exp = `JANE DOE\njane@x.com | Austin\n\nSUMMARY\nBackend engineer building APIs.\n\nEXPERIENCE\nAcme Corp - Developer 2019 - 2022\n• Built Python APIs serving 2M requests per day\n• Reduced deploy time by 40% using Docker\n• Led migration of 12 services to AWS\n• Designed PostgreSQL schemas for billing\n• Mentored 3 junior engineers\n\nEDUCATION\nUoN - BSc Computer Science 2015 - 2019\n\nSKILLS\nPython, Docker, AWS, PostgreSQL\n`
   const certs = n => `\nCERTIFICATIONS\n${Array.from({ length: n }, (_, i) => `✓ Certified Professional Track ${i + 1}`).join('\n')}\n`
 
   it('certifications do not lower the content score', () => {

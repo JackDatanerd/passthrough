@@ -30,8 +30,18 @@ function PayoutDetailsFields({ method, details }) {
   if (method === 'BANK') {
     return (
       <div className="text-sm text-gray-700">
-        <div>{d.bankName}</div>
+        <div>{d.bankName}{d.bankCountry ? ` (${d.bankCountry})` : ''}</div>
         <div>{d.accountName} — {d.accountNumber}</div>
+        {d.routingCode && <div>Routing / sort code / BSB: {d.routingCode}</div>}
+        {d.swiftBic && <div>SWIFT/BIC: {d.swiftBic}</div>}
+      </div>
+    )
+  }
+  if (method === 'PAYPAL') {
+    return (
+      <div className="text-sm text-gray-700">
+        <div>PayPal</div>
+        <div>{d.accountName} — {d.paypalEmail}</div>
       </div>
     )
   }
@@ -534,8 +544,8 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
     <Modal open onClose={onClose} title={cycle ? `Record payout — ${cycle.label}` : `Record ad hoc payout — ${partner.name}`} dismissible={!saving}>
       <Form onSubmit={handleRecord} className="flex flex-col gap-4">
         <p className="text-sm text-gray-500">
-          Only use this <strong>after</strong> you've actually sent the money via your bank
-          or mobile money app. This just logs it and notifies {partner.name}.
+          Only use this <strong>after</strong> you've actually sent the money via your bank,
+          a mobile money app or PayPal. This just logs it and notifies {partner.name}.
         </p>
         {inHold && (
           <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800" data-testid="details-hold">

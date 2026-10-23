@@ -67,11 +67,11 @@ function resumePage(extra = []) {
   let y = 780
   const line = (text, o = {}) => { ops.push({ text, x: 50, y, size: o.size || 10, color: o.color }); y -= o.gap || 14 }
   line('Jane Doe', { size: 18, gap: 22 })
-  line('jane@example.com | Nairobi | LinkedIn', { gap: 28 })
+  line('jane@example.com | Austin | LinkedIn', { gap: 28 })
   for (const [head, lines] of [
     ['SUMMARY', ['Backend developer with experience building web services.']],
     ['EXPERIENCE', ['Developer - Foo Ltd - 2019 - 2024', ...BODY.map(b => '• ' + b)]],
-    ['EDUCATION', ['BSc Computer Science - University of Nairobi - 2015 - 2019']],
+    ['EDUCATION', ['BSc Computer Science - University of Leeds - 2015 - 2019']],
     ['SKILLS', ['JavaScript, SQL, Git, Linux, REST APIs']],
   ]) { line(head, { size: 12, gap: 16 }); for (const l of lines) line(l); y -= 8 }
   return { ops: [...ops, ...extra] }

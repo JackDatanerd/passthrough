@@ -31,7 +31,7 @@ function load(db, emailStubs = {}, extra = {}) {
 
 // ── B1: re-saving unchanged payout details ────────────────────────────────────────────────────────
 describe('submitPayoutDetails — an unchanged resubmission is a no-op', () => {
-  const stored = { bankName: 'Equity Bank', accountName: 'Coach K', accountNumber: '0123 4567 89' }
+  const stored = { bankName: 'Wells Fargo', accountName: 'Coach K', accountNumber: '0123 4567 89' }
   function setup(previous) {
     const st = { updates: 0, emails: 0, alerts: 0 }
     const db = createFakeSupabase(q => {
@@ -41,11 +41,11 @@ describe('submitPayoutDetails — an unchanged resubmission is a no-op', () => {
     const m = load(db, { sendPayoutDetailsChanged: async () => { st.emails++ }, sendOwnerAlert: async () => { st.alerts++ } })
     return { ...m, st }
   }
-  const body = (over = {}) => ({ payoutMethod: 'BANK', bankName: 'Equity Bank', accountName: 'Coach K', accountNumber: '01234567 89', ...over })
+  const body = (over = {}) => ({ payoutMethod: 'BANK', bankName: 'Wells Fargo', accountName: 'Coach K', accountNumber: '01234567 89', ...over })
 
   it('does not write, restart the hold, or send either alert when only spacing differs', async () => {
     t = setup({ payout_method: 'BANK', payout_details: stored })
-    const res = await t.mod.submitPayoutDetails(ctxOf({ token: 'tok', body: body({ bankName: 'Equity   Bank' }) }))
+    const res = await t.mod.submitPayoutDetails(ctxOf({ token: 'tok', body: body({ bankName: 'Wells   Fargo' }) }))
     expect(res.status).toBe(200)
     expect(res.body).toMatchObject({ success: true, unchanged: true })
     expect(t.st).toEqual({ updates: 0, emails: 0, alerts: 0 })
@@ -271,12 +271,12 @@ describe('adminAnonymizePartner', () => {
   })
   it('reduces each past payout snapshot to bank/provider and last four digits, keeping amounts untouched', async () => {
     t = setup({ payouts: [
-      { id: 'p1', payout_method: 'BANK', payout_details_snapshot: { bankName: 'Equity', accountName: 'Coach K', accountNumber: '0123 4567 89' } },
+      { id: 'p1', payout_method: 'BANK', payout_details_snapshot: { bankName: 'Chase', accountName: 'Coach K', accountNumber: '0123 4567 89' } },
       { id: 'p2', payout_method: 'MOBILE_MONEY', payout_details_snapshot: { provider: 'M-Pesa', accountName: 'Coach K', phoneNumber: '0712345678' } },
     ] })
     await t.mod.adminAnonymizePartner(ctxOf({ body }))
     expect(t.st.payoutPatches).toEqual([
-      { payout_details_snapshot: { bankName: 'Equity', accountName: 'Removed', accountNumber: '…6789' }, note: null, internal_note: null },
+      { payout_details_snapshot: { bankName: 'Chase', accountName: 'Removed', accountNumber: '…6789' }, note: null, internal_note: null },
       { payout_details_snapshot: { provider: 'M-Pesa', accountName: 'Removed', phoneNumber: '…5678' }, note: null, internal_note: null },
     ])
   })

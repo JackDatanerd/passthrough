@@ -49,7 +49,7 @@ export default function ResumeFieldsForm({ draft, setDraft }) {
                 <Input placeholder="Company" value={item.company || ''} onChange={e => updateListItem('experience', i, 'company', e.target.value)} />
                 <Input placeholder="Title"   value={item.title   || ''} onChange={e => updateListItem('experience', i, 'title', e.target.value)} />
                 <Input placeholder="Dates (e.g. Jan 2022 – Present)" value={item.dates || ''} onChange={e => updateListItem('experience', i, 'dates', e.target.value)} />
-                <Input className="sm:col-span-3" placeholder="Location (optional, e.g. Nairobi or Remote)" value={item.location || ''} onChange={e => updateListItem('experience', i, 'location', e.target.value)} />
+                <Input className="sm:col-span-3" placeholder="Location (optional, e.g. Austin, TX or Remote)" value={item.location || ''} onChange={e => updateListItem('experience', i, 'location', e.target.value)} />
                 <Textarea
                   className="sm:col-span-3"
                   rows={4}

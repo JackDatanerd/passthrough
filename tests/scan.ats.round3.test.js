@@ -11,10 +11,10 @@ const claude = require('../src/services/claude.service.js')
 
 // Scan / ATS round 3 regressions.
 
-const JD = `Senior Backend Engineer – Payments (Remote, Kenya or EMEA)
+const JD = `Senior Backend Engineer – Payments (Remote, US or EMEA)
 
 About Acme Pay
-Acme Pay is a fast-growing fintech company building payment infrastructure across Africa. We are an equal opportunity employer.
+Acme Pay is a fast-growing fintech company building payment infrastructure across Europe. We are an equal opportunity employer.
 
 What you'll do
 - Design and build scalable REST APIs in Node.js and TypeScript
@@ -29,25 +29,25 @@ Requirements
 
 Nice to have: Go, Rust, GraphQL`
 
-const RESUME = `Jane Wanjiru
-jane@example.com | +254 700 000 000 | Nairobi, Kenya | linkedin.com/in/jane
+const RESUME = `Jane Emily
+jane@example.com | +1 415 555 0100 | Austin, TX | linkedin.com/in/jane
 
 SUMMARY
 Backend engineer with 6 years building payment services.
 
 EXPERIENCE
-Senior Software Engineer — PayCo — Nairobi, Kenya    2020 – Present
+Senior Software Engineer — PayCo — Austin, TX    2020 – Present
 - Designed and built REST APIs in Node.js and TypeScript handling 2M transactions/month
 - Led migration of PostgreSQL schemas, cutting query time by 40%
 - Deployed services on Docker and AWS using CI/CD pipelines
 - Mentored 4 junior engineers
 
-Software Engineer — Startup Ltd — Nairobi    2017 – 2020
+Software Engineer — Startup Ltd — Austin    2017 – 2020
 - Integrated M-Pesa Daraja API for mobile payments
 - Implemented event-driven microservices
 
 EDUCATION
-BSc Computer Science — University of Nairobi    2013 – 2017
+BSc Computer Science — University of Leeds    2013 – 2017
 
 SKILLS
 Node.js, TypeScript, PostgreSQL, Docker, AWS, Kubernetes, Datadog, Go
@@ -93,7 +93,7 @@ describe('B1 — keyword selection follows what the role asks for, not the posti
     expect(z.find(x => /5\+ years/.test(x.text)).type).toBe('req')
   })
   it('a JD that is ALL boilerplate still yields keywords (nothing to score against would be worse)', () => {
-    const r = ats.scoreResume(RESUME, 'About Acme Pay\nAcme Pay builds payment infrastructure for merchants across several countries in Africa and beyond.')
+    const r = ats.scoreResume(RESUME, 'About Acme Pay\nAcme Pay builds payment infrastructure for merchants across several countries in Europe and beyond.')
     expect(r.detail.keywords.noKeywords).toBe(false)
   })
 })
@@ -121,9 +121,9 @@ describe('G5 — fitJobDescription trims the intro, not the requirements', () =>
 describe('G4 — the designed PDF must still say what the resume says', () => {
   const pdfTemplate = require('../src/services/pdfTemplate.service.js')
   const data = {
-    name: 'Jane Doe', email: 'j@x.com', phone: '+254 700 000 000', summary: 'Backend engineer with 6 years.',
-    experience: [{ company: 'Acme Pay', title: 'Senior Engineer', dates: '2020 - Present', location: 'Nairobi', bullets: ['Built billing APIs serving 2M transactions a month', 'Cut query time by 40% on PostgreSQL schemas', 'Mentored 4 junior engineers on the team'] }],
-    education: [{ institution: 'University of Nairobi', degree: 'BSc Computer Science', dates: '2013 - 2017' }],
+    name: 'Jane Doe', email: 'j@x.com', phone: '+1 415 555 0100', summary: 'Backend engineer with 6 years.',
+    experience: [{ company: 'Acme Pay', title: 'Senior Engineer', dates: '2020 - Present', location: 'Austin', bullets: ['Built billing APIs serving 2M transactions a month', 'Cut query time by 40% on PostgreSQL schemas', 'Mentored 4 junior engineers on the team'] }],
+    education: [{ institution: 'University of Leeds', degree: 'BSc Computer Science', dates: '2013 - 2017' }],
     skills: ['Node.js', 'PostgreSQL', 'Docker', 'Kubernetes'], certifications: [], projects: [], languages: [], awards: [], publications: [], volunteer: [],
   }
   const url = 'https://usepassthrough.com/v/AB12CD'

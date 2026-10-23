@@ -437,7 +437,7 @@ describe('downloadFile', () => {
 })
 
 describe('downloadFile ?type=txt (plain text for portals that want a pasted resume)', () => {
-  const data = { name: 'Wanjiru Mwangi', experience: [{ title: 'Analyst', company: 'Acme', dates: '01/2020 to now', bullets: ['Built dashboards.'] }], skills: ['SQL', 'Python'] }
+  const data = { name: 'Emily Carter', experience: [{ title: 'Analyst', company: 'Acme', dates: '01/2020 to now', bullets: ['Built dashboards.'] }], skills: ['SQL', 'Python'] }
   function setup(scan) {
     const db = createFakeSupabase(q => (q.table === 'scans' ? { data: scan, error: null } : undefined))
     return loadWithStubs('controllers/scan.controller.js', { 'config/supabase.js': { getSupabase: () => db } })

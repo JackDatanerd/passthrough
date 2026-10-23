@@ -78,13 +78,13 @@ describe('word-level segments', () => {
 })
 
 describe('sections the diff never showed', () => {
-  const o = { name: 'J', experience: [{ company: 'Foo', title: 'Dev', dates: '2020', location: 'Nairobi', bullets: ['Did a thing for the team'] }],
+  const o = { name: 'J', experience: [{ company: 'Foo', title: 'Dev', dates: '2020', location: 'Austin', bullets: ['Did a thing for the team'] }],
     education: [{ institution: 'Uni', degree: 'BSc', dates: '2019', details: 'First class' }], languages: ['English'], awards: ['Award A'], publications: [],
     volunteer: [{ organization: 'Charity', role: 'Mentor', dates: '2021', bullets: ['Taught coding to teenagers every week'] }] }
   it('reports a changed job location and education details', () => {
     const r = JSON.parse(JSON.stringify(o)); r.experience[0].location = 'Remote'; r.education[0].details = 'Second class'
     const d = buildResumeDiff(o, r)
-    expect(d.experience[0]).toMatchObject({ locationChanged: true, beforeLocation: 'Nairobi', afterLocation: 'Remote' })
+    expect(d.experience[0]).toMatchObject({ locationChanged: true, beforeLocation: 'Austin', afterLocation: 'Remote' })
     expect(d.education[0]).toMatchObject({ detailsChanged: true, afterDetails: 'Second class' })
     expect(buildResumeDiff(o, JSON.parse(JSON.stringify(o))).experience[0].locationChanged).toBe(false)
   })
@@ -104,7 +104,7 @@ describe('sections the diff never showed', () => {
 })
 
 describe('DiffView renders the new detail', () => {
-  const base = { name: 'J', experience: [{ company: 'Foo', title: 'Dev', dates: '2020', location: 'Nairobi', bullets: ['Built REST services for finance tools', 'Maintained deployment scripts'] }], education: [], skills: [], certifications: [], projects: [] }
+  const base = { name: 'J', experience: [{ company: 'Foo', title: 'Dev', dates: '2020', location: 'Austin', bullets: ['Built REST services for finance tools', 'Maintained deployment scripts'] }], education: [], skills: [], certifications: [], projects: [] }
   async function open(rewritten) {
     const user = userEvent.setup()
     render(<DiffView originalResumeData={base} rewrittenResumeData={rewritten} fixTier="FIX" />)
@@ -118,7 +118,7 @@ describe('DiffView renders the new detail', () => {
   })
   it('shows a changed location', async () => {
     await open({ ...base, experience: [{ ...base.experience[0], location: 'Remote' }] })
-    expect(screen.getByTestId('location-changed')).toHaveTextContent('Nairobi')
+    expect(screen.getByTestId('location-changed')).toHaveTextContent('Austin')
     expect(screen.getByTestId('location-changed')).toHaveTextContent('Remote')
   })
   it('shows an added language, but says nothing about an unchanged list', async () => {

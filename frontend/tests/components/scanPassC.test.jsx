@@ -110,15 +110,15 @@ describe('CoverLetterPanel', () => {
   })
   it('the optional tailoring fields are sent, trimmed, only when filled in', async () => {
     const user = userEvent.setup()
-    api.post.mockReset(); api.post.mockResolvedValue({ data: { data: { coverLetterText: 'Dear Ms. Njeri,\n\nHi.' } } })
+    api.post.mockReset(); api.post.mockResolvedValue({ data: { data: { coverLetterText: 'Dear Ms. Nelson,\n\nHi.' } } })
     render(<CoverLetterPanel scan={{ id: 's1', coverLetterText: null }} onUpdated={vi.fn()} />)
     expect(screen.queryByTestId('cover-letter-options')).toBeNull()
     await user.click(screen.getByRole('button', { name: 'Tailor it (optional)' }))
     await user.type(screen.getByLabelText('Company'), '  Northwind Logistics ')
-    await user.type(screen.getByLabelText("Hiring manager's name"), 'Ms. Njeri')
+    await user.type(screen.getByLabelText("Hiring manager's name"), 'Ms. Nelson')
     await user.selectOptions(screen.getByLabelText('Tone'), 'direct')
     await user.click(screen.getByRole('button', { name: 'Write my cover letter' }))
-    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/scan/s1/cover-letter', { company: 'Northwind Logistics', recipient: 'Ms. Njeri', tone: 'direct' }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/scan/s1/cover-letter', { company: 'Northwind Logistics', recipient: 'Ms. Nelson', tone: 'direct' }))
   })
   it('a failed generation is reported and nothing is shown as written', async () => {
     const user = userEvent.setup()

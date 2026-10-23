@@ -35,7 +35,7 @@ function parseDate(input, utc = false) {
 
 // `{ utc: true }` for a value that stands for a CALENDAR DAY stored as a UTC instant, not for a moment: a partner code's "expires on"
 // date is saved as `YYYY-MM-DDT23:59:59.999Z`. Shown in the viewer's own zone that read as the NEXT day anywhere east of UTC
-// ("Dec 31" typed, "Jan 1" listed, in Nairobi), while the date field that edits it (which slices the UTC string) said Dec 31.
+// ("Dec 31" typed, "Jan 1" listed, in Berlin), while the date field that edits it (which slices the UTC string) said Dec 31.
 // A true moment (a created-at, a paid-at) keeps the default: the viewer's local day.
 export function formatDate(dateStr, opts) {
   if (!dateStr) return '—'
@@ -46,12 +46,12 @@ export function formatDate(dateStr, opts) {
 }
 
 // Round 20: partner payout cycles, the earnings trend and the CSV exports are all UTC, but a bare formatDate renders in the viewer's own
-// timezone — so for a partner east of UTC (Nairobi, UTC+3) a sale at 22:00 UTC on the 15th was listed as the 16th while being counted in
+// timezone — so for a partner east of UTC (Sydney, UTC+10) a sale at 22:00 UTC on the 15th was listed as the 16th while being counted in
 // the 1st-15th cycle. Used wherever a partner sees a moment that belongs to a cycle.
 export function formatDateUtc(dateStr) { return formatDate(dateStr, { utc: true }) }
 
 // Today's date as YYYY-MM-DD in the VIEWER's zone, for file names. `new Date().toISOString().slice(0, 10)` is the UTC day, so a file
-// exported at 02:00 in Nairobi (or at 8 pm in New York) was named for the wrong day.
+// exported at 01:00 in Berlin (or at 8 pm in New York) was named for the wrong day.
 export function dateStamp(date = new Date()) {
   // null used to become new Date(null) = 1 Jan 1970; only an omitted argument means "today".
   if (date === null) return ''
@@ -97,7 +97,7 @@ export function formatMoney(cents, { decimals = 2, currency = 'USD' } = {}) {
   return `${negative ? '-' : ''}${symbol}${abs}${suffix}`
 }
 // Currency-aware (upstream's Admin-panel requirement): non-USD amounts render as
-// "12.00 KES" rather than being mislabelled with a dollar sign.
+// "12.00 EUR" rather than being mislabelled with a dollar sign.
 export const formatCents = (cents, currency = 'USD') => formatMoney(cents, { currency })
 
 // A USD amount already in DOLLARS (a cost estimate kept as a float, not cents): grouped like formatMoney, and a missing / non-numeric
@@ -272,8 +272,8 @@ export function withinHours(iso, hours) {
 // leading apostrophe. Real numbers (amounts, which may legitimately be negative)
 // are written as-is.
 // Round 6 (bug): that apostrophe is right for free text but wrong for the ACCOUNT / PHONE column of the payout run.
-// A mobile-money number is always entered with its `+` country code, so `+254 712 345 678` was written as
-// `'+254 712 345 678` (a literal apostrophe in a file whose whole purpose is paying people), and a bank account with
+// A mobile-money number is always entered with its `+` country code, so `+44 7700 900123` was written as
+// `'+44 7700 900123` (a literal apostrophe in a file whose whole purpose is paying people), and a bank account with
 // a leading zero still lost the zero in Excel. csvText() marks a value that must reach the spreadsheet as TEXT: when it
 // is made only of letters, digits and `+ ( ) - space` (so it can hold no quote, comma or operator that could form a
 // formula) and starts like a number, it is written as ="value", which Excel and Sheets show verbatim. Anything else
@@ -296,7 +296,7 @@ export function csvCell(v) {
     if (raw.length <= CSV_TEXT_FORMULA_MAX && /^[0-9A-Za-z+() -]+$/.test(raw) && /^[0-9+()-]/.test(raw)) return '"=""' + raw + '"""'
     return csvCell(raw)
   }
-  // A Date used to become String(date) — "Thu Jan 01 1970 03:00:00 GMT+0300 (East Africa Time)", in the exporter's own zone.
+  // A Date used to become String(date) — "Thu Jan 01 1970 01:00:00 GMT+0100 (Central European Standard Time)", in the exporter's own zone.
   if (v instanceof Date) return Number.isNaN(v.getTime()) ? '' : v.toISOString()
   let s = String(v)
   // Leading line breaks are skipped over when looking for the formula character: a cell that opens with a newline and then "=" is

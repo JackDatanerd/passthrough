@@ -71,7 +71,7 @@ const linkRun = (text, size = 18, color = LINK_BLUE) => new TextRun({ text, size
 const plainRun = (text, size) => new TextRun({ text, size, noProof: true })
 
 // The document language, so Word does not judge British spelling ("optimise", "honours") by US rules or the reverse: the same paper
-// heuristic the rest of the file uses - A4 (UK / Kenya / Europe) is en-GB, Letter (US) en-US.
+// heuristic the rest of the file uses - A4 (UK / Europe / Australia) is en-GB, Letter (US) en-US.
 const langOf = paper => (paper === 'a4' ? 'en-GB' : 'en-US')
 
 // A contact detail run: a real link where it plainly is one (an address, a profile URL, a phone number). Word does not

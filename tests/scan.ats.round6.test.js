@@ -20,7 +20,7 @@ Requirements
 Python, Django, PostgreSQL, Redis, Docker, Kubernetes, AWS, Terraform, GraphQL, Kafka
 You will design REST APIs and own CI/CD pipelines.`
 const resumeWith = first => `Jane Doe
-jane@x.com | +254 700 000 000
+jane@x.com | +1 415 555 0100
 Experience
 Backend Engineer, Acme  2020 - 2024
 • ${first}

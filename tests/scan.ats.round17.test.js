@@ -39,19 +39,19 @@ describe('B1 - extractJson finds the object whatever bracket text precedes it', 
 })
 
 describe('B2 - a label and its content on one line still counts as that section', () => {
-  const mk = (edu, skills) => `Jane Doe\njane@example.com | +254 700 000 000 | Nairobi, Kenya\n\nSummary\nBackend engineer.\n\nExperience\nSenior Engineer, Acme Ltd - 2020 - Present\n- Led migration of billing, cutting latency by 40%\n- Built a deployment pipeline for 12 services\n- Cut cloud spend by $120,000 per year\n\n${edu}\n${skills}\n`
+  const mk = (edu, skills) => `Jane Doe\njane@example.com | +1 415 555 0100 | Austin, TX\n\nSummary\nBackend engineer.\n\nExperience\nSenior Engineer, Acme Ltd - 2020 - Present\n- Led migration of billing, cutting latency by 40%\n- Built a deployment pipeline for 12 services\n- Cut cloud spend by $120,000 per year\n\n${edu}\n${skills}\n`
   const JD = 'Node.js TypeScript PostgreSQL Kubernetes AWS engineer'
   it.each([
-    ['colon', 'Education: BSc Computer Science, University of Nairobi, 2014 - 2018', 'Skills: Node.js, TypeScript, PostgreSQL, Kubernetes, Terraform, AWS, Docker'],
-    ['upper-case', 'EDUCATION: BSc Computer Science, University of Nairobi', 'TECHNICAL SKILLS: Node.js, TypeScript, PostgreSQL, Kubernetes, Terraform'],
-    ['en dash', 'Education \u2013 BSc Computer Science, University of Nairobi, 2014 \u2013 2018', 'Skills \u2013 Node.js, TypeScript, PostgreSQL, Kubernetes, Terraform, AWS'],
+    ['colon', 'Education: BSc Computer Science, University of Leeds, 2014 - 2018', 'Skills: Node.js, TypeScript, PostgreSQL, Kubernetes, Terraform, AWS, Docker'],
+    ['upper-case', 'EDUCATION: BSc Computer Science, University of Leeds', 'TECHNICAL SKILLS: Node.js, TypeScript, PostgreSQL, Kubernetes, Terraform'],
+    ['en dash', 'Education \u2013 BSc Computer Science, University of Leeds, 2014 \u2013 2018', 'Skills \u2013 Node.js, TypeScript, PostgreSQL, Kubernetes, Terraform, AWS'],
   ])('%s', (_n, edu, skills) => {
     const r = scoreResume(mk(edu, skills), JD)
     expect(r.detail.sections.missing).toEqual([])
     expect(r.sectionsScore).toBe(100)
   })
   it('a job line or a sentence that merely starts with those words is not a section', () => {
-    const r = scoreResume(mk('Skills Engineer - Acme Corp, Nairobi, Kenya, 2019 to 2020 (contract)', 'I have strong skills: teamwork and care'), JD)
+    const r = scoreResume(mk('Skills Engineer - Acme Corp, Austin, TX, 2019 to 2020 (contract)', 'I have strong skills: teamwork and care'), JD)
     expect(r.detail.sections.missing).toEqual(['Education', 'Skills'])
   })
   it('own-line headings and a resume with no such section behave as before', () => {

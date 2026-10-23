@@ -104,11 +104,11 @@ export default function PartnerTerms() {
                 ? `Amounts below ${formatCents(min, program.currency)} are carried forward to the next cycle rather than paid out.`
                 : program ? 'There is currently no minimum payout amount.' : 'A minimum payout amount may apply; your dashboard shows any balance being carried forward.'}
             </li>
-            <li>Payouts are made by bank transfer or mobile money, to the details you give us.</li>
+            <li>Payouts are made by bank transfer, PayPal or mobile money, to the details you give us.</li>
           </ul>
         </Section>
 
-        <Section title="6. Your payout details">
+        <Section title="6. Your payout details and taxes">
           <p>
             You add or change your payout details using a private link we email you. Keep that link private — anyone who has it can
             change where your payouts go. Every change is emailed to you, and{' '}
@@ -116,6 +116,12 @@ export default function PartnerTerms() {
               ? `after any change we do not send a payout for at least ${detailsHours} hours unless we have confirmed the change with you directly.`
               : 'we may confirm a recent change with you before sending a payout.'}
             {' '}If you did not make a change you are told about, contact us straight away.
+          </p>
+          <p>
+            You take part as an independent partner, not as an employee. You are responsible for reporting and paying any tax due on what you
+            earn from us, wherever you live, and we do not withhold tax from payouts. Where the law requires us to collect tax details from
+            you or to report the payments we make to a tax authority, we may ask for those details before paying you and may report the
+            payments.
           </p>
         </Section>
 

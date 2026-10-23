@@ -13,6 +13,7 @@
 //     just a counter increment.
 
 const { z } = require('zod')
+const payoutRails = require('../lib/payoutRails')
 const c = require('../config/constants')
 const { getSupabase } = require('../config/supabase')
 const cryptoLib = require('../lib/crypto')
@@ -1314,7 +1315,7 @@ async function adminUpdateReferralCode(ctx) {
 const recordPayoutSchema = z.object({
   amountCents:  z.number().int().positive().optional(),
   currency:     z.string().trim().regex(/^[A-Za-z]{3}$/, 'Currency must be a 3-letter code.').transform(v => v.toUpperCase()).optional(),
-  payoutMethod: z.enum(['BANK', 'MOBILE_MONEY']).optional(),
+  payoutMethod: z.enum(['BANK', 'MOBILE_MONEY', 'PAYPAL']).optional(),
   // Shown to the partner on their dashboard. Anything internal belongs in internalNote.
   note:         z.string().trim().max(500).optional(),
   internalNote: z.string().trim().max(500).optional(),
@@ -1389,7 +1390,7 @@ async function recordPayoutCore(ctx, supabase, partnerId, body, reply, opts = {}
       message: 'This partner has not submitted payout details yet — nothing to pay to.' }, 400)
   if (body.payoutMethod && body.payoutMethod !== payoutMethod)
     return reply({ success: false,
-      message: `This partner's payout details are for ${payoutMethod === 'BANK' ? 'a bank transfer' : 'mobile money'}, not ${body.payoutMethod === 'BANK' ? 'a bank transfer' : 'mobile money'}.` }, 400)
+      message: `This partner's payout details are for ${payoutRails.methodLabelLower(payoutMethod)}, not ${payoutRails.methodLabelLower(body.payoutMethod)}.` }, 400)
 
   if (body.expectedDetailsSubmittedAt !== undefined &&
       !sameInstant(body.expectedDetailsSubmittedAt, partner.payout_details_submitted_at))
@@ -1738,8 +1739,11 @@ function maskedPayoutDetailsForOwner(method, details) {
   if (!method || !details) return null
   const d = details
   const last4 = v => { const raw = String(v || '').replace(/\s+/g, ''); return raw ? `\u2026${raw.slice(-4)}` : '' }
-  if (method === 'BANK') return { bankName: d.bankName || '', accountName: d.accountName || '', accountNumber: last4(d.accountNumber) }
+  // Routing codes and SWIFT/BIC identify a bank, not the account, and are public: shown whole so the partner can recognise the destination.
+  if (method === 'BANK') return { bankName: d.bankName || '', accountName: d.accountName || '', accountNumber: last4(d.accountNumber),
+    ...(d.bankCountry ? { bankCountry: d.bankCountry } : {}), ...(d.routingCode ? { routingCode: d.routingCode } : {}), ...(d.swiftBic ? { swiftBic: d.swiftBic } : {}) }
   if (method === 'MOBILE_MONEY') return { provider: d.provider || '', accountName: d.accountName || '', phoneNumber: last4(d.phoneNumber) }
+  if (method === 'PAYPAL') return { accountName: d.accountName || '', paypalEmail: payoutRails.maskedEmail(d.paypalEmail) }
   return null
 }
 
@@ -1785,23 +1789,37 @@ const bankDetailsSchema = z.object({
   payoutMethod:  z.literal('BANK'),
   bankName:      z.string().trim().min(1).max(200),
   accountName:   z.string().trim().min(1).max(200),
-  accountNumber: z.string().trim().regex(ACCOUNT_NUMBER_RE, 'Enter a valid account number (4–34 letters, digits, spaces or dashes).')
+  accountNumber: z.string().trim().regex(ACCOUNT_NUMBER_RE, 'Enter a valid account number (4–34 letters, digits, spaces or dashes).'),
+  // Western-market round: where the account is held decides which routing details are needed (see lib/payoutRails.js).
+  // All three are optional here so a submission without them (an older client, a script) still validates as before;
+  // the superRefine below enforces the right combination once a country is given.
+  bankCountry:   z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/, 'Use the 2-letter country code of the country your account is in, e.g. US.').optional(),
+  routingCode:   z.string().trim().max(20).optional(),
+  swiftBic:      z.string().trim().max(11 + 3).optional()
 })
 const mobileMoneyDetailsSchema = z.object({
   payoutMethod: z.literal('MOBILE_MONEY'),
   provider:     z.string().trim().min(1).max(100),
   accountName:  z.string().trim().min(1).max(200),
-  phoneNumber:  z.string().trim().regex(PHONE_RE, 'Enter a valid phone number, e.g. +254 712 345 678.')
+  phoneNumber:  z.string().trim().regex(PHONE_RE, 'Enter a valid phone number with the country code, e.g. +1 415 555 0132.')
+})
+const paypalDetailsSchema = z.object({
+  payoutMethod: z.literal('PAYPAL'),
+  accountName:  z.string().trim().min(1).max(200),
+  paypalEmail:  z.string().trim().max(254).regex(payoutRails.EMAIL_RE, 'Enter the email address of your PayPal account.')
 })
 // Round 20 (feature gap): tax details travel with the payout details but are NOT payout details — they never restart the
 // post-change payout hold. Both optional: leaving a field out keeps what is on file, '' clears it.
 const taxFields = {
-  taxCountry: z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/, 'Use a 2-letter country code, e.g. KE.').or(z.literal('')).optional(),
+  taxCountry: z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/, 'Use a 2-letter country code, e.g. US.').or(z.literal('')).optional(),
   taxId:      z.string().trim().min(3, 'Enter your tax ID, or leave it blank.').max(40).or(z.literal('')).optional()
 }
 const payoutDetailsSchema = z.discriminatedUnion('payoutMethod', [
-  bankDetailsSchema.extend(taxFields), mobileMoneyDetailsSchema.extend(taxFields)
-])
+  bankDetailsSchema.extend(taxFields), mobileMoneyDetailsSchema.extend(taxFields), paypalDetailsSchema.extend(taxFields)
+]).superRefine((d, ctx) => {
+  if (d.payoutMethod !== 'BANK') return
+  for (const p of payoutRails.bankRailProblems(d)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [p.path], message: p.message })
+})
 const last4Of = v => { const raw = String(v || '').replace(/\s+/g, ''); return raw ? `\u2026${raw.slice(-4)}` : '' }
 
 // Canonical form for comparing two payout-detail objects: same method, same keys, values compared with all
@@ -1827,7 +1845,8 @@ function payoutDetailsEqual(methodA, detailsA, methodB, detailsB) {
 function payoutAccountHint(method, details) {
   if (!method) return null
   const d = details || {}
-  const raw = String(d.accountNumber || d.phoneNumber || '').replace(/\s+/g, '')
+  if (method === 'PAYPAL') return { method, provider: 'PayPal', last4: null, account: payoutRails.maskedEmail(d.paypalEmail) || null }
+  const raw = payoutRails.accountIdentifier(d)
   return {
     method,
     provider: method === 'BANK' ? (d.bankName || null) : (d.provider || null),
@@ -1843,7 +1862,8 @@ function payoutHoldUntilOf(submittedAt, holdHours) {
 
 function describePayoutTarget(method, details) {
   if (!method) return 'none'
-  const raw = String(details?.accountNumber || details?.phoneNumber || '').replace(/\s+/g, '')
+  if (method === 'PAYPAL') return `PAYPAL ${payoutRails.maskedEmail(details?.paypalEmail) || '(no email)'}`
+  const raw = payoutRails.accountIdentifier(details)
   return `${method} ${raw ? `...${raw.slice(-4)}` : '(no number)'}`
 }
 
@@ -2857,6 +2877,7 @@ function maskedPayoutSnapshot(method, snapshot) {
   const last4 = v => { const raw = String(v || '').replace(/\s+/g, ''); return raw ? `\u2026${raw.slice(-4)}` : '' }
   if (method === 'BANK') return { bankName: s.bankName || '', accountName: 'Removed', accountNumber: last4(s.accountNumber) }
   if (method === 'MOBILE_MONEY') return { provider: s.provider || '', accountName: 'Removed', phoneNumber: last4(s.phoneNumber) }
+  if (method === 'PAYPAL') return { accountName: 'Removed', paypalEmail: '' }
   return {}
 }
 

@@ -205,11 +205,11 @@ describe('G2: answering a dispute from the app', () => {
   it('evidence needs a phone, takes name/email from the account, and builds the description', async () => {
     const { mod, calls } = rig()
     expect((await mod.submitDisputeEvidence(ctx({ params: { reference: 'ref1' }, body: {} }))).status).toBe(400)
-    const out = await mod.submitDisputeEvidence(ctx({ params: { reference: 'ref1' }, body: { customerPhone: '+254 700 000000' } }))
+    const out = await mod.submitDisputeEvidence(ctx({ params: { reference: 'ref1' }, body: { customerPhone: '+1 700 000000' } }))
     expect(out.status).toBe(200)
     const [, id, f] = calls[0]
     expect(id).toBe('777')
-    expect(f).toMatchObject({ customer_email: 'buyer@x.co', customer_name: 'Bea', customer_phone: '+254 700 000000', delivery_date: '2026-09-28' })
+    expect(f).toMatchObject({ customer_email: 'buyer@x.co', customer_name: 'Bea', customer_phone: '+1 700 000000', delivery_date: '2026-09-28' })
     expect(f.service_details).toMatch(/ref1/)
   })
 })

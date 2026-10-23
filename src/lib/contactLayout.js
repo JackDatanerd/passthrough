@@ -1,6 +1,6 @@
 // How the contact details of a resume or letter are laid out, shared by the DOCX and the PDF so both break the same way.
 // One line when it fits (about 100 characters at the header's size, separators included). Longer, and a single line wrapped
-// in the middle of a LinkedIn URL ("linkedin.com/in/" / "wanjirumwangi-data-analyst"), so it becomes two deliberate rows:
+// in the middle of a LinkedIn URL ("linkedin.com/in/" / "emilycarter-data-analyst"), so it becomes two deliberate rows:
 // how to reach the person (email, phone, location), then where to find them (profile and portfolio links).
 const MAX_ONE_LINE = 100
 

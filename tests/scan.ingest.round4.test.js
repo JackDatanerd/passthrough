@@ -94,7 +94,7 @@ describe('PDF layout', () => {
   it('a single column with right-aligned dates is still one column', async () => {
     const ops = []
     for (let i = 0; i < 8; i++) {
-      ops.push({ text: 'Software Engineer, Foo Ltd, Nairobi', x: 50, y: 780 - i * 16, size: 10 })
+      ops.push({ text: 'Software Engineer, Foo Ltd, Austin', x: 50, y: 780 - i * 16, size: 10 })
       ops.push({ text: '2019 - 2024', x: 480, y: 780 - i * 16, size: 10 })
     }
     expect((await analyzePdf(buildPdf([{ ops }]))).structure.columns).toBe(1)

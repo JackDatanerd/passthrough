@@ -1086,7 +1086,7 @@ const CSV_COLUMNS = [
 const EXPORT_CHUNK = 1000
 const EXPORT_MAX_ROWS = 50_000
 // Excel only reads a .csv as UTF-8 when it starts with a byte-order mark;
-// without it a name like "José" or "Wanjiru Mwangi-Müller" opens as mojibake.
+// without it a name like "José" or "Emily Carter-Müller" opens as mojibake.
 const CSV_BOM = '\uFEFF'
 
 // GET /api/employer-leads/export.csv — admin only. Honors the same search /

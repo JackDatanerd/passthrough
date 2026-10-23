@@ -90,13 +90,13 @@ describe('G2: proof of delivery and evidence carry the real delivery time', () =
     const sent = []
     const mk = scan => load(world0(scan), { addDisputeEvidence: async (e, id, f) => { sent.push(f); return { data: { id: 5 } } } }).mod
     let mod = mk({ fix_delivered_at: '2026-09-30T23:30:00.000Z' })
-    await mod.submitDisputeEvidence(ctx({ params: { reference: 'ref1' }, body: { customerPhone: '+254 700 000 000', deliveryAddress: ' Nairobi, KE ' } }))
+    await mod.submitDisputeEvidence(ctx({ params: { reference: 'ref1' }, body: { customerPhone: '+1 415 555 0100', deliveryAddress: ' Austin, TX ' } }))
     expect(sent[0].delivery_date).toBe('2026-09-30')
-    expect(sent[0].delivery_address).toBe('Nairobi, KE')
+    expect(sent[0].delivery_address).toBe('Austin, TX')
     expect(sent[0].service_details).toMatch(/, delivered on 2026-09-30/)
     restore(); restore = null
     mod = mk({})
-    await mod.submitDisputeEvidence(ctx({ params: { reference: 'ref1' }, body: { customerPhone: '+254 700 000 000' } }))
+    await mod.submitDisputeEvidence(ctx({ params: { reference: 'ref1' }, body: { customerPhone: '+1 415 555 0100' } }))
     expect(sent[1].delivery_date).toBe('2026-09-28')
     expect(sent[1].service_details).not.toMatch(/, delivered on \d/)
   })

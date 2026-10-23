@@ -640,7 +640,8 @@ function TermsPrompt({ token, version, onAccepted }) {
 
 function payoutAccountLabel(a) {
   if (!a) return ''
-  const kind = a.method === 'BANK' ? 'Bank transfer' : 'Mobile money'
+  const kind = a.method === 'BANK' ? 'Bank transfer' : a.method === 'PAYPAL' ? 'PayPal' : 'Mobile money'
+  if (a.method === 'PAYPAL') return `${kind}${a.account ? ` · ${a.account}` : ''}`
   return `${kind}${a.provider ? ` · ${a.provider}` : ''}${a.last4 ? ` · ending ${a.last4}` : ''}`
 }
 
@@ -856,7 +857,7 @@ export default function PartnerDashboard() {
                           ['Paid on (UTC)', 'Amount', 'Currency', 'Method', 'Sales from (UTC)', 'Sales to (UTC)', 'Note'],
                           ...data.payouts.map(p => [
                             String(p.paidAt || '').slice(0, 10), (p.amountCents || 0) / 100, p.currency || data.currency || '',
-                            p.payoutMethod === 'BANK' ? 'Bank transfer' : p.payoutMethod === 'MOBILE_MONEY' ? 'Mobile money' : '',
+                            p.payoutMethod === 'BANK' ? 'Bank transfer' : p.payoutMethod === 'MOBILE_MONEY' ? 'Mobile money' : p.payoutMethod === 'PAYPAL' ? 'PayPal' : '',
                             String(p.periodStart || '').slice(0, 10), String(p.periodEnd || '').slice(0, 10), p.note || '',
                           ]),
                         ])}>
