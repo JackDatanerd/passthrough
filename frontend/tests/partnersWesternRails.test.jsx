@@ -6,6 +6,8 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import api from '../src/lib/api'
 import PartnerPayoutDetails from '../src/pages/PartnerPayoutDetails'
+import PartnersLookupPanel from '../src/pages/admin/AdminPartnersLookup'
+import { methodLabel, bankRail, bankProblem } from '../src/lib/payoutRails'
 
 vi.mock('../src/lib/api', async () => {
   const { getErrorMessage } = await vi.importActual('../src/lib/errors')
@@ -13,6 +15,7 @@ vi.mock('../src/lib/api', async () => {
 })
 vi.mock('../src/components/layout/Navbar', () => ({ default: () => null }))
 vi.mock('../src/components/layout/Footer', () => ({ default: () => null }))
+vi.mock('../src/components/ui/Toast', () => ({ useToast: () => vi.fn() }))
 
 beforeEach(() => {
   cleanup(); vi.clearAllMocks()
@@ -78,5 +81,25 @@ describe('PayPal', () => {
     await save()
     await waitFor(() => expect(api.post).toHaveBeenCalled())
     expect(api.post.mock.calls[0][1]).toEqual({ payoutMethod: 'PAYPAL', accountName: 'Alex Morgan', paypalEmail: 'alex@example.com' })
+  })
+})
+
+describe('re-audit round', () => {
+  it('one label per payout method, so PayPal is never called mobile money', () => {
+    expect([methodLabel('BANK'), methodLabel('MOBILE_MONEY'), methodLabel('PAYPAL'), methodLabel(null)]).toEqual(['Bank transfer', 'Mobile money', 'PayPal', ''])
+  })
+  it('the admin payout history names a PayPal payout as PayPal', async () => {
+    api.get.mockResolvedValue({ data: { data: [{ id: 'po1', partnerId: 'p1', partnerName: 'Alex', partnerEmail: 'a@x.co', amountCents: 5000, currency: 'USD', payoutMethod: 'PAYPAL', paidAt: '2026-10-01T00:00:00Z', createdAt: '2026-10-01T00:00:00Z' }], total: 1 } })
+    render(<MemoryRouter><PartnersLookupPanel /></MemoryRouter>)
+    await userEvent.click(screen.getByText(/Find a code/))
+    await userEvent.click(await screen.findByRole('button', { name: 'Payout history' }))
+    expect(await screen.findByText('PayPal')).toBeTruthy()
+    expect(screen.queryByText('Mobile money')).toBeNull()
+  })
+  it('New Zealand needs no routing code or SWIFT; a UK roll number is accepted', () => {
+    expect(bankRail('NZ')).toBe('local')
+    expect(bankProblem({ bankCountry: 'NZ', accountNumber: '12-3456-7890123-00' })).toBe('')
+    expect(bankProblem({ bankCountry: 'GB', routingCode: '20-00-00', accountNumber: 'ROLL 1234 567' })).toBe('')
+    expect(bankProblem({ bankCountry: 'GB', routingCode: '20-00-00', accountNumber: 'ab' })).toMatch(/UK accounts/)
   })
 })

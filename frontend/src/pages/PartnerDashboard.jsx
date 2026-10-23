@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
 import { formatCents, formatRate, downloadCsv, formatDateUtc, formatDateTime, formatNumber, dateStamp } from '../lib/utils'
+import { methodLabel } from '../lib/payoutRails'
 import CopyButton from '../components/ui/CopyButton'
 import Spinner from '../components/ui/Spinner'
 import StatCard from '../components/ui/StatCard'
@@ -640,7 +641,7 @@ function TermsPrompt({ token, version, onAccepted }) {
 
 function payoutAccountLabel(a) {
   if (!a) return ''
-  const kind = a.method === 'BANK' ? 'Bank transfer' : a.method === 'PAYPAL' ? 'PayPal' : 'Mobile money'
+  const kind = methodLabel(a.method) || 'Payout account'
   if (a.method === 'PAYPAL') return `${kind}${a.account ? ` · ${a.account}` : ''}`
   return `${kind}${a.provider ? ` · ${a.provider}` : ''}${a.last4 ? ` · ending ${a.last4}` : ''}`
 }
@@ -857,7 +858,7 @@ export default function PartnerDashboard() {
                           ['Paid on (UTC)', 'Amount', 'Currency', 'Method', 'Sales from (UTC)', 'Sales to (UTC)', 'Note'],
                           ...data.payouts.map(p => [
                             String(p.paidAt || '').slice(0, 10), (p.amountCents || 0) / 100, p.currency || data.currency || '',
-                            p.payoutMethod === 'BANK' ? 'Bank transfer' : p.payoutMethod === 'MOBILE_MONEY' ? 'Mobile money' : p.payoutMethod === 'PAYPAL' ? 'PayPal' : '',
+                            methodLabel(p.payoutMethod),
                             String(p.periodStart || '').slice(0, 10), String(p.periodEnd || '').slice(0, 10), p.note || '',
                           ]),
                         ])}>

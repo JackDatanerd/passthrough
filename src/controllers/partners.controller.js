@@ -1819,7 +1819,7 @@ const payoutDetailsSchema = z.discriminatedUnion('payoutMethod', [
 ]).superRefine((d, ctx) => {
   if (d.payoutMethod !== 'BANK') return
   for (const p of payoutRails.bankRailProblems(d)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [p.path], message: p.message })
-})
+}).transform(d => d.payoutMethod === 'BANK' ? payoutRails.cleanBankDetails(d) : d)
 const last4Of = v => { const raw = String(v || '').replace(/\s+/g, ''); return raw ? `\u2026${raw.slice(-4)}` : '' }
 
 // Canonical form for comparing two payout-detail objects: same method, same keys, values compared with all

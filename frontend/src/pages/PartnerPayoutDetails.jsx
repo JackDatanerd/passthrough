@@ -292,7 +292,7 @@ export default function PartnerPayoutDetails() {
                     )}
                     <Input label={rail === 'iban' ? 'IBAN' : 'Account number'} value={accountNumber}
                       onChange={e => setAccountNumber(e.target.value)} inputMode="text" autoComplete="off"
-                      placeholder={rail === 'iban' ? 'DE89 3704 0044 0532 0130 00' : ''} />
+                      placeholder={rail === 'iban' ? 'DE89 3704 0044 0532 0130 00' : rail === 'local' ? '12-3456-7890123-00' : ''} />
                     <Input label={rail === 'iban' ? 'Re-enter IBAN' : 'Re-enter account number'} value={confirmNumber} onChange={e => setConfirmNumber(e.target.value)} autoComplete="off" />
                     {countryCode && rail === 'swift' && (
                       <Input label="SWIFT/BIC code" value={swiftBic} onChange={e => setSwiftBic(e.target.value.toUpperCase())}

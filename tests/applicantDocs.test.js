@@ -396,7 +396,7 @@ describe('the Word files take the PDF\'s palette colour', () => {
 
 // ── pass 6 ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 const SHORT = { name: 'A B', email: 'a@b.co', phone: '+1 415 555 0132', location: 'Austin', linkedin: 'linkedin.com/in/ab', summary: 'S.', skills: ['x'] }
-const LONG = { ...SHORT, email: 'emily.mwangi.analytics@gmail.com', location: 'Austin, TX (open to relocation)', linkedin: 'linkedin.com/in/emilycarter-data-analyst', portfolio: 'emily-mwangi.portfolio.dev/projects' }
+const LONG = { ...SHORT, email: 'emily.carter.analytics@gmail.com', location: 'Austin, TX (open to relocation)', linkedin: 'linkedin.com/in/emilycarter-data-analyst', portfolio: 'emily-carter.portfolio.dev/projects' }
 
 describe('contact rows', () => {
   it('one row when it fits, two (details, then links) when it would not, never an empty row', () => {

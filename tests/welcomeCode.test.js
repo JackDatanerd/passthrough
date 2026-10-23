@@ -47,7 +47,7 @@ describe('code format', () => {
     expect(seen.size).toBeGreaterThan(395)             // 32^5 combinations: collisions are rare, not impossible
   })
   it('satisfies the database rule that a code is stored in capitals', () => {
-    const code = welcome.generateCode('faith njeri')
+    const code = welcome.generateCode('faith nelson')
     expect(code).toBe(code.toUpperCase())
   })
 })

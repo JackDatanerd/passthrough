@@ -16,7 +16,7 @@ const JSZip = require('jszip')
 const clone = o => JSON.parse(JSON.stringify(o))
 const NOW = new Date(Date.UTC(2026, 9, 16))
 const base = {
-  name: 'Hannah Walker', email: 'amina@example.com', phone: null, location: 'Austin', linkedin: null, portfolio: null, summary: null,
+  name: 'Hannah Walker', email: 'hannah@example.com', phone: null, location: 'Austin', linkedin: null, portfolio: null, summary: null,
   experience: [
     { company: 'Acme Ltd', title: 'Operations Analyst', dates: '2016 - 2024', location: null, bullets: ['Responsible for weekly reporting to management', 'Managed vendor relationships for the logistics team', 'Worked on process improvement projects'] },
     { company: 'Beta Co', title: 'Intern', dates: '2015 - 2016', location: null, bullets: ['Helped with data entry and filing'] },
@@ -433,14 +433,14 @@ describe('PDF template and DOCX — paper size and section order', () => {
     for (const h of ['EXPERIENCE', 'PROJECTS', 'EDUCATION', 'SKILLS']) expect(t).toContain(h)
   })
   it('the cover letter DOCX carries a letterhead (name, contact line) and the date', async () => {
-    const z = await JSZip.loadAsync(await docx.generateCoverLetterDocx('Dear Hiring Manager,\n\nHello.\n\nSincerely,\nHannah Walker', 'Hannah Walker', { contact: { email: 'amina@example.com', phone: '+1 555 0100', location: 'Austin, TX' }, date: 'October 16, 2026' }))
+    const z = await JSZip.loadAsync(await docx.generateCoverLetterDocx('Dear Hiring Manager,\n\nHello.\n\nSincerely,\nHannah Walker', 'Hannah Walker', { contact: { email: 'hannah@example.com', phone: '+1 555 0100', location: 'Austin, TX' }, date: 'October 16, 2026' }))
     const xml = await z.file('word/document.xml').async('string')
     expect(xml.indexOf('Hannah Walker')).toBeLessThan(xml.indexOf('Dear Hiring Manager'))
-    expect(xml).toContain('amina@example.com')
+    expect(xml).toContain('hannah@example.com')
     expect(xml).toContain('October 16, 2026')
     // and the old two-argument call is unchanged
     const plain = await JSZip.loadAsync(await docx.generateCoverLetterDocx('Dear X,\n\nHi.', 'Jane'))
-    expect(await plain.file('word/document.xml').async('string')).not.toContain('amina')
+    expect(await plain.file('word/document.xml').async('string')).not.toContain('hannah')
   })
 })
 

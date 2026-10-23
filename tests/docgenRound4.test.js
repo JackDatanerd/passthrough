@@ -33,7 +33,7 @@ describe('cover letter: employer praise and the applicant\'s own tastes are not 
 describe('an all-caps education sub-line is not a heading', () => {
   it.each([
     ['EDUCATION\nUNIVERSITY OF LEEDS\nSTATISTICS AND ACTUARIAL SCIENCE\n2012 – 2016', null],
-    ['EDUCATION\nKENYA CERTIFICATE OF SECONDARY EDUCATION\nSTARE HIGH\n2008 – 2012', null],
+    ['EDUCATION\nGENERAL CERTIFICATE OF SECONDARY EDUCATION\nLINCOLN HIGH\n2008 – 2012', null],
     ['EDUCATION\nBSc Statistics\nFIRST CLASS HONOURS\n2012 – 2016', null],
     ['EXPERIENCE\nAnalyst — Acme\tJan 2018 – Dec 2022\nEDUCATION\nSTATISTICS\n2012 – 2016', 5],
   ])('%j -> %s', (t, y) => expect(yearsFromText(t, NOW)).toBe(y))

@@ -1188,3 +1188,10 @@ Operator notes for the newest migrations. Apply each migration before deploying 
 
 # PARTNERS ROUND 33 (migration 0112): adds partners_overview_totals(uuid) for the admin Partners overview strip. Apply 0112 BEFORE or WITH the
 # Worker (the Worker's schema version is 112; the overview itself falls back to the old full scan when the function is missing).
+
+# PAYOUT RAILS + PAYPAL (migration 0113): adds PAYPAL to payout_method_enum; Western bank details (country, ACH routing number / UK sort code /
+# AU BSB / CA transit number, IBAN, SWIFT/BIC) live inside the existing payout_details jsonb, so nothing else changes in the schema. Apply 0113
+# BEFORE or WITH this Worker (the Worker's schema version is 113, and a PayPal submission against an unmigrated database fails at the insert).
+# ROLLBACK NOTE: a Worker older than this one does not know PAYPAL; it would list a PayPal partner as mobile money, so roll the Worker back only
+# together with asking PayPal partners to re-enter their details, or not at all. Existing bank and mobile-money details need no migration: a bank
+# submission without a country still validates as before.

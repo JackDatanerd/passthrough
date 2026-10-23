@@ -128,3 +128,55 @@ describe('submitPayoutDetails with the new rails', () => {
     expect(t.state.patch.payout_method).toBe('MOBILE_MONEY')
   })
 })
+
+// Independent re-audit round: stray fields, empty strings, UK roll numbers and New Zealand.
+describe('stray and empty fields (re-audit)', () => {
+  const base = { payoutMethod: 'BANK', bankName: 'Chase', accountName: 'Alex Morgan', accountNumber: '000123456789' }
+  function setup(previous) {
+    const state = { patch: null, updates: 0 }
+    const db = createFakeSupabase(q => {
+      if (q.table === 'partners' && q.op === 'select') return { data: previous ?? { payout_method: null, payout_details: null }, error: null }
+      if (q.table === 'partners' && q.op === 'update') return (state.updates++, state.patch = q.patch, { data: { name: 'Alex', email: 'alex@x.co' }, error: null })
+      return undefined
+    })
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/email.service.js': { sendPayoutDetailsChanged: async () => true, sendOwnerAlert: async () => true },
+    })
+    const c = body => ({ env: {}, req: { query: () => 'tok123', json: async () => body }, header: () => {}, json: (b, status = 200) => ({ body: b, status }) })
+    return { mod, restore, state, c }
+  }
+  it('refuses a routing code that is not digits, with or without a country', async () => {
+    t = setup()
+    await expect(t.mod.submitPayoutDetails(t.c({ ...base, routingCode: '=cmd|calc' }))).rejects.toThrow()
+    await expect(t.mod.submitPayoutDetails(t.c({ ...base, bankCountry: 'DE', accountNumber: 'DE89 3704 0044 0532 0130 00', routingCode: '=cmd|calc' }))).rejects.toThrow()
+    expect(t.state.patch).toBe(null)
+  })
+  it('leaves out a routing code that does not belong to the rail (IBAN country) and drops empty optional strings', async () => {
+    t = setup()
+    await t.mod.submitPayoutDetails(t.c({ ...base, bankCountry: 'DE', accountNumber: 'DE89 3704 0044 0532 0130 00', routingCode: '123456', swiftBic: '' }))
+    expect(t.state.patch.payout_details).toEqual({ bankName: 'Chase', accountName: 'Alex Morgan', accountNumber: 'DE89 3704 0044 0532 0130 00', bankCountry: 'DE' })
+  })
+  it('an identical resubmission carrying empty optional strings is still a no-op (no hold restart)', async () => {
+    const stored = { bankName: 'Chase', accountName: 'Alex Morgan', accountNumber: '000123456789', bankCountry: 'US', routingCode: '021000021' }
+    t = setup({ payout_method: 'BANK', payout_details: stored })
+    const res = await t.mod.submitPayoutDetails(t.c({ ...base, bankCountry: 'US', routingCode: '021000021', swiftBic: '' }))
+    expect(res.body).toMatchObject({ success: true, unchanged: true })
+    expect(t.state.updates).toBe(0)
+  })
+  it('accepts a UK building-society roll number, still refuses a nonsense UK account', async () => {
+    t = setup()
+    await t.mod.submitPayoutDetails(t.c({ ...base, bankCountry: 'GB', routingCode: '20-00-00', accountNumber: 'ROLL 1234 567' }))
+    expect(t.state.patch.payout_details.accountNumber).toBe('ROLL 1234 567')
+    await expect(t.mod.submitPayoutDetails(t.c({ ...base, bankCountry: 'GB', routingCode: '20-00-00', accountNumber: 'ab' }))).rejects.toThrow()
+  })
+  it('New Zealand takes its own account number format and needs no SWIFT', async () => {
+    t = setup()
+    await t.mod.submitPayoutDetails(t.c({ ...base, bankCountry: 'NZ', accountNumber: '12-3456-7890123-00' }))
+    expect(t.state.patch.payout_details).toEqual({ bankName: 'Chase', accountName: 'Alex Morgan', accountNumber: '12-3456-7890123-00', bankCountry: 'NZ' })
+    await expect(t.mod.submitPayoutDetails(t.c({ ...base, bankCountry: 'NZ', accountNumber: '12-3456-789' }))).rejects.toThrow()
+  })
+  it('cleanBankDetails keeps a SWIFT/BIC that was given', () => {
+    expect(rails.cleanBankDetails({ ...base, bankCountry: 'SG', swiftBic: 'DBSSSGSG', routingCode: '' })).toEqual({ ...base, bankCountry: 'SG', swiftBic: 'DBSSSGSG' })
+  })
+})

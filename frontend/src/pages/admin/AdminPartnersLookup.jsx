@@ -10,6 +10,7 @@ import Checkbox from '../../components/ui/Checkbox'
 import Select from '../../components/ui/Select'
 import { useToast } from '../../components/ui/Toast'
 import { formatCents, formatDate, downloadCsv, dateStamp, csvText } from '../../lib/utils'
+import { methodLabel } from '../../lib/payoutRails'
 
 // Cross-partner views (round 5). The partner list deliberately ships no codes or payout
 // history (scale), which left "who owns code X?" and "what did we pay in September?" needing
@@ -232,7 +233,7 @@ function PayoutsLog() {
             {
               key: 'method',
               header: 'Method',
-              cell: p => p.payoutMethod === 'BANK' ? 'Bank' : 'Mobile money',
+              cell: p => methodLabel(p.payoutMethod),
             },
           ]}
           rows={rows}
