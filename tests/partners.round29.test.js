@@ -171,3 +171,27 @@ describe('round 30: finding a personal code, and the migration number', () => {
     expect(db.calls[0].filters).toContainEqual(['is', 'user_id', null])
   })
 })
+
+// ---- Round 31 --------------------------------------------------------------------------------------------------------------
+describe('round 31: the payout-link throttle only counts a link that was really sent', () => {
+  const mk = (kv, sender) => {
+    const db = createFakeSupabase(q => q.table === 'partners'
+      ? (q.op === 'update' ? { data: { id: 'p1' }, error: null } : { data: { id: 'p1', name: 'P', email: 'p@x.co', payout_token_hash: 'old', dashboard_token_version: 0 }, error: null }) : undefined)
+    return { db, ...load(db, { sendPartnerPayoutDetailsRequest: sender }) }
+  }
+  const call = (mod, kv) => mod.requestPayoutLink(ctxOf({ env: { RATE_LIMIT_KV: kv }, headers: { 'x-partner-token': 'legacy-dashboard-token' } }))
+  const updates = db => db.calls.filter(q => q.table === 'partners' && q.op === 'update')
+  it('a failed send does not lock the partner out: the retry swaps and sends again', async () => {
+    const kv = makeKv(); const { db, mod } = mk(kv, async () => false)
+    await call(mod, kv); await call(mod, kv)
+    expect(kv.m.size).toBe(0)
+    // each attempt: the swap, then the undo of it
+    expect(updates(db)).toHaveLength(4)
+  })
+  it('a delivered link starts the window', async () => {
+    const kv = makeKv(); const { db, mod } = mk(kv, async () => true)
+    await call(mod, kv); await call(mod, kv)
+    expect(kv.m.size).toBe(1)
+    expect(updates(db)).toHaveLength(1)
+  })
+})

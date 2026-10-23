@@ -2258,12 +2258,11 @@ async function requestPayoutLink(ctx) {
   if (isRemovedEmail(partner.email)) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)
   // Round 29: a holder of the READ-ONLY dashboard link (a forwarded earnings email) could call this in a loop and kill the partner's
   // current payout link each time. One swap per 15 minutes for that scope; the answer stays the same neutral message.
-  if (scope === 'dashboard') {
-    const throttleKey = `partner-payout-link-self:${partner.id}`
-    if (await referralService.keySeen(ctx.env, throttleKey))
-      return ctx.json({ success: true, message: 'If your link is valid, we\'ve emailed the payout-details link to the address we have on file.' })
-    await referralService.keyMark(ctx.env, throttleKey, 900)
-  }
+  // Round 31: the key is set only AFTER an email really went out. Set before the send, a failed send (link restored) still silenced
+  // the partner's retries for 15 minutes with the same "we've emailed it" answer and nothing in their inbox.
+  const throttleKey = scope === 'dashboard' ? `partner-payout-link-self:${partner.id}` : null
+  if (throttleKey && await referralService.keySeen(ctx.env, throttleKey))
+    return ctx.json({ success: true, message: 'If your link is valid, we\'ve emailed the payout-details link to the address we have on file.' })
   // Round 16: the stored token is a hash, so a link can only be "sent" by minting a new one — which kills the previous link. That
   // swap used to happen BEFORE the email and its result was ignored, so a send that failed or hit the 4-per-hour cap left the
   // partner with a dead link and nothing in their inbox. Same pattern as resetMyPartnerLinks: remember what was there, swap
@@ -2287,6 +2286,8 @@ async function requestPayoutLink(ctx) {
         .update({ payout_token_hash: before?.payout_token_hash ?? null })
         .eq('id', partner.id).eq('payout_token_hash', newHash)
       if (undoErr) console.error('requestPayoutLink undo:', undoErr.message)
+    } else if (throttleKey) {
+      await referralService.keyMark(ctx.env, throttleKey, 900).catch(() => {})
     }
   }
   // Neutral either way (this route must not become a way to probe the quota or the mail provider).

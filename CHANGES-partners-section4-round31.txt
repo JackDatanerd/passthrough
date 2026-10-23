@@ -1,0 +1,7 @@
+Partners / Referral program, section 4 round 31
+
+- requestPayoutLink: the 15-minute throttle (read-only dashboard-link holders) is set only AFTER an email really went out. Before, a
+  failed send restored the old link but still silenced the partner's retries for 15 minutes behind a "we've emailed it" answer.
+- Admin code lookup: the Active/Inactive state filter and a "Personal welcome codes only" switch now exist (the filter state had no
+  control at all); both reset the page to 1.
+- Removes supabase/migrations/0110_partners_section4_round29.sql (superseded by 0111; two files shared the number 0110).

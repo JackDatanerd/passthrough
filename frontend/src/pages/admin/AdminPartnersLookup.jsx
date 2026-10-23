@@ -7,6 +7,7 @@ import Spinner from '../../components/ui/Spinner'
 import DataTable from '../../components/ui/DataTable'
 import Input from '../../components/ui/Input'
 import Checkbox from '../../components/ui/Checkbox'
+import Select from '../../components/ui/Select'
 import { useToast } from '../../components/ui/Toast'
 import { formatCents, formatDate, downloadCsv, dateStamp, csvText } from '../../lib/utils'
 
@@ -71,13 +72,22 @@ function CodeLookup() {
   const [q, setQ] = useState('')
   const [debounced, setDebounced] = useState('')
   const [offset, setOffset] = useState(0)
-  const [activeFilter, setActiveFilter] = useState('')   // '' | 'true' | 'false' (round 10: the server always supported it)
+  const [activeFilter, setActiveFilter] = useState('')   // '' | 'true' | 'false'
+  const [personalOnly, setPersonalOnly] = useState(false)   // round 31: the controls for these two were never built (the state had no setter in the UI)
   useEffect(() => { const t = setTimeout(() => { setDebounced(q.trim()); setOffset(0) }, 300); return () => clearTimeout(t) }, [q])
-  const { rows, total, loading, error } = usePagedFetch('/partners/codes', { q: debounced || undefined, active: activeFilter || undefined, limit: PAGE, offset })
+  const { rows, total, loading, error } = usePagedFetch('/partners/codes', { q: debounced || undefined, active: activeFilter || undefined, ...(personalOnly ? { personal: 'true' } : {}), limit: PAGE, offset })
   return (
     <div className="flex flex-col gap-3">
-      <Input size="sm" type="search" value={q} onChange={e => setQ(e.target.value)} placeholder="Find a referral code…" aria-label="Find a referral code"
-        wrapperClassName="w-64" />
+      <div className="flex items-end gap-4 flex-wrap">
+        <Input size="sm" type="search" value={q} onChange={e => setQ(e.target.value)} placeholder="Find a referral code…" aria-label="Find a referral code"
+          wrapperClassName="w-64" />
+        <Select size="sm" aria-label="Code state" data-testid="code-state-filter" value={activeFilter} onChange={e => { setActiveFilter(e.target.value); setOffset(0) }}>
+          <option value="">Active and inactive</option>
+          <option value="true">Active only</option>
+          <option value="false">Inactive only</option>
+        </Select>
+        <Checkbox label="Personal welcome codes only" checked={personalOnly} onChange={e => { setPersonalOnly(e.target.checked); setOffset(0) }} />
+      </div>
       {loading && <Spinner />}
       {error && <p className="text-sm text-red-600">Couldn't load codes.</p>}
       {!loading && !error && rows.length === 0 && <p className="text-sm text-gray-400">No codes match.</p>}
