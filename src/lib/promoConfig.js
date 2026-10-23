@@ -16,6 +16,7 @@ const TIERS = ['FIX', 'BADGE', 'FIX_PLAIN']
 
 let cache = null          // { at, value }   value: the stored record or null
 let inflight = null
+let generation = 0        // bumped by every save / clear so a read that STARTED before one cannot overwrite it
 
 function isRecord(v) {
   return !!v && typeof v === 'object' && typeof v.active === 'boolean' && typeof v.endsAt === 'string' && v.prices && typeof v.prices === 'object'
@@ -31,19 +32,25 @@ async function readStored(supabase) {
 async function current(supabase, now = Date.now()) {
   if (cache && now - cache.at < (cache.failed ? RETRY_AFTER_ERROR_MS : TTL_MS)) return cache.value
   if (!inflight) {
+    const startedIn = generation
     inflight = readStored(supabase)
-      .then(value => { cache = { at: Date.now(), value }; return value })
+      .then(value => {
+        // A save / clear landed while this read was in flight: its answer may predate it, so it is returned to the
+        // caller that asked but never cached over the newer value.
+        if (startedIn === generation) cache = { at: Date.now(), value }
+        return value
+      })
       .catch(err => {
         console.error('promo config read failed:', err.message)
-        cache = { at: Date.now(), value: cache ? cache.value : null, failed: true }
-        return cache.value
+        if (startedIn === generation) cache = { at: Date.now(), value: cache ? cache.value : null, failed: true }
+        return cache ? cache.value : null
       })
       .finally(() => { inflight = null })
   }
   return inflight
 }
 
-function invalidate(value) { cache = value === undefined ? null : { at: Date.now(), value } }
+function invalidate(value) { generation++; inflight = null; cache = value === undefined ? null : { at: Date.now(), value } }
 
 // A copy of env carrying the stored promo. The deploy-time values ride along (__deployPromo) so the admin panel can show what
 // "revert" would go back to.
@@ -75,4 +82,16 @@ async function clear(supabase) {
   invalidate(null)
 }
 
-module.exports = { KEY, TIERS, current, overlayEnv, save, clear, invalidate, readStored, isRecord }
+// The env with the admin promo applied, for the entry points that never pass through the HTTP middleware (queue consumer, cron):
+// without it an email sent from a queued free scan quoted the deploy price while checkout charged the promo price. Never throws.
+async function withPromo(env, supabase) {
+  try {
+    const record = await current(supabase)
+    return record ? overlayEnv(env, record) : env
+  } catch (err) {
+    console.error('promo overlay skipped:', err.message)
+    return env
+  }
+}
+
+module.exports = { KEY, TIERS, current, withPromo, overlayEnv, save, clear, invalidate, readStored, isRecord }

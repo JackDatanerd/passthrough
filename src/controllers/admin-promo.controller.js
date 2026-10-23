@@ -16,6 +16,11 @@ const { logAdminAction } = require('../lib/adminAudit')
 const MIN_PRICE_CENTS = 100   // below $1 / 1 unit is a mistake, not a promo (and under most processors' minimum)
 const LABEL_MAX = 40
 
+// The env as deployed, before the per-request promo overlay (middleware/promoOverlay.js). Falls back to ctx.env when the
+// middleware did not run (a test that mounts the handler directly).
+const deployEnvOf = ctx => (ctx.get && ctx.get('deployEnv')) || ctx.env
+const summarise = r => (r ? { active: r.active, label: r.label, startsAt: r.startsAt, endsAt: r.endsAt, prices: r.prices } : null)
+
 const isoOrNull = v => (v == null || v === '' ? null : v)
 
 const bodySchema = z.object({
@@ -63,6 +68,7 @@ function validate(input, env, now = Date.now()) {
   for (const tier of promoConfig.TIERS) {
     const price = body.prices[tier]
     if (price < MIN_PRICE_CENTS) errors.push({ field: `prices.${tier}`, message: `${c.tierLabel(tier)} must be at least ${MIN_PRICE_CENTS} (minor units).` })
+    else if (tier === 'FIX' && c.welcomeAmountFor(price) < MIN_PRICE_CENTS) errors.push({ field: `prices.${tier}`, message: `Full fix is too low: the ${c.WELCOME_PERCENT_OFF}% welcome code takes it under ${MIN_PRICE_CENTS} (minor units) for a new signup. Raise it to at least ${Math.ceil(MIN_PRICE_CENTS * 100 / (100 - c.WELCOME_PERCENT_OFF))}.` })
     else if (price >= standard[tier]) errors.push({ field: `prices.${tier}`, message: `${c.tierLabel(tier)} must be below its standard price (${standard[tier]}), or the promo would raise it.` })
   }
   if (errors.length) return { ok: false, errors }
@@ -84,11 +90,12 @@ async function adminGetPromo(ctx) {
     console.error('adminGetPromo:', err.message)
     return ctx.json({ success: false, message: 'Could not read the saved promo.' }, 503)
   }
-  const env = promoConfig.overlayEnv(ctx.env, stored)
+  const base = deployEnvOf(ctx)
+  const env = promoConfig.overlayEnv(base, stored)
   return ctx.json({ success: true, data: {
     saved: stored,
     effective: describe(env),
-    deploy: env.__deployPromo || { active: ctx.env.PROMO_ACTIVE === 'true', endsAt: ctx.env.PROMO_ENDS_AT || null },
+    deploy: { active: base.PROMO_ACTIVE === 'true', endsAt: base.PROMO_ENDS_AT || null },
     limits: { labelMax: LABEL_MAX, minPriceCents: MIN_PRICE_CENTS },
   } })
 }
@@ -97,24 +104,31 @@ async function adminSetPromo(ctx) {
   let input
   try { input = await ctx.req.json() } catch (_) { return ctx.json({ success: false, message: 'Send the promo as JSON.' }, 400) }
   // Validated against the DEPLOY environment's standard prices and currency, which the overlay never changes.
-  const result = validate(input, ctx.env)
+  const base = deployEnvOf(ctx)
+  const result = validate(input, base)
   if (!result.ok) return ctx.json({ success: false, message: result.errors[0].message, errors: result.errors }, 400)
   const supabase = getSupabase(ctx.env)
   const actor = ctx.get('user')
+  let previous = null
+  try { previous = await promoConfig.readStored(supabase) } catch (_) {}
   const record = { ...result.record, updatedAt: new Date().toISOString(), updatedBy: actor?.id || null }
   await promoConfig.save(supabase, record)
   await logAdminAction(ctx, supabase, 'promo.update', 'promo', 'site', {
     active: record.active, label: record.label, startsAt: record.startsAt, endsAt: record.endsAt, prices: record.prices, currency: record.currency,
+    previous: summarise(previous),
   })
-  const env = promoConfig.overlayEnv(ctx.env, record)
+  const env = promoConfig.overlayEnv(base, record)
   return ctx.json({ success: true, data: { saved: record, effective: describe(env) } })
 }
 
 async function adminClearPromo(ctx) {
   const supabase = getSupabase(ctx.env)
+  let previous = null
+  try { previous = await promoConfig.readStored(supabase) } catch (_) {}
   await promoConfig.clear(supabase)
-  await logAdminAction(ctx, supabase, 'promo.clear', 'promo', 'site', {})
-  return ctx.json({ success: true, data: { saved: null, effective: describe(ctx.env) } })
+  await logAdminAction(ctx, supabase, 'promo.clear', 'promo', 'site', { previous: summarise(previous) })
+  // Described from the DEPLOY env: ctx.env is the request's overlaid copy and would still show the promo that was just removed.
+  return ctx.json({ success: true, data: { saved: null, effective: describe(deployEnvOf(ctx)) } })
 }
 
 module.exports = { adminGetPromo, adminSetPromo, adminClearPromo, validate, describe }

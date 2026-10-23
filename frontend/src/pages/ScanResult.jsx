@@ -890,7 +890,7 @@ export default function ScanResult() {
                   <h2 className="text-xl font-bold text-gray-900">We're rewriting your resume</h2>
                   <p className="mt-1 text-sm text-gray-600">
                     {typeof scan.atsScore === 'number' && <>You started at {scan.atsScore}/100. </>}
-                    We're reworking it for this job and scoring the real file. Your cover letter unlocks as soon as it's done.
+                    We're reworking it for this job and scoring the real file.{!scan.fixRetryCount && ' Your cover letter unlocks as soon as it\'s done.'}
                   </p>
                 </div>
                 {/* "Already paid" and similar answers arrive as the payment message; the page has moved on to the rewrite, so they read as a note. */}

@@ -80,4 +80,31 @@ describe('AdminPromo', () => {
     await user.click(await screen.findByRole('button', { name: 'Retry' }))
     expect(await screen.findByText('Standard pricing')).toBeInTheDocument()
   })
+
+  it('reads "29,50" and "$29" as money, and refuses junk before sending anything', async () => {
+    api.get.mockResolvedValue(payload())
+    api.put.mockResolvedValue({ data: { data: { saved: null, effective: effective() } } })
+    renderPage()
+    const user = userEvent.setup()
+    await screen.findByText('Standard pricing')
+    const fix = screen.getByLabelText('Full fix price'), badge = screen.getByLabelText('Verified badge price')
+    await user.clear(fix); await user.type(fix, '29,50')
+    await user.clear(badge); await user.type(badge, '$9')
+    await user.click(screen.getByRole('button', { name: 'Save promotion' }))
+    await waitFor(() => expect(api.put).toHaveBeenCalled())
+    expect(api.put.mock.calls[0][1].prices).toMatchObject({ FIX: 2950, BADGE: 900 })
+
+    api.put.mockClear()
+    await user.clear(fix); await user.type(fix, 'abc')
+    await user.click(screen.getByRole('button', { name: 'Save promotion' }))
+    expect(await screen.findByText('Enter an amount like 29 or 29.50.')).toBeInTheDocument()
+    expect(api.put).not.toHaveBeenCalled()
+  })
+
+  it('keeps the seconds of an end time so a 23:59:59 deadline is not shortened on save', async () => {
+    api.get.mockResolvedValue(payload({ effective: effective({ endsAt: '2026-11-22T23:59:59Z' }) }))
+    renderPage()
+    await screen.findByText('Standard pricing')
+    expect(screen.getByLabelText("Ends").value).toMatch(/:59(\.000)?$/)
+  })
 })

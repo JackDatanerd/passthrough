@@ -456,6 +456,8 @@ async function queue(batch, env, ctx) {
 
   const { generateFix, generateBadge, runAtsScan } = require('./controllers/scan.controller')
   const supabase = getSupabase(env)
+  // The queued free scan emails the price of a fix; it must be the one checkout will charge (an admin-set promo), not the deploy price.
+  env = await require('./lib/promoConfig').withPromo(env, supabase)
 
   for (const message of batch.messages) {
     const { type, scanId, anonToken, anonRlKey, ipSlotKey } = message.body || {}

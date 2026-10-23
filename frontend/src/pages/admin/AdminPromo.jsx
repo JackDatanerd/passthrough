@@ -22,11 +22,16 @@ const toLocalInput = iso => {
   const t = Date.parse(iso)
   if (!Number.isFinite(t)) return ''
   const d = new Date(t - new Date(t).getTimezoneOffset() * 60000)
-  return d.toISOString().slice(0, 16)
+  return d.toISOString().slice(0, 19)   // seconds kept: a deploy end of 23:59:59 must not round-trip to 23:59:00
 }
 const fromLocalInput = v => (v ? new Date(v).toISOString() : null)
 const centsToField = c => (Number.isInteger(c) ? String(c / 100) : '')
-const fieldToCents = v => { const n = Number(v); return v !== '' && Number.isFinite(n) ? Math.round(n * 100) : NaN }
+// "29", "29.50", "29,50" and "$29" all read as 2900 / 2950; anything else is NaN (caught before the request is sent).
+const fieldToCents = v => {
+  const t = String(v ?? '').trim().replace(/^\$/, '').replace(',', '.')
+  const n = Number(t)
+  return t !== '' && Number.isFinite(n) && n >= 0 ? Math.round(n * 100) : NaN
+}
 
 // Promotions without a deploy: what the Worker charges while a promo runs is set here, not in wrangler.toml / constants.js.
 // Saving takes effect within ~30 seconds everywhere. "Revert to deploy settings" removes the saved promo so pricing falls
@@ -77,6 +82,12 @@ export default function AdminPromo() {
   const setPrice = (k, v) => setForm(f => ({ ...f, prices: { ...f.prices, [k]: v } }))
 
   const save = async () => {
+    const bad = TIERS.filter(t => Number.isNaN(fieldToCents(form.prices[t.key])))
+    if (bad.length) {
+      setErrors(Object.fromEntries(bad.map(t => [`prices.${t.key}`, 'Enter an amount like 29 or 29.50.'])))
+      return
+    }
+    if (!form.endsAt) { setErrors({ endsAt: 'Pick when the promotion ends.' }); return }
     setSaving(true); setErrors({})
     try {
       const res = await api.put('/admin/promo', {
@@ -149,8 +160,8 @@ export default function AdminPromo() {
           hint="E.g. Introductory price, Black Friday. Blank uses “Introductory price”."
           onChange={e => setForm(f => ({ ...f, label: e.target.value }))} />
         <div className="grid sm:grid-cols-2 gap-4">
-          <Input label="Starts (optional)" type="datetime-local" value={form.startsAt} error={errors.startsAt} onChange={e => setForm(f => ({ ...f, startsAt: e.target.value }))} />
-          <Input label="Ends" type="datetime-local" value={form.endsAt} error={errors.endsAt} onChange={e => setForm(f => ({ ...f, endsAt: e.target.value }))} />
+          <Input label="Starts (optional)" type="datetime-local" step="1" value={form.startsAt} error={errors.startsAt} onChange={e => setForm(f => ({ ...f, startsAt: e.target.value }))} />
+          <Input label="Ends" type="datetime-local" step="1" value={form.endsAt} error={errors.endsAt} onChange={e => setForm(f => ({ ...f, endsAt: e.target.value }))} />
         </div>
         <div className="grid sm:grid-cols-3 gap-4">
           {TIERS.map(t => (

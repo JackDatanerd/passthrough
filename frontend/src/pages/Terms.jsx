@@ -1,7 +1,7 @@
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 
-const LAST_UPDATED = 'October 21, 2026'
+const LAST_UPDATED = 'October 23, 2026'
 
 function Section({ title, children }) {
   return (
