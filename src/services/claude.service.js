@@ -1534,8 +1534,11 @@ async function generateCoverLetter(env, resumeData, jdText, opts = {}) {
       1400,
       { timeoutMs: Math.max(20000, Math.min(LONG_CALL_TIMEOUT_MS, left)), label: 'cover_letter', stableSystemChars: letterBase.length, temperature: LETTER_TEMPERATURE }
     )
-    if (!result.success) return result
-    if (result.stopReason === 'max_tokens') return { success: false, data: null, error: 'RESPONSE_TRUNCATED' }
+    // A later attempt failing (API error, timeout, truncated reply, too-short text) must not throw away a draft an earlier attempt
+    // already produced with no integrity problem: the buyer gets that draft, as the budget-exhausted path below already does.
+    const keepDraft = fallback => (bestSoft ? { success: true, data: bestSoft.slice(0, 4000), error: null } : fallback)
+    if (!result.success) return keepDraft(result)
+    if (result.stopReason === 'max_tokens') return keepDraft({ success: false, data: null, error: 'RESPONSE_TRUNCATED' })
     const reply = parseLetterReply(result.data)
     if (reply.letter === null) {
       lastProblem = 'PARSE_FAIL'
@@ -1544,7 +1547,7 @@ async function generateCoverLetter(env, resumeData, jdText, opts = {}) {
     }
     // The model never gets to choose the salutation or sign-off (no guessed honorific, UK vs US closing).
     let text = applyLetterFrame(reply.letter, { recipient: details.recipient, name: cleanLine(resumeData?.name, 80), uk })
-    if (text.length < 120) return { success: false, data: null, error: 'PARSE_FAIL' }
+    if (text.length < 120) return keepDraft({ success: false, data: null, error: 'PARSE_FAIL' })
     const { hard, soft } = checkLetter(text, { resumeData: source, jdText, details, allowedNumbers, facts, haveNumbers, corpus, unprovenNeeds })
     soft.push(...checkLetterEvidence(reply.evidence, { resumeText: resumeCorpus, jdText }))
     if (!hard.length && (!soft.length || attempt === MAX_ATTEMPTS)) return { success: true, data: text.slice(0, 4000), error: null }

@@ -728,7 +728,9 @@ function bulletFamily(ch) {
 }
 
 function scoreFormat(resumeText, structure = null) {
-  if (!resumeText || resumeText.trim().length < 100)
+  // Only text with next to nothing in it is "could not be parsed". A thin but real typed / hand-filled resume (the scan gate lets
+  // one through when structured data exists) used to land here at 100 characters and read as an unreadable file.
+  if (!resumeText || resumeText.trim().length < 10)
     return { score: 0, detail: { issues: ['Resume could not be parsed'] } }
   let score = 100; const issues = []
   // REMOVED: a "count | characters, flag if >5" table-detection check used
@@ -922,6 +924,8 @@ function stripDateNoise(line) {
     .replace(/\b\d{1,2}\s*[\/.\-]\s*(?:19|20)\d{2}\b/g, ' ')
     .replace(/\b(?:19|20)\d{2}\s*[\/\-\u2013\u2014]\s*\d{1,2}\b(?!\s*(?:%|x\b|k\b|m\b|million|billion|thousand|\s[A-Za-z]{3,}))/g, ' ')
     .replace(/\b(?:19|20)\d{2}\s*[\-\u2013\u2014]\s*(?:19|20)\d{2}\b/g, ' ')
+    // A language / platform version in a bullet is a name, not a result ("migrated to Python 3", "Java 17", "iOS 14").
+    .replace(/\b(?:python|java|node(?:\.js)?|php|ruby|angular|swift|kotlin|rails|django|excel|windows|ios|android|office|oracle|react|vue|\.net|dotnet)\s*v?\d+(?:\.\d+)*\b/gi, ' ')
     .replace(/\bgpa\s*[:\-]?\s*\d+(?:\.\d+)?(?:\s*\/\s*\d+(?:\.\d+)?)?/gi, ' ')
     .replace(/\bv(?:ersion)?\s*\.?\s*\d+(?:\.\d+)+/gi, ' ')
     // Round 14: a standard's number is a name, not a result ("ISO 9001", "RFC 7231", "SOC 2").
@@ -943,7 +947,14 @@ function countQuantifiedFigures(text) {
       if (m[1]) { n++; continue }
       const num = m[2], unit = (m[3] || '').trim().toLowerCase()
       if (/^(?:19|20)\d{2}$/.test(num) && !unit) continue                       // a year
-      if (/^(?:years?|yrs?|months?|weeks?|days?|hours?|present|current|to|and|through|until|since|from|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/.test(unit)) continue
+      // A year followed by a word is still a year ("the 2021 roadmap", "in 2021 across teams") unless it reads as a count
+      // ("2000 users"): a plural noun with no date cue in front of it.
+      if (/^(?:19|20)\d{2}$/.test(num) && /^[a-z]/i.test(unit) && !/^(?:%|x\b|k\b|m\b|bn?\b|mm\b|million|billion|thousand)/i.test(unit)) {
+        const word = unit.split(/\s+/)[0]
+        const cue = /(?:\b(?:in|since|from|during|until|through|by|of|early|late|mid|fy|q[1-4]|on)|\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?))\s*$/i.test(l.slice(0, m.index))
+        if (cue || !/s$/i.test(word)) continue
+      }
+      if (/^(?:years?|yrs?|months?|weeks?|days?|hours?|present|current|to|and|through|until|since|from|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/.test(unit)) continue
       if (num.replace(/\D/g, '').length >= 7) continue                          // phone / id
       n++
     }

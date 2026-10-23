@@ -319,7 +319,7 @@ export default function ScanResult() {
         originalResumeData: d.originalResumeData ?? prev.originalResumeData,
         atsDetail: d.atsDetail ?? prev.atsDetail
       }) : prev)
-      if (d.formattedScore == null && !d.atsDetail?.formattedScore)
+      if (d.formattedScore == null && d.atsDetail?.formattedScore == null)
         setCheckFormattedError("We built the file but couldn't score it just now — try again in a minute.")
     } catch (err) {
       setCheckFormattedError(getErrorMessage(err, "We couldn't build the formatted file just now — try again in a minute."))

@@ -96,12 +96,19 @@ export function alignBullets(beforeList, afterList) {
   cands.sort((x, y) => y.sim - x.sim || Math.abs(x.i - x.j) - Math.abs(y.i - y.j))
   for (const { i, j } of cands) if (pairOf[j] === -1 && !usedBefore.has(i)) { pairOf[j] = i; usedBefore.add(i) }
 
+  // "Moved" means the bullet changed its place RELATIVE to the other bullets that survived. Comparing raw indexes marked every
+  // bullet after an added or dropped one as moved; ranking among the paired bullets only ignores additions and removals.
+  const pairedBefore = pairOf.filter(i => i !== -1).sort((x, y) => x - y)
+  let afterRank = 0
+  const movedAt = new Array(after.length).fill(false)
+  after.forEach((_, j) => { if (pairOf[j] !== -1) { movedAt[j] = pairedBefore.indexOf(pairOf[j]) !== afterRank; afterRank++ } })
+
   const out = []
   after.forEach((a, j) => {
     const i = pairOf[j]
     if (i === -1) { out.push({ before: null, after: a, status: 'added' }); return }
-    if (before[i].trim() === a.trim()) { out.push({ before: before[i], after: a, status: 'unchanged', moved: i !== j }); return }
-    out.push({ before: before[i], after: a, status: 'changed', moved: i !== j, ...(wordSegments(before[i], a) || {}) })
+    if (before[i].trim() === a.trim()) { out.push({ before: before[i], after: a, status: 'unchanged', moved: movedAt[j] }); return }
+    out.push({ before: before[i], after: a, status: 'changed', moved: movedAt[j], ...(wordSegments(before[i], a) || {}) })
   })
   before.forEach((b, i) => { if (!usedBefore.has(i)) out.push({ before: b, after: null, status: 'removed' }) })
   return out
