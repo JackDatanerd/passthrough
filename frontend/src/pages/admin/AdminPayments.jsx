@@ -52,10 +52,11 @@ export default function AdminPayments() {
   const [loading, setLoading] = useState(true)
   const [busyRef, setBusyRef] = useState(null)
   const [pendingAction, setPendingAction] = useState(null)
+  const [disputeNote, setDisputeNote] = useState('')   // Webhooks round 27 (G1): optional merchant note sent with Accept / Contest
   const [refundDialog, setRefundDialog] = useState(null)   // { payment, amount, note, error } | null
   const [refunding, setRefunding] = useState(false)
   // Webhooks round 14: answer a dispute (evidence) and a payment's webhook history.
-  const [evidenceDialog, setEvidenceDialog] = useState(null)   // { payment, phone, details, error } | null
+  const [evidenceDialog, setEvidenceDialog] = useState(null)   // { payment, phone, details, address, error } | null
   const [sendingEvidence, setSendingEvidence] = useState(false)
   const [timeline, setTimeline] = useState(null)               // { payment, loading, events, error } | null
 
@@ -232,18 +233,20 @@ export default function AdminPayments() {
   // Webhooks round 14 (G2): the two dispute answers Paystack's API allows from here. Accepting refunds the buyer (Paystack does it);
   // the payment itself flips to REFUNDED when Paystack's resolve webhook arrives, so the list is only reloaded.
   function acceptDispute(payment) {
+    setDisputeNote('')
     setPendingAction({ type: 'accept-dispute', payment, danger: true,
       confirmMsg: `Accept the dispute on ${payment.paystackRef}? Paystack refunds the buyer the disputed amount (up to ${formatCents(payment.amountCents, payment.currency)}, the whole payment unless the dispute is for less) and you cannot contest it afterwards.` })
   }
   // Webhooks round 15 (G1): contest with a generated proof of delivery (server refuses when nothing was delivered).
   function contestDispute(payment) {
+    setDisputeNote('')
     setPendingAction({ type: 'contest-dispute', payment, danger: false,
       confirmMsg: `Contest the dispute on ${payment.paystackRef}? A proof of delivery is generated and sent to Paystack. The payment stays DISPUTED until Paystack reports the outcome; if the bank rules against you, the sale is reversed automatically.` })
   }
   async function runContestDispute(payment) {
     setBusyRef(payment.paystackRef)
     try {
-      const res = await api.post(`/admin/payments/${encodeURIComponent(payment.paystackRef)}/dispute/contest`, {})
+      const res = await api.post(`/admin/payments/${encodeURIComponent(payment.paystackRef)}/dispute/contest`, disputeNote.trim() ? { note: disputeNote.trim() } : {})
       toast({ message: res.data.message || 'Dispute contested.', type: 'success' })
       load()
     } catch (err) {
@@ -254,7 +257,7 @@ export default function AdminPayments() {
   async function runAcceptDispute(payment) {
     setBusyRef(payment.paystackRef)
     try {
-      const res = await api.post(`/admin/payments/${encodeURIComponent(payment.paystackRef)}/dispute/accept`, {})
+      const res = await api.post(`/admin/payments/${encodeURIComponent(payment.paystackRef)}/dispute/accept`, disputeNote.trim() ? { note: disputeNote.trim() } : {})
       toast({ message: res.data.message || 'Dispute accepted.', type: 'success' })
       load()
     } catch (err) {
@@ -263,12 +266,12 @@ export default function AdminPayments() {
     setPendingAction(null)
   }
   async function runSendEvidence() {
-    const { payment, phone, details } = evidenceDialog
+    const { payment, phone, details, address } = evidenceDialog
     if (!/^[+0-9][0-9 ()-]{5,}$/.test(phone.trim())) { setEvidenceDialog(d => ({ ...d, error: "Enter the buyer's phone number — Paystack requires one." })); return }
     setSendingEvidence(true)
     try {
       const res = await api.post(`/admin/payments/${encodeURIComponent(payment.paystackRef)}/dispute/evidence`, {
-        customerPhone: phone.trim(), serviceDetails: details.trim() || undefined,
+        customerPhone: phone.trim(), serviceDetails: details.trim() || undefined, deliveryAddress: (address || '').trim() || undefined,
       })
       toast({ message: res.data.message || 'Evidence sent.', type: 'success' })
       setEvidenceDialog(null)
@@ -450,17 +453,17 @@ export default function AdminPayments() {
                 <>
                   {p.status === 'SUCCESS' && (
                     <>
-                      <Button size="sm" variant="secondary" pending={busyRef === p.paystackRef}
+                      <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
                         onClick={() => reconcile(p)}>
                         Reconcile
                       </Button>
                       {isRefundable(p) && (
-                        <Button size="sm" variant="secondary" pending={busyRef === p.paystackRef}
+                        <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
                           onClick={() => openRefund(p)}>
                           Refund
                         </Button>
                       )}
-                      <Button size="sm" variant="danger" pending={busyRef === p.paystackRef}
+                      <Button size="sm" variant="danger" disabled={busyRef === p.paystackRef}
                         onClick={() => resolvePayment(p, 'reverse')}>
                         Reverse
                       </Button>
@@ -470,7 +473,7 @@ export default function AdminPayments() {
                     <Button size="sm" variant="secondary" onClick={() => openTimeline(p)}>History</Button>
                   )}
                   {['PENDING', 'ABANDONED', 'FAILED'].includes(p.status) && (
-                    <Button size="sm" variant="secondary" pending={busyRef === p.paystackRef}
+                    <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
                       onClick={() => recheck(p)}>
                       Recheck
                     </Button>
@@ -478,24 +481,24 @@ export default function AdminPayments() {
                   {p.status === 'DISPUTED' && (
                     <>
                       {!p.disputeAnswer && (<>
-                      <Button size="sm" variant="secondary" pending={busyRef === p.paystackRef}
-                        onClick={() => setEvidenceDialog({ payment: p, phone: '', details: '', error: '' })}>
+                      <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
+                        onClick={() => setEvidenceDialog({ payment: p, phone: '', details: '', address: '', error: '' })}>
                         Send evidence
                       </Button>
-                      <Button size="sm" variant="secondary" pending={busyRef === p.paystackRef}
+                      <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
                         onClick={() => contestDispute(p)}>
                         Contest dispute
                       </Button>
-                      <Button size="sm" variant="secondary" pending={busyRef === p.paystackRef}
+                      <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
                         onClick={() => acceptDispute(p)}>
                         Accept dispute
                       </Button>
                       </>)}
-                      <Button size="sm" variant="secondary" pending={busyRef === p.paystackRef}
+                      <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
                         onClick={() => resolvePayment(p, 'clear-dispute')}>
                         Clear dispute
                       </Button>
-                      <Button size="sm" variant="danger" pending={busyRef === p.paystackRef}
+                      <Button size="sm" variant="danger" disabled={busyRef === p.paystackRef}
                         onClick={() => resolvePayment(p, 'reverse')}>
                         Reverse
                       </Button>
@@ -559,6 +562,9 @@ export default function AdminPayments() {
             <Textarea label="Service description (optional — written from the order if blank)" rows={4} maxLength={1500}
               value={evidenceDialog.details} disabled={sendingEvidence}
               onChange={e => setEvidenceDialog(d => ({ ...d, details: e.target.value }))} />
+            <Input label="Delivery address (optional — e.g. where the buyer was served from, an IP or location you can stand behind)" maxLength={300}
+              value={evidenceDialog.address || ''} disabled={sendingEvidence}
+              onChange={e => setEvidenceDialog(d => ({ ...d, address: e.target.value }))} />
             {evidenceDialog.error && <p role="alert" className="text-sm text-red-600">{evidenceDialog.error}</p>}
             <div className="mt-2 flex justify-end gap-2">
               <Button variant="secondary" size="sm" onClick={() => setEvidenceDialog(null)} disabled={sendingEvidence}>Cancel</Button>
@@ -604,7 +610,17 @@ export default function AdminPayments() {
         loading={busyRef === pendingAction?.payment.paystackRef}
         onConfirm={confirmPendingAction}
         onCancel={() => setPendingAction(null)}
-      />
+      >
+        {(pendingAction?.type === 'accept-dispute' || pendingAction?.type === 'contest-dispute') && (
+          <Input
+            label={pendingAction.type === 'contest-dispute' ? 'Note for the bank (optional) — goes in the proof and with your answer' : 'Note for the Paystack record (optional)'}
+            maxLength={200}
+            value={disputeNote}
+            onChange={e => setDisputeNote(e.target.value)}
+            disabled={busyRef === pendingAction.payment.paystackRef}
+          />
+        )}
+      </ConfirmDialog>
     </div>
   )
 }

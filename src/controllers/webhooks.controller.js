@@ -1576,6 +1576,15 @@ async function acceptPaymentDispute(c) {
     : 'Dispute accepted with Paystack. The buyer is refunded by Paystack; this payment is marked REFUNDED (commission reversed, credential revoked) when Paystack confirms — usually within minutes.' })
 }
 
+// Webhooks round 27 (G2): when this scan's work was last delivered (scans.fix_delivered_at, 0110 - stamped by a trigger whenever the status
+// becomes FIX_DELIVERED, so no delivery path can forget it). null when unknown: not applied yet, or delivered before 0110.
+async function loadDeliveredAt(supabase, scanId) {
+  const { data, error } = await supabase.from('scans').select('fix_delivered_at').eq('id', scanId).maybeSingle()
+  if (error) { if (!isColumnMissing(error)) throw error; return null }
+  const v = data && data.fix_delivered_at
+  return typeof v === 'string' && !Number.isNaN(Date.parse(v)) ? new Date(v).toISOString() : null
+}
+
 // POST /api/admin/payments/:reference/dispute/evidence  { customerPhone, serviceDetails?, deliveryAddress? }
 // Name and email come from the buyer's account; the service description is built from the order unless the admin writes one.
 async function submitDisputeEvidence(c) {
@@ -1596,13 +1605,17 @@ async function submitDisputeEvidence(c) {
   if (!disputeId) return c.json(NOT_FOUND_ID, 404)
 
   const when = (payment.paid_at || payment.created_at || '').slice(0, 10)
+  // Webhooks round 27 (G2): the delivery date Paystack asks for is when the work was delivered, not when it was paid for.
+  const deliveredAt = payment.scan_id ? (await loadDeliveredAt(supabase, payment.scan_id)) : null
+  const deliveredDay = deliveredAt ? deliveredAt.slice(0, 10) : ''
   const details = clip(body?.serviceDetails, 1500) ||
     `Digital service delivered online: ${serviceSentence(payment.fix_tier).what}${payment.fix_tier ? ` (${constants.tierLabel(payment.fix_tier)})` : ''} ` +
-    `(scan ${payment.scan_id || 'n/a'}), paid on ${when || 'n/a'} under Paystack reference ${payment.paystack_ref}. ${serviceSentence(payment.fix_tier).how}`
+    `(scan ${payment.scan_id || 'n/a'}), paid on ${when || 'n/a'}${deliveredDay ? `, delivered on ${deliveredDay}` : ''} under Paystack reference ${payment.paystack_ref}. ${serviceSentence(payment.fix_tier).how}`
   const fields = {
     customer_email: user.email, customer_name: clip(user.name, 120) || user.email, customer_phone: phone, service_details: details,
   }
-  if (/^\d{4}-\d{2}-\d{2}$/.test(when)) fields.delivery_date = when
+  const deliveryDay = /^\d{4}-\d{2}-\d{2}$/.test(deliveredDay) ? deliveredDay : when
+  if (/^\d{4}-\d{2}-\d{2}$/.test(deliveryDay)) fields.delivery_date = deliveryDay
   const addr = clip(body?.deliveryAddress, 300)
   if (addr) fields.delivery_address = addr
   let evidenceJson
@@ -1658,6 +1671,13 @@ async function contestPaymentDispute(c) {
   const { data: user, error: userErr } = payment.user_id
     ? await supabase.from('users').select('email').eq('id', payment.user_id).maybeSingle() : { data: null, error: null }
   if (userErr) throw userErr
+  const deliveredAt = await loadDeliveredAt(supabase, scan.id)
+  // receipt_delivered_at (0036) is set only after the receipt email was actually sent - a second, independent proof the buyer was told.
+  let receiptAt = null
+  {
+    const { data: rc, error: rcErr } = await supabase.from('payments').select('receipt_delivered_at').eq('id', payment.id).maybeSingle()
+    if (rcErr) { if (!isColumnMissing(rcErr)) throw rcErr } else if (rc && typeof rc.receipt_delivered_at === 'string' && !Number.isNaN(Date.parse(rc.receipt_delivered_at))) receiptAt = new Date(rc.receipt_delivered_at).toISOString()
+  }
 
   let dispute
   try { dispute = await resolveDispute(c.env, supabase, payment, { withAmount: true }) } catch (err) { return paystackFailure(c, err) }
@@ -1673,7 +1693,8 @@ async function contestPaymentDispute(c) {
     ...(user && user.email ? [`Buyer account: ${user.email}`] : []),
     '',
     `Service: ${serviceSentence(scan.fix_tier || payment.fix_tier).what} (${constants.tierLabel(scan.fix_tier || payment.fix_tier)}). It is a digital service delivered online; there is nothing to ship.`,
-    `Delivery: completed. ${serviceSentence(scan.fix_tier || payment.fix_tier).how.replace(/^The (result|credential) is available/, 'It is available')} (scan ${scan.id}).`,
+    `Delivery: completed${deliveredAt ? ` on ${deliveredAt}` : ''}. ${serviceSentence(scan.fix_tier || payment.fix_tier).how.replace(/^The (result|credential) is available/, 'It is available')} (scan ${scan.id}).`,
+    ...(receiptAt ? [`Payment receipt emailed to the buyer's account address on ${receiptAt}.`] : []),
     ...(scan.verification_code && scan.verification_status === 'ACTIVE' && c.env.FRONTEND_URL
       ? [`Public verification page for the delivered work: ${c.env.FRONTEND_URL}/v/${scan.verification_code}`] : []),
     ...(note ? ['', `Merchant note: ${note}`] : []),
@@ -2031,9 +2052,12 @@ async function sweepDisputes(env, ctx, supabase = getSupabase(env), { now = Date
       // (left for a human, like a partial refund).
       if (type === 'charge.dispute.resolve') {
         if (!/accept|declin/.test(resolution)) continue
-        // Webhooks round 26 (B1): a resolution for a dispute the payment no longer tracks (a newer one is open) changes nothing in processDispute
-        // (round 25, B3), so the sweep must not pick it again every hour - each run re-emailed the owner until the newer dispute resolved.
-        if (st === 'DISPUTED' && known.disputeId && d.id != null && String(d.id).trim() !== '' && String(d.id).trim() !== known.disputeId) continue
+        // Webhooks round 26 (B1): a DECLINED resolution for a dispute the payment no longer tracks (a newer one is open) changes nothing in
+        // processDispute (round 25, B3), so the sweep must not pick it again every hour - each run re-emailed the owner until the newer dispute
+        // resolved. Round 27 (B1): only declined. An ACCEPTED resolution is money returned to the buyer whichever dispute it was, and
+        // processDispute reverses the sale for it regardless of which dispute is tracked - skipping it here left a lost older dispute
+        // unreversed (and silent) for as long as the newer one stayed open whenever its resolve webhook was the thing that got lost.
+        if (/declin/.test(resolution) && st === 'DISPUTED' && known.disputeId && d.id != null && String(d.id).trim() !== '' && String(d.id).trim() !== known.disputeId) continue
         if (/declin/.test(resolution) && st !== 'DISPUTED') continue
         const disputed = Number(d.refund_amount)
         if (/accept/.test(resolution) && Number.isFinite(disputed) && disputed > 0 && known.amount > 0 && disputed < known.amount) {
