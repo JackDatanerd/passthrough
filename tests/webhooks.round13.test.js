@@ -219,7 +219,7 @@ describe('G3: sweepStalledRefunds', () => {
   it('a processed PARTIAL refund the app never recorded is reported; once it is recorded it is not', async () => {
     const lost = rig({ refunds: [item({ status: 'processed', amount: 1000 })] })
     const a = await lost.run()
-    expect(a.missedPartial).toEqual([{ reference: 'ref1', scanId: 's1', paystack: 1000, recorded: 0, paid: 2900, currency: 'USD' }])
+    expect(a.missedPartial).toEqual([{ reference: 'ref1', scanId: 's1', paystack: 1000, recorded: 1000, paid: 2900, currency: 'USD', autoRecorded: true }])   // round 28: the sweep now records it (see webhooks.round28)
     expect(lost.sink.alerts[0].message).toMatch(/not recorded|has not recorded/)
     restore()
     const known = rig({ refunds: [item({ status: 'processed', amount: 1000 })], paymentRefunds: [{ payment_id: 'p1', event_key: 'k', amount_cents: 1000 }] })

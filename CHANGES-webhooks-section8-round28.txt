@@ -1,0 +1,14 @@
+Webhooks (section 8), round 28 - independent pass
+(no migration)
+
+B1 (cross-section) stale 0110_partners_section4_round29.sql left beside 0111: already removed upstream by partners round 31; nothing to do here.
+B2 refund.failed now releases payments.refund_claimed_at (the ~15-minute post-queue hold). The alert tells the owner to refund again from
+   Admin -> Payments; that hold answered CLAIM_LOST.
+G1 sweepStalledRefunds RECORDS a processed partial refund whose webhook never arrived (payment_refunds.event_key 'sweep:<refund id>', only when
+   Paystack gives an id). Dashboard revenue is net of it. When the real refund.processed arrives, processRefund replaces the sweep row of the
+   same amount (absorbSweepRefund; a re-run of an already-recorded event deletes nothing), and a total that includes a sweep row is confirmed
+   against Paystack's refund list before it can reverse a sale (strict when it would read as full; the webhook-recorded part is a floor).
+G2 acceptPaymentDispute / contestPaymentDispute answer 409 for a dispute that is already answered (the UI already hid the buttons).
+B3 sweepDisputes: failed handler runs now count toward MAX_DISPUTES_PER_RUN (a persistently failing handler ran for every listed dispute hourly).
+
+Tests: tests/webhooks.round28.test.js (new); round13 / round22 expectations updated for the sweep now recording.

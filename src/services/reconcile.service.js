@@ -678,7 +678,7 @@ const STALLED_MAX_PAGES = 4
 const MAX_STALLED_REPORTED = 25
 
 async function sweepStalledRefunds(env, supabase, { now = Date.now(), alert = true, list = null } = {}) {
-  const result = { checked: 0, stalled: [], missedPartial: [], error: null }
+  const result = { checked: 0, stalled: [], missedPartial: [], recorded: [], error: null }
   try {
     if (!env.PAYSTACK_SECRET_KEY && !list) return result
     const paystackService = require('./paystack.service')
@@ -713,6 +713,7 @@ async function sweepStalledRefunds(env, supabase, { now = Date.now(), alert = tr
     const live = s => ['pending', 'processing', 'needs-attention', 'processed'].includes(s)
     const processedSum = new Map()               // payment id -> Paystack's processed total in the payment's own currency
     const processedAmounts = new Map()           // payment id -> each processed refund's amount (webhooks round 22, B2)
+    const processedItems = new Map()             // payment id -> [{ id, amount }] (webhooks round 28, G1: what the sweep records)
     for (const [ref, its] of refs) {
       const p = known.get(ref)
       if (!p) continue
@@ -727,6 +728,8 @@ async function sweepStalledRefunds(env, supabase, { now = Date.now(), alert = tr
             processedSum.set(p.id, (processedSum.get(p.id) || 0) + amount)
             if (!processedAmounts.has(p.id)) processedAmounts.set(p.id, [])
             processedAmounts.get(p.id).push(amount)
+            if (!processedItems.has(p.id)) processedItems.set(p.id, [])
+            processedItems.get(p.id).push({ id: it.id ?? null, amount })
           }
           continue
         }
@@ -778,7 +781,24 @@ async function sweepStalledRefunds(env, supabase, { now = Date.now(), alert = tr
         const p = [...known.values()].find(x => x.id === id)
         const theirs = processedSum.get(id), mine = ours.get(id) || 0
         const seen = covered.get(id) || new Set()
-        if (theirs > mine && (processedAmounts.get(id) || []).some(a => !seen.has(a))) result.missedPartial.push({ reference: p.paystack_ref, scanId: p.scan_id, paystack: theirs, recorded: mine, paid: p.amount_cents, currency: p.currency })
+        if (theirs > mine && (processedAmounts.get(id) || []).some(a => !seen.has(a))) {
+          // Webhooks round 28 (G1): this was notify-only ("note it in Admin -> Payments" - no such action existed), so payment_refunds stayed short and
+          // dashboard revenue kept counting money Paystack had returned. The refunds Paystack confirms as processed and this app never saw are now
+          // recorded under `sweep:<refund id>`. processRefund absorbs such a row when the real event arrives later (no double count) and checks
+          // Paystack before trusting a total that contains one.
+          const added = []
+          for (const it of processedItems.get(id) || []) {
+            if (it.id == null || seen.has(it.amount)) continue
+            try {
+              const { error: insErr } = await supabase.from('payment_refunds').insert({ payment_id: id, event_key: `sweep:${it.id}`, amount_cents: Math.round(it.amount) })
+              if (!insErr) added.push(it.amount)
+              else if (insErr.code !== '23505') console.error('stalled-refund sweep: refund not recorded:', insErr.message)
+            } catch (err) { console.error('stalled-refund sweep: refund not recorded:', err && err.message) }
+          }
+          const addedSum = added.reduce((n, a) => n + a, 0)
+          if (added.length) result.recorded.push({ reference: p.paystack_ref, scanId: p.scan_id, amounts: added })
+          result.missedPartial.push({ reference: p.paystack_ref, scanId: p.scan_id, paystack: theirs, recorded: mine + addedSum, paid: p.amount_cents, currency: p.currency, autoRecorded: addedSum > 0 })
+        }
       }
     }
 
@@ -801,9 +821,9 @@ async function sweepStalledRefunds(env, supabase, { now = Date.now(), alert = tr
           `Refund sweep: ${stalled.length} stalled, ${missed.length} not recorded here`,
           (stalled.length ? `Refunds that are not completing (Paystack dashboard → Refunds; for needs-attention supply the customer's bank details, or POST /refund/retry_with_customer_details/{id}):\n\n` +
             stalled.map(s => `${s.reference}  scan ${s.scanId}  refund ${s.refundId ?? '?'}  ${s.amount ?? '?'} ${s.currency || ''}  ${s.why}`).join('\n') + '\n\n' : '') +
-          (missed.length ? `Partial refunds Paystack has PROCESSED that this app has not recorded (the refund.processed webhook was lost or failed). The payment stays SUCCESS and revenue still counts the refunded part. Redeliver the event from Paystack, or note it in Admin → Payments:\n\n` +
-            missed.map(m => `${m.reference}  scan ${m.scanId}  Paystack refunded ${m.paystack}, recorded ${m.recorded}, paid ${m.paid} ${m.currency || ''}`).join('\n') + '\n\n' : '') +
-          `Each item is reported once a week. Nothing was changed automatically.`)
+          (missed.length ? `Partial refunds Paystack has PROCESSED that this app had not recorded (the refund.processed webhook was lost or failed). Where Paystack gave a refund id the sweep has now recorded the amount itself (dashboard revenue is net of it); the payment stays SUCCESS because it is not fully refunded:\n\n` +
+            missed.map(m => `${m.reference}  scan ${m.scanId}  Paystack refunded ${m.paystack}, recorded ${m.recorded}${m.autoRecorded ? ' (by this sweep)' : ''}, paid ${m.paid} ${m.currency || ''}`).join('\n') + '\n\n' : '') +
+          `Each item is reported once a week. Payments are never reversed or changed by this sweep.`)
       }
     }
   } catch (err) {

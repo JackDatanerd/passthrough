@@ -623,6 +623,34 @@ async function clearRefundFailed(supabase, payment) {
   } catch (err) { console.error('refund failure not cleared:', err && err.message); return false }
 }
 
+// Webhooks round 28 (G1): sweepStalledRefunds records a processed refund whose webhook never arrived as payment_refunds.event_key
+// `sweep:<refund id>`. When the real event does arrive, the sweep's row for the same amount is replaced by it (never counted twice);
+// and a total that still contains a sweep row is confirmed against Paystack's list before it can reverse a sale. Both best-effort.
+async function absorbSweepRefund(supabase, payment, amount, eventId) {
+  try {
+    if (!payment || !payment.id || !eventId || !Number.isFinite(amount) || amount <= 0) return false
+    // A re-run of an event that is ALREADY recorded (Replay, re-drive) has nothing to absorb: its sweep twin, if any, was replaced the first time,
+    // and a remaining sweep row of the same amount belongs to a different refund.
+    const { data: ev } = await supabase.from('webhook_events').select('event_key').eq('id', eventId).maybeSingle()
+    if (!ev || !ev.event_key) return false
+    const { data: have } = await supabase.from('payment_refunds').select('id').eq('payment_id', payment.id).eq('event_key', ev.event_key).limit(1)
+    if (have && have.length) return false
+    const { data, error } = await supabase.from('payment_refunds').select('id').eq('payment_id', payment.id)
+      .like('event_key', 'sweep:%').eq('amount_cents', Math.round(amount)).limit(1)
+    if (error || !data || !data.length) return false
+    const { error: delErr } = await supabase.from('payment_refunds').delete().eq('id', data[0].id)
+    return !delErr
+  } catch (_) { return false }
+}
+// -> the summed amount of this payment's sweep-recorded refunds (0 when none / unreadable).
+async function sweepRefundSum(supabase, payment) {
+  try {
+    const { data, error } = await supabase.from('payment_refunds').select('amount_cents').eq('payment_id', payment.id).like('event_key', 'sweep:%')
+    if (error || !data) return 0
+    return data.reduce((n, r) => n + (Number(r.amount_cents) || 0), 0)
+  } catch (_) { return 0 }
+}
+
 async function processRefund(c, supabase, event, eventId, { payloadMissing = false } = {}) {
   let payment = await fulfillment.findPaymentForEvent(supabase, event)
   const refundRef = event.data?.refund_reference || null
@@ -650,6 +678,9 @@ async function processRefund(c, supabase, event, eventId, { payloadMissing = fal
 
   if (event.event === 'refund.failed') {
     await markRefundFailed(supabase, payment)
+    // Webhooks round 28 (B2): a queued refund holds refund_claimed_at for ~15 minutes; the alert below tells the owner to refund again, which
+    // that hold answered CLAIM_LOST. The refund has failed, so nothing is in flight any more.
+    if (payment && payment.id) { try { await require('../services/refund.service').releaseRefundClaim(supabase, payment.id) } catch (_) { /* best effort */ } }
     alert(c, 'Paystack refund.failed',
       `payment reference: ${payment?.paystack_ref || '(could not resolve)'}\nscanId: ${payment?.scan_id || '(could not resolve)'}\n\n` +
       `The refund did not go through (Paystack returns the money to your balance). The payment was NOT changed.\n\n` +
@@ -706,6 +737,7 @@ async function processRefund(c, supabase, event, eventId, { payloadMissing = fal
   const refunded = Number(event.data?.amount)
   const ambiguous = refundIsAmbiguous(event)
   let total
+  if (eventId && !ambiguous && !payloadMissing) await absorbSweepRefund(supabase, payment, refunded, eventId)
   if (eventId) {
     // ROUND-4 (B1/B3): the RPC only RECORDS this event's amount in payment_refunds (it no longer
     // flips the inbox row to PROCESSED — handlePaystack does that once the work below is done)
@@ -743,10 +775,13 @@ async function processRefund(c, supabase, event, eventId, { payloadMissing = fal
   // ROUND-7 (B4): an event that states no amount cannot be added to a local total either, so Paystack's list
   // is likewise the only authority for it (it used to be alerted as "partial/unknown" even when the list
   // proved the sale fully refunded, and a failed lookup closed it PROCESSED).
+  const sweepSum = eventId ? await sweepRefundSum(supabase, payment) : 0
   const remoteIsOnlyAuthority = ambiguous || !eventId || payloadMissing || !Number.isFinite(refunded)
-  if (payment.amount_cents > 0 && total < payment.amount_cents) {
-    const remote = await paystackRefundTotal(c.env, payment, { strict: remoteIsOnlyAuthority })
-    if (remote != null) total = Math.max(total, remote)
+  if (payment.amount_cents > 0 && (total < payment.amount_cents || sweepSum > 0)) {
+    // A total containing a sweep-recorded row is trusted only once Paystack agrees (strict: a failed lookup answers 500 and is retried).
+    // Paystack's list can lag a just-processed refund, so what the webhooks themselves recorded (total minus the sweep rows) is a floor.
+    const remote = await paystackRefundTotal(c.env, payment, { strict: remoteIsOnlyAuthority || (sweepSum > 0 && total >= payment.amount_cents) })
+    if (remote != null) total = sweepSum > 0 ? Math.max(remote, total - sweepSum) : Math.max(total, remote)
   }
   const full = payment.amount_cents > 0 && total >= payment.amount_cents
   if (!full) {
@@ -1495,7 +1530,7 @@ async function loadDisputedPayment(c, supabase) {
   const reference = c.req.param('reference')
   const cols = 'id, paystack_ref, status, user_id, scan_id, fix_tier, amount_cents, currency, paid_at, created_at, disputed_at, dispute_id'
   const load = fields => supabase.from('payments').select(fields).eq('paystack_ref', reference).maybeSingle()
-  let { data: payment, error } = await load(`${cols}, dispute_evidence_id, dispute_answered_at`)
+  let { data: payment, error } = await load(`${cols}, dispute_evidence_id, dispute_answered_at, dispute_answer`)
   if (error && isColumnMissing(error)) ({ data: payment, error } = await load(`${cols}, dispute_evidence_id`))   // 0097 not applied yet
   if (error && isColumnMissing(error)) ({ data: payment, error } = await load(cols))   // 0090 not applied yet
   if (error) throw error
@@ -1545,6 +1580,8 @@ function disputedAmountFor(payment, claimed) {
   return Number.isFinite(n) && n > 0 ? Math.min(Math.round(n), payment.amount_cents) : payment.amount_cents
 }
 
+// Webhooks round 28 (G2): the UI hides Contest / Accept once a dispute is answered; the API now refuses too instead of leaving it to Paystack.
+const alreadyAnswered = (c, payment) => c.json({ success: false, message: `This dispute was already answered (${payment.dispute_answer || 'answered'}) - wait for Paystack's outcome (a won dispute returns to SUCCESS, a lost one is refunded and reversed automatically).` }, 409)
 const NOT_FOUND_ID = { success: false, message: 'Paystack\'s id for this dispute is not known yet and was not found in Paystack\'s dispute list. Use the Paystack dashboard for this one.' }
 const paystackFailure = (c, err) => err && err.paystackRejected
   ? c.json({ success: false, message: `Paystack refused it: ${err.message}` }, 422)
@@ -1558,6 +1595,7 @@ async function acceptPaymentDispute(c) {
   const note = typeof body?.note === 'string' ? body.note.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 200) : ''
   const { payment, fail } = await loadDisputedPayment(c, supabase)
   if (fail) return fail
+  if (payment.dispute_answered_at) return alreadyAnswered(c, payment)
   let disputeId, refundAmount
   try {
     const r = await resolveDispute(c.env, supabase, payment, { withAmount: true })
@@ -1662,6 +1700,7 @@ async function contestPaymentDispute(c) {
   const note = typeof body?.note === 'string' ? body.note.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 200) : ''
   const { payment, fail } = await loadDisputedPayment(c, supabase)
   if (fail) return fail
+  if (payment.dispute_answered_at) return alreadyAnswered(c, payment)
   if (!payment.scan_id) return c.json({ success: false, message: 'This payment has no scan, so there is no delivered work to prove — accept the dispute instead.' }, 409)
   const { data: scan, error: scanErr } = await supabase.from('scans')
     .select('id, status, fix_payment_id, fix_tier, fix_retry_count, resume_ats_path, verification_code, verification_status').eq('id', payment.scan_id).maybeSingle()
@@ -2036,7 +2075,7 @@ async function sweepDisputes(env, ctx, supabase = getSupabase(env), { now = Date
 
     const c = { env, executionCtx: ctx }
     for (const d of disputes) {
-      if (result.actioned.length >= MAX_DISPUTES_PER_RUN) break
+      if (result.actioned.length + result.failed.length >= MAX_DISPUTES_PER_RUN) break   // round 28: failures spend a slot too (a handler that keeps failing used to be run for every listed dispute, every hour)
       const known = statusOf.get(d.transaction.reference)
       if (!known) continue                                   // not one of this app's payments
       const st = known.status

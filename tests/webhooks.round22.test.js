@@ -73,6 +73,6 @@ describe('B2: sweepStalledRefunds and ambiguous (unrecorded-by-design) partial r
       { id: 'w3', provider: 'paystack', event_key: 'refund.processed:ref1:1000', event_type: 'refund.processed', reference: 'ref1', status: 'FAILED', payload: { data: { amount: 1000 } } }] })
     const a = await r.run()
     expect(a.missedPartial).toHaveLength(1)
-    expect(a.missedPartial[0]).toMatchObject({ reference: 'ref1', paystack: 1000, recorded: 0 })
+    expect(a.missedPartial[0]).toMatchObject({ reference: 'ref1', paystack: 1000 })   // round 28: recorded by the sweep itself when Paystack gave a refund id
   })
 })
