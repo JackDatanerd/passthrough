@@ -183,9 +183,16 @@ function yearsFromText(text, now = new Date()) {
   const sectioned = lines.some(l => EDU_HEADING.test(l) || OTHER_HEADING.test(l) || WORK_HEADING.test(l) || CAPS_HEADING(l))
   const spans = []
   let inEdu = false
-  for (const line of lines) {
+  // An all-caps line is a heading only when what follows it is a job entry (a title word and a date range): an all-caps subject, honours
+  // line or school name inside an education entry ("STATISTICS", "FIRST CLASS HONOURS") is followed by its dates, not by a job.
+  const nextEntryIsJob = i => {
+    for (let k = i + 1; k < lines.length; k++) if (lines[k].trim()) return TITLE_WORDS.test(lines[k]) && spansIn(lines[k], now).length > 0
+    return false
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
     if (EDU_HEADING.test(line)) { inEdu = true; continue }
-    if (OTHER_HEADING.test(line) || WORK_HEADING.test(line) || CAPS_HEADING(line)) { inEdu = false; continue }
+    if (OTHER_HEADING.test(line) || WORK_HEADING.test(line) || (CAPS_HEADING(line) && nextEntryIsJob(i))) { inEdu = false; continue }
     if (inEdu || DEGREE_WORDS.test(line) || (!sectioned && SCHOOL_WORDS.test(line) && !TITLE_WORDS.test(line))) continue
     spans.push(...spansIn(line, now))
   }

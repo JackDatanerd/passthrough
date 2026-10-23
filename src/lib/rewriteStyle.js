@@ -71,7 +71,21 @@ function findRewriteStyleProblems(original, rewritten) {
 }
 
 // ── provenance ──────────────────────────────────────────────────────────────────────────────────────────────────
-const figuresIn = s => new Set((String(s || '').match(/\d[\d,]*(?:\.\d+)?/g) || []).map(x => x.replace(/,/g, '')))
+// A figure may be written two ways: "40k" and "40,000", "1.2m" and "1.2 million" are the same number. Each figure is a group of its spellings;
+// a figure in a rewritten bullet is stray only when NONE of its spellings is in the input bullets.
+const SCALE = { k: 1e3, thousand: 1e3, m: 1e6, mm: 1e6, million: 1e6, b: 1e9, bn: 1e9, billion: 1e9 }
+const FIGURE = /\d[\d,]*(?:\.\d+)?\s*(?:(thousand|million|billion|bn|mm|k|m|b)\b)?/gi
+function figureGroups(s) {
+  const out = []
+  for (const m of String(s || '').matchAll(FIGURE)) {
+    const raw = (m[0].match(/\d[\d,]*(?:\.\d+)?/)[0]).replace(/,/g, '')
+    const group = new Set([raw])
+    if (m[1]) group.add(String(Math.round(parseFloat(raw) * SCALE[m[1].toLowerCase()])))
+    out.push(group)
+  }
+  return out
+}
+const figuresIn = s => new Set(figureGroups(s).flatMap(g => [...g]))
 
 // `input` is the resume the model was GIVEN (the indices in `provenance[].from` index its bullets); `rewritten` is what
 // it returned. A figure in a bullet the model wrote must be in the input bullets it says it was built from. An entry
@@ -89,7 +103,7 @@ function findProvenanceProblems(input, rewritten, provenance) {
     const sources = p.from.filter(Number.isInteger).map(i => asList(src.bullets)[i]).filter(t => typeof t === 'string')
     if (!sources.length) continue
     const allowed = figuresIn(sources.join(' '))
-    const stray = [...figuresIn(bullet)].filter(n => !allowed.has(n))
+    const stray = figureGroups(bullet).filter(g => ![...g].some(n => allowed.has(n))).map(g => [...g][0]).filter((n, i, a) => a.indexOf(n) === i)
     const key = `${p.job}:${p.bullet}`
     if (stray.length && !seen.has(key)) {
       seen.add(key)

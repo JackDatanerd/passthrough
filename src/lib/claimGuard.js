@@ -161,20 +161,29 @@ function unknownTerms(text, have) {
 // it (example (b): do NOT add "high-volume"), and nothing checked it. A phrase below is judged by its words: it is fine only when
 // every content word of it is one the person's own text for that role already says (so "stakeholders" they wrote allows "key
 // stakeholders", but never "senior stakeholders"). Deliberately a list of PHRASES, never single generic words.
-const SCOPE_PHRASES = new RegExp(`\\b(?:` + [
-  `high[- ]volume`, `high[- ]stakes`, `high[- ]pressure`, `large[- ]scale`, `mission[- ]critical`, `business[- ]critical`,
-  `(?:enterprise|company|organi[sz]ation|nation|country|region|worldwide|firm)[- ]wide`, `enterprise[- ](?:level|grade)`,
-  `global(?:ly)?`, `worldwide`, `international(?:ly)?`, `multi[- ]?(?:regional|national|site|country|market|million|billion)`,
-  `across\\s+(?:multiple|several|many|various|numerous|\\d+|all|the)\\s+(?:regions?|countries|markets|sites|offices|locations|business units|departments|teams|functions|products|branches|clients)`,
-  `(?:multiple|several|many)\\s+(?:regions|countries|markets|sites|offices|locations|business units|departments|branches)`,
-  `(?:senior|executive)\\s+(?:leadership|management|stakeholders?|executives?|leaders?|staff|team)`, `c[- ]?suite`, `c[- ]?level`, `board(?:\\s+of\\s+directors)?`,
-  `cross[- ]functional(?:ly)?`, `fast[- ]paced`, `(?:highly\\s+)?regulated`, `complex`, `world[- ]class`, `best[- ]in[- ]class`, `cutting[- ]edge`, `state[- ]of[- ]the[- ]art`,
-  `ensur(?:e|ed|es|ing)\\s+(?:compliance|accuracy|quality|consistency|alignment|data integrity)`, `compliance`,
-  `driv(?:e|es|ing)\\s+(?:\\w+\\s+){0,2}(?:growth|satisfaction|engagement|adoption|efficiency|revenue|retention|results|performance)`, `drove\\s+(?:\\w+\\s+){0,2}(?:growth|satisfaction|engagement|adoption|efficiency|revenue|retention|results|performance)`,
-  `(?:team|tech|technical|project|squad|shift|section|desk|floor|product)\\s+(?:lead|leader|captain)`,
-  `(?:as|became|promoted\\s+to|served\\s+as)\\s+(?:the\\s+|a\\s+|an\\s+)?(?:lead|head|manager|supervisor)`,
-  `mentor(?:ed|ing|s)?`, `coach(?:ed|ing)?`,
-].join('|') + `)\\b`, 'gi')
+// Three families. `core` is what a person CLAIMS about their own past work - a scale, an audience, a role - and is what a cover letter is
+// held to. `setting` (adjectives and outcomes: "complex", "fast-paced", "global", "cutting-edge", "ensuring compliance") is also how a
+// letter praises an employer or describes what the person likes, so only the resume is judged on it. `mentor` is soft in a letter.
+const SCOPE_FAMILIES = {
+  core: [
+    `high[- ]volume`, `(?:enterprise|company|organi[sz]ation|nation|country|region|firm)[- ]wide`, `enterprise[- ](?:level|grade)`,
+    `multi[- ]?(?:regional|national|site|country|market|million|billion)`,
+    `across\\s+(?:multiple|several|many|various|numerous|\\d+|all|the)\\s+(?:regions?|countries|markets|sites|offices|locations|business units|departments|teams|functions|products|branches|clients)`,
+    `(?:multiple|several|many)\\s+(?:regions|countries|markets|sites|offices|locations|business units|departments|branches)`,
+    `(?:senior|executive)\\s+(?:leadership|management|stakeholders?|executives?|leaders?|staff|team)`, `c[- ]?suite`, `c[- ]?level`, `board(?:\\s+of\\s+directors)?`,
+    `(?:team|tech|technical|project|squad|shift|section|desk|floor|product)\\s+(?:lead|leader|captain)`,
+    `(?:as|became|promoted\\s+to|served\\s+as)\\s+(?:the\\s+|a\\s+|an\\s+)?(?:lead|head|manager|supervisor)`,
+  ],
+  setting: [
+    `high[- ]stakes`, `high[- ]pressure`, `large[- ]scale`, `mission[- ]critical`, `business[- ]critical`, `global(?:ly)?`, `worldwide`, `international(?:ly)?`,
+    `cross[- ]functional(?:ly)?`, `fast[- ]paced`, `(?:highly\\s+)?regulated`, `complex`, `world[- ]class`, `best[- ]in[- ]class`, `cutting[- ]edge`, `state[- ]of[- ]the[- ]art`,
+    `ensur(?:e|ed|es|ing)\\s+(?:compliance|accuracy|quality|consistency|alignment|data integrity)`, `compliance`,
+    `driv(?:e|es|ing)\\s+(?:\\w+\\s+){0,2}(?:growth|satisfaction|engagement|adoption|efficiency|revenue|retention|results|performance)`, `drove\\s+(?:\\w+\\s+){0,2}(?:growth|satisfaction|engagement|adoption|efficiency|revenue|retention|results|performance)`,
+  ],
+  mentor: [`mentor(?:ed|ing|s)?`, `coach(?:ed|ing)?`],
+}
+const scopeRegexes = {}
+const scopeRegex = families => scopeRegexes[families.join()] ||= new RegExp(`\\b(?:` + families.flatMap(f => SCOPE_FAMILIES[f]).join('|') + `)\\b`, 'gi')
 // Words that carry no claim of their own inside a matched phrase.
 const SCOPE_STOP = new Set(['across', 'multiple', 'several', 'many', 'various', 'numerous', 'all', 'the', 'a', 'an', 'of', 'as', 'to', 'key', 'ensuring', 'ensure', 'ensured', 'ensures', 'driving', 'drive', 'drives', 'drove', 'became', 'served', 'promoted', 'highly', 'directors'])
 // The shared foldWord stem (5 letters from 7) makes "complex" and "compliance" the same word; a scope word is compared on its first six letters.
@@ -184,10 +193,10 @@ const scopeStem = w => {
   for (const suf of ['ing', 'ed', 'es', 's']) if (b.length - suf.length >= 4 && b.endsWith(suf) && !b.endsWith('ss')) { b = b.slice(0, -suf.length); break }
   return b.slice(0, 6)
 }
-function scopeProblems(text, jobSource) {
+function scopeProblems(text, jobSource, families = ['core', 'setting', 'mentor']) {
   const have = new Set(wordsOf(jobSource).map(scopeStem))
   const out = []
-  for (const m of String(text || '').matchAll(SCOPE_PHRASES)) {
+  for (const m of String(text || '').matchAll(scopeRegex(families))) {
     const words = wordsOf(m[0]).filter(w => !SCOPE_STOP.has(w))
     if (!words.length) continue
     // "regulated" / "regulations", "mentor" / "mentored": the stem decides, as everywhere else.

@@ -18,8 +18,10 @@ describe('the cover letter is held to the same scope rule as the resume', () => 
     'At Acme I mentored new analysts as team lead.',
   ])('rejects invented scope: %s', b => expect(run(b).hard.join(' ')).toMatch(/setting, scale or role/))
   it('only advises on a phrase the posting itself uses, and never judges a plan for the future', () => {
-    const echo = run('I handled escalations in a fast-paced, regulated setting like your team.')
-    expect(echo.hard).toEqual([]); expect(echo.soft.join(' ')).toMatch(/fast-paced/)
+    // Adjectives like fast-paced / regulated are not judged in a letter (round 4); a scale or audience the posting uses is advice only.
+    expect(run('I handled escalations in a fast-paced, regulated setting like your team.')).toEqual({ hard: [], soft: [] })
+    const echo = run('I reported to the board every month on billing escalations.')
+    expect(echo.hard.join(' ')).toMatch(/setting, scale or role/)
     expect(run('In my first months I would mentor your analysts and help the cross-functional team.')).toEqual({ hard: [], soft: [] })
   })
 })

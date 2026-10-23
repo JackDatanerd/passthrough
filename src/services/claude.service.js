@@ -1394,13 +1394,17 @@ function checkLetter(text, { resumeData, jdText, details, allowedNumbers, facts,
   // resume, the posting or the applicant's details - is hard. A sentence about the future ("I would mentor...", "I can bring...") claims
   // nothing about the past and is not judged.
   const pastClaims = text.split(/(?<=[.!?])\s+/).filter(sn => !/\b(?:would|will|can|could|plan to|hope to|look forward|ready to|eager to|excited to)\b/i.test(sn)).join(' ')
-  const scopeAll = claimGuard.scopeProblems(pastClaims, source)
-  if (scopeAll.length) {
-    const nowhere = new Set(claimGuard.scopeProblems(pastClaims, corpus))
-    const hardScope = scopeAll.filter(p => nowhere.has(p)), softScope = scopeAll.filter(p => !nowhere.has(p))
+  // A letter is judged only on what a person claims about their own past (scale, audience, role). Adjectives like "complex", "fast-paced",
+  // "global" or "cutting-edge" are how a letter praises the employer or says what the person enjoys, so they are not judged here.
+  const scopeCore = claimGuard.scopeProblems(pastClaims, source, ['core'])
+  if (scopeCore.length) {
+    const nowhere = new Set(claimGuard.scopeProblems(pastClaims, corpus, ['core']))
+    const hardScope = scopeCore.filter(p => nowhere.has(p)), softScope = scopeCore.filter(p => !nowhere.has(p))
     if (hardScope.length) hard.push(`it adds a setting, scale or role nothing in the resume, the posting or the details supports (${hardScope.slice(0, 4).join(', ')}) - keep the scope the person gave`)
     if (softScope.length) soft.push(`it uses ${softScope.slice(0, 3).join(', ')}, which the resume does not show - say it about the employer's team, not as something the person did`)
   }
+  const scopeMentor = claimGuard.scopeProblems(pastClaims, source, ['mentor'])
+  if (scopeMentor.length) soft.push(`it says the person ${scopeMentor.slice(0, 2).join(' / ')}, which the resume does not show - keep to what the resume says they did`)
   // A letter NEVER names a weakness (product decision): it majors on strengths. Any statement of what the candidate lacks,
   // has not done or is new to is rejected, whatever the scorer found missing - a missing requirement is bridged with the
   // closest real strength (see the prompt), never confessed.
