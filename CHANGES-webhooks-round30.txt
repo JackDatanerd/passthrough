@@ -1,0 +1,7 @@
+Webhooks round 30 (section 8, independent pass - no migration)
+ B1 sweepDisputes: a resolved/archived dispute with an unrecognised resolution is marked answered and the owner paged (weekly per dispute); it used to be skipped silently.
+ B2 charge.dispute.remind for a dispute the payment does not track no longer overwrites the tracked dispute_id / dispute_due_at.
+ G1 self-test warns for an sk_test_ Paystack key on a public https URL.
+ X1 (Scan/ATS, traced) ats.service.js stripDateNoise: the "4G / 5G" regex lacked the `u` flag, so \p{L}/\p{N} were literal ("Scaled to 10GB" -> "Scaled to  B") and `npm run lint` failed (CI red).
+ Tests: tests/webhooks.round30.test.js; webhooks.round18 fixture now uses a live-style key.
+ Known unrelated failure on a clean tree: tests/scan.ats.round13.test.js (frontend source no longer contains 'rescanVersion' after the scan-journey commit).

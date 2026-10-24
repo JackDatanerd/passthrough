@@ -970,7 +970,11 @@ async function processDispute(c, supabase, event) {
   if (event.event === 'charge.dispute.create' && !marked && payment && payment.status === 'DISPUTED' && payment.dispute_id && d.id != null
       && String(d.id).trim() !== '' && String(d.id).trim() !== String(payment.dispute_id))
     await resetDisputeAnswer(supabase, payment)
-  if ((event.event === 'charge.dispute.create' || event.event === 'charge.dispute.remind') && payment && (marked || payment.status === 'DISPUTED'))
+  // Round 30: a reminder for a dispute the payment does not track (an older one, while a newer one is open) must not overwrite the tracked
+  // deadline / id - it used to flip the payment back to the older dispute.
+  const staleRemind = event.event === 'charge.dispute.remind' && payment && payment.dispute_id && d.id != null
+    && String(d.id).trim() !== '' && String(d.id).trim() !== String(payment.dispute_id)
+  if ((event.event === 'charge.dispute.create' || event.event === 'charge.dispute.remind') && payment && (marked || payment.status === 'DISPUTED') && !staleRemind)
     { await recordDisputeDeadline(supabase, payment, d); await recordDisputeId(supabase, payment, d) }
 
   // ROUND-2 AUDIT (feature gap): dispute.resolve used to say only "no state
@@ -2095,7 +2099,18 @@ async function sweepDisputes(env, ctx, supabase = getSupabase(env), { now = Date
       // an unrecognised resolution, a declined dispute on a payment that is not DISPUTED, and a PARTIAL accepted dispute
       // (left for a human, like a partial refund).
       if (type === 'charge.dispute.resolve') {
-        if (!/accept|declin/.test(resolution)) continue
+        if (!/accept|declin/.test(resolution)) {
+          // Round 30: a resolved / archived dispute with no resolution this app recognises used to be skipped in silence, leaving the payment
+          // DISPUTED. Mark it answered (it is past our turn) and page the owner once a week per dispute.
+          if (st === 'DISPUTED') {
+            await markDisputeAnswered(supabase, { paystack_ref: d.transaction.reference }, 'resolved')
+            if (await alertAllowed(env, `webhook-alert-cooldown:dispute-unrecognised:${d.id ?? d.transaction.reference}`, 7 * 24 * 3600))
+              alert(c, 'Dispute closed on Paystack with an unrecognised outcome',
+                `reference: ${d.transaction.reference}\ndispute: ${d.id ?? '?'}\nstatus: ${d.status || '?'}\nresolution: ${d.resolution || '(none)'}\n\n` +
+                `Paystack reports this dispute as closed, but not as accepted or declined, so the payment was left DISPUTED. Check the outcome in Paystack, then use Admin → Payments → Reverse (lost) or Clear dispute (won). Emailed once a week per dispute.`, `${d.transaction.reference}:dispute-unrecognised`)
+          }
+          continue
+        }
         // Webhooks round 26 (B1): a DECLINED resolution for a dispute the payment no longer tracks (a newer one is open) changes nothing in
         // processDispute (round 25, B3), so the sweep must not pick it again every hour - each run re-emailed the owner until the newer dispute
         // resolved. Round 27 (B1): only declined. An ACCEPTED resolution is money returned to the buyer whichever dispute it was, and
@@ -2461,6 +2476,8 @@ async function buildSelfTest(env, supabase, { origin = '' } = {}) {
     const ok = cryptoLib.timingSafeEqual(sig, await cryptoLib.hmacSha512Hex(key, sample)) && rejections.looksLikePaystackSignature(sig)
     const mode = /^sk_live_/.test(key) ? 'live' : /^sk_test_/.test(key) ? 'test' : null
     if (!ok) return add('paystack-secret', 'Paystack signing secret', 'fail', 'A sample could not be signed and verified with this key.')
+    if (mode === 'test' && /^https:\/\//.test(base) && !/^https:\/\/(localhost|127\.0\.0\.1)/.test(base))
+      return add('paystack-secret', 'Paystack signing secret', 'warn', 'A TEST-mode secret key (sk_test_) is set on a public https URL. Fine for staging; on the live site real payments will not go through and live webhooks will fail their signature.')
     if (!mode) return add('paystack-secret', 'Paystack signing secret', 'warn', 'The key does not start with sk_live_ / sk_test_ — check it is the secret key, not the public one.')
     add('paystack-secret', 'Paystack signing secret', 'ok', `A ${mode}-mode secret key is set and signs / verifies a sample. Paystack signs webhooks with this same key.`)
   })

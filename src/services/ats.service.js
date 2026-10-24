@@ -932,7 +932,7 @@ const CONTACT_LINE_RE = /@|linkedin\.|github\.|\+?\d[\d\s().-]{8,}/i
 function stripDateNoise(line) {
   return line
     .replace(/(?<![\p{L}\p{N}])24\s*[x\u00d7/-]\s*7(?:\s*[x\u00d7/-]\s*365)?(?![\p{L}\p{N}])/giu, ' ')   // "24/7" is a schedule, not two figures
-    .replace(/(?<![\p{L}\p{N}.])\d{1,2}G(?![\p{L}\p{N}])/g, ' ')                                         // 4G / 5G
+    .replace(/(?<![\p{L}\p{N}.])\d{1,2}G(?![\p{L}\p{N}])/gu, ' ')                                         // 4G / 5G
     .replace(/\b\d{1,2}\s*[\/.\-]\s*\d{1,2}\s*[\/.\-]\s*(?:\d{4}|\d{2})\b/g, ' ')
     .replace(/\b\d{1,2}\s*[\/.\-]\s*(?:19|20)\d{2}\b/g, ' ')
     .replace(/\b(?:19|20)\d{2}\s*[\/\-\u2013\u2014]\s*\d{1,2}\b(?!\s*(?:%|x\b|k\b|m\b|million|billion|thousand|\s[A-Za-z]{3,}))/g, ' ')

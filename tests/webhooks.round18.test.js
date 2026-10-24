@@ -159,7 +159,7 @@ describe('G1: open disputes near their auto-accept deadline page the owner', () 
 // ── G2 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 describe('G2: the webhook setup self-test', () => {
   const GOOD_RESEND = 'whsec_' + btoa('0123456789abcdef0123456789abcdef')
-  const goodEnv = { PAYSTACK_SECRET_KEY: 'sk_test_abc', RESEND_WEBHOOK_SECRET: GOOD_RESEND }
+  const goodEnv = { PAYSTACK_SECRET_KEY: 'sk_live_abc', RESEND_WEBHOOK_SECRET: GOOD_RESEND }
   const newWorld = () => { const w = createWorld({ webhook_events: [{ id: 'e', provider: 'paystack', event_key: 'k', event_type: 'charge.success', reference: 'r', status: 'PROCESSED', attempts: 1, received_at: hoursAgo(1) }], payments: [], payment_refunds: [], system_state: [] }); w.unique.system_state = [['key']]; return w }
   const rig = (paystack = {}) => { const w = newWorld(); return { w, ...loadController(w, { 'services/paystack.service.js': { listDisputes: async () => ({ data: [] }), ...paystack } }) } }
   const by = (out, id) => out.checks.find(c => c.id === id)
@@ -168,7 +168,7 @@ describe('G2: the webhook setup self-test', () => {
     const { w, mod } = rig()
     const out = await mod.buildSelfTest(goodEnv, w.db, { origin: 'https://api.passthrough.dev/' })
     expect(out.checks.filter(c => c.status === 'fail')).toEqual([])
-    expect(by(out, 'paystack-secret').status).toBe('ok'); expect(by(out, 'paystack-secret').detail).toMatch(/test-mode/)
+    expect(by(out, 'paystack-secret').status).toBe('ok'); expect(by(out, 'paystack-secret').detail).toMatch(/live-mode/)
     expect(by(out, 'resend-secret').status).toBe('ok'); expect(by(out, 'paystack-api').status).toBe('ok')
     expect(out.ok).toBe(true)
     expect(out.endpoints).toEqual({ paystack: 'https://api.passthrough.dev/api/webhooks/paystack', resend: 'https://api.passthrough.dev/api/webhooks/resend' })
