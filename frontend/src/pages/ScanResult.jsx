@@ -1162,7 +1162,7 @@ export default function ScanResult() {
                     <Spinner size="sm" />
                     <p className="text-sm text-blue-900">
                       Payment received — waiting for the bank to confirm it. This can take a minute or two
-                      (mobile money especially). This page updates by itself; you don't need to pay again.
+                      (some banks ask you to approve the payment first). This page updates by itself; you don't need to pay again.
                     </p>
                   </div>
                 )}

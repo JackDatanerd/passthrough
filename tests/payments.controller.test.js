@@ -1809,6 +1809,13 @@ describe('round 4 — verifyPayment tells a definite failure from a lookup probl
     expect(res.status).toBe(202)
     expect(res.body).toMatchObject({ pending: true, data: { scanId: 's1' } })
   })
+
+  it('the still-processing message talks about the bank, not about one payment method', async () => {
+    t = setup({ paystack: { data: { status: 'pending' } } })
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.body.message).toMatch(/especially if your bank asks you to approve it/)
+    expect(res.body.message).not.toMatch(/mobile money/i)
+  })
 })
 
 describe('round 10 — verify on an already-settled payment', () => {

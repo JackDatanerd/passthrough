@@ -662,8 +662,8 @@ async function verifyPayment(c2) {
   // AUDIT FIX (bug): Paystack's verify endpoint can report a non-terminal
   // status (ongoing/pending/processing/queued — paystackService.isPendingStatus)
   // for a transaction that hasn't failed, just hasn't finished confirming yet —
-  // most commonly mobile-money "pay with transfer"/OTP-approval channels,
-  // which are common for this app's customer base. Collapsing that into the
+  // most commonly a bank-approval step (3-D Secure / OTP) or a "pay with transfer"
+  // channel. Collapsing that into the
   // same "Payment verification failed" the code below returns for a genuine
   // failure told a customer who may well have already paid that they hadn't,
   // with no owner visibility either (the hourly pending-sweep does eventually
@@ -672,7 +672,7 @@ async function verifyPayment(c2) {
   // below so a still-processing transaction never reaches it.
   if (paystackService.isPendingStatus(pResult.data?.status))
     return c2.json({ success: false, pending: true, data: { scanId: paymentRow.scan_id },
-      message: 'Your payment is still processing — this can take a minute or two, especially for mobile money. Check back shortly.'
+      message: 'Your payment is still processing — this can take a minute or two, especially if your bank asks you to approve it. Check back shortly.'
     }, 202)
 
   // AUDIT FIX (Payments & Pricing round 4, gap G2): Paystack's failed / abandoned / reversed are

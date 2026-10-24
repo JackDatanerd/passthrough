@@ -211,6 +211,13 @@ describe('ScanResult — what verify says after the popup succeeds (round 7, G1)
     expect(screen.queryByText('Dismiss')).toBeNull()
   })
 
+  it('the waiting note mentions a bank approval, not mobile money', async () => {
+    await payInPopup(async () => ({ data: { success: false, pending: true } }))
+    const note = await screen.findByText(/waiting for the bank to confirm/i)
+    expect(note.textContent).toMatch(/some banks ask you to approve the payment first/)
+    expect(note.textContent).not.toMatch(/mobile money/i)
+  })
+
   it('a network failure on verify is still swallowed (the webhook confirms independently)', async () => {
     await payInPopup(async () => { throw new Error('Network Error') })
     expect(await screen.findByText(/waiting for the bank to confirm/i)).toBeInTheDocument()

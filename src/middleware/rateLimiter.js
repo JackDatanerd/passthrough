@@ -576,9 +576,9 @@ const authVerify = makeLimiter({
 
 // AUDIT FIX (Payments & Pricing pass 1, bug — B1): this and paymentCancel
 // below sit behind `auth`, so the user is always known, yet both were keyed by
-// IP. The customer base is mobile-money heavy — many unrelated buyers share
-// one carrier-grade-NAT address — so a few people checking out at the same
-// time on one carrier were ALL answered "Payment in progress. Wait." by a
+// IP. Many unrelated buyers share one address (mobile carriers' carrier-grade
+// NAT, offices, campuses) — so a few people checking out at the same
+// time behind one of them were ALL answered "Payment in progress. Wait." by a
 // 3-per-minute budget that belongs to one person. Per ACCOUNT now (same
 // keyBy as dataExport); the IP is only the fallback when no user is set.
 const payment = makeLimiter({
