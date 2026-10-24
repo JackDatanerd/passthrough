@@ -3014,6 +3014,17 @@ async function scoreLikeScan(env, text, jdText, logLabel) {
   return { ...rule, score: finalScore, ruleScore: rule.score, aiMissingKeywords, aiMissingMust, aiMetMust, aiPartialKeywords, aiBlended }
 }
 
+// A score with no AI half is held under the credential line (blendAiScore), so one transient model outage during a paid
+// fix made a resume that really clears the bar read 79 or less: it lost to (or tied with) a real score, burned a retry, and
+// could end with no credential and a consolation credit. The same single second try generateBadge makes is made here.
+async function scoreLikeScanWithRetry(env, text, jdText, logLabel) {
+  const first = await scoreLikeScan(env, text, jdText, logLabel)
+  if (first.aiBlended) return first
+  await new Promise(r => setTimeout(r, 3000))
+  const again = await scoreLikeScan(env, text, jdText, `${logLabel} (second try)`)
+  return again.aiBlended ? again : first
+}
+
 // The breakdown persisted as scans.fix_ats_report for a DELIVERED file (same shape as
 // full_ats_report, so buildAtsDetail renders both).
 function deliveredReport(scored) {
@@ -3227,6 +3238,8 @@ async function generateFixRun(env, supabase, scanId, leaseToken = null) {
     // regressing a score the user already has. A retry should only ever
     // replace the delivered resume with something strictly better.
     let bestScore = isRetry && typeof scan.fixAtsScore === 'number' ? scan.fixAtsScore : -1
+    // Whether bestScore is a real blended number (a delivered or baseline score with no AI half is only a ceiling, not a measurement).
+    let bestAiBlended = isRetry && typeof scan.fixAtsScore === 'number'
     let bestData = resumeData
     let bestDocxBytes = null
     let bestQuantificationPrompts = isRetry ? (scan.quantificationPrompts || []) : []
@@ -3254,8 +3267,9 @@ async function generateFixRun(env, supabase, scanId, leaseToken = null) {
     if (!isRetry) {
       try {
         const baseBytes = await docxService.generateAtsDocx(resumeData, verificationUrl, { paper, ...look })
-        const baseScored = await scoreLikeScan(env, await resumeParser.extractText(baseBytes, DOCX_MIME), jdText, 'generateFix (baseline)')
+        const baseScored = await scoreLikeScanWithRetry(env, await resumeParser.extractText(baseBytes, DOCX_MIME), jdText, 'generateFix (baseline)')
         bestScore = baseScored.score
+        bestAiBlended = baseScored.aiBlended
         bestDocxBytes = baseBytes
         bestReport = deliveredReport(baseScored)
         baselineHeld = true
@@ -3341,16 +3355,18 @@ async function generateFixRun(env, supabase, scanId, leaseToken = null) {
       // see the WYSIWYG comment above.
       const candidateDocxBytes = await docxService.generateAtsDocx(candidateData, verificationUrl, { paper, ...look })
       const candidateText = await resumeParser.extractText(candidateDocxBytes, DOCX_MIME)
-      const candidateScore = await scoreLikeScan(env, candidateText, jdText, 'generateFix')
+      const candidateScore = await scoreLikeScanWithRetry(env, candidateText, jdText, 'generateFix')
       producedCandidate = true
       progress.scores.push(candidateScore.score); progress.phase = 'scoring'
       await reportProgress(supabase, scanId, { fix_progress: snapshot(progress) }, 'FIX_GENERATING')
 
       // Inside a small band of ATS points the document that READS better wins (lib/readerQuality.js); outside it the score
       // decides, and a candidate that would drop a credential-clearing document under the line is never chosen.
-      if (pickWinner({ candScore: candidateScore.score, bestScore, candData: candidateData, bestData, baselineHeld, threshold: c.ATS_BADGE_THRESHOLD, floor: isRetry && typeof scan.fixAtsScore === 'number' ? scan.fixAtsScore : null })) {
+      // A candidate whose AI half failed twice carries a capped number, not a measurement: it never replaces a real one.
+      if ((candidateScore.aiBlended || !bestAiBlended) && pickWinner({ candScore: candidateScore.score, bestScore, candData: candidateData, bestData, baselineHeld, threshold: c.ATS_BADGE_THRESHOLD, floor: isRetry && typeof scan.fixAtsScore === 'number' ? scan.fixAtsScore : null })) {
         baselineHeld = false
         bestScore = candidateScore.score
+        bestAiBlended = candidateScore.aiBlended
         bestData = candidateData
         bestDocxBytes = candidateDocxBytes
         bestQuantificationPrompts = candidateQuantificationPrompts

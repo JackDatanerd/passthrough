@@ -564,9 +564,12 @@ function scoreKeywords(resumeText, jdText, { hiddenTextChars = 0 } = {}) {
   // the 'node js' bigram, and used to cost a third keyword slot and show a bare "js" in the missing list.
   // A framework written "Node.js" is one requirement, not two: keep the 'node js' bigram (it displays as "Node.js") and drop the bare
   // 'node' unigram it came with. A resume that just says "Node" still matches the bigram (see has() below).
-  const jsHeads = new Set(entries.map(([w]) => /^(\w+) js$/.exec(w)).filter(m => m && JS_FRAMEWORKS[m[1]]).map(m => m[1]))
-  const topUnigrams = rankPool(entries.filter(([w]) => !w.includes(' ') && w !== 'js' && !jsHeads.has(w)), TOP_UNIGRAMS)
+  // The bigram list is chosen FIRST and the bare head is dropped only for a 'node js' bigram that actually made that list: a
+  // bigram that ranks below the TOP_BIGRAMS cut is not scored, so dropping its head as well left the framework in neither list
+  // (a candidate who has Node.js was never credited for it, and a candidate without it was never told it was missing).
   const topBigrams  = rankPool(entries.filter(([w]) => w.includes(' ')), TOP_BIGRAMS)
+  const jsHeads = new Set(topBigrams.map(w => /^(\w+) js$/.exec(w)).filter(m => m && JS_FRAMEWORKS[m[1]]).map(m => m[1]))
+  const topUnigrams = rankPool(entries.filter(([w]) => !w.includes(' ') && w !== 'js' && !jsHeads.has(w)), TOP_UNIGRAMS)
   const top25 = [...topUnigrams, ...topBigrams]
 
   // Match against STEMMED resume tokens, not a raw substring search — this
