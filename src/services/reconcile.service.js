@@ -751,18 +751,28 @@ async function sweepStalledRefunds(env, supabase, { now = Date.now(), alert = tr
       const ours = new Map()
       const ourRows = []
       for (let i = 0; i < partialIds.length; i += 100) {
-        const { data, error } = await supabase.from('payment_refunds').select('payment_id, amount_cents').in('payment_id', partialIds.slice(i, i + 100))
+        const { data, error } = await supabase.from('payment_refunds').select('payment_id, event_key, amount_cents').in('payment_id', partialIds.slice(i, i + 100))
         if (error) throw error
         for (const r of data || []) { ours.set(r.payment_id, (ours.get(r.payment_id) || 0) + (Number(r.amount_cents) || 0)); ourRows.push(r) }
       }
       // Webhooks round 22 (B2): processRefund deliberately does NOT record an ambiguous refund event (no id, no refund_reference) in
       // payment_refunds - a duplicate delivery could not be told from a second refund. Such a refund DID reach this app (its inbox row is
       // PROCESSED and it was alerted as a partial refund), but payment_refunds stayed short, so this sweep reported it as "the webhook was lost or
-      // failed" - every time Paystack's total moved. A Paystack refund whose amount is already covered by a recorded refund OR by a PROCESSED
-      // refund.processed inbox row for that reference is therefore not reported. Best effort: if the inbox cannot be read, behaves as before.
-      const covered = new Map()                  // payment id -> Set of amounts this app has seen
-      for (const id of partialIds) covered.set(id, new Set())
-      for (const r of ourRows) { const set = covered.get(r.payment_id); if (set) set.add(Number(r.amount_cents)) }
+      // failed" - every time Paystack's total moved. Best effort: if the inbox cannot be read, behaves as before.
+      // Webhooks round 29 (B1): "already seen" used to be a SET OF AMOUNTS, so a second refund of the same amount as one this app already had
+      // (2 x 25%) was never recorded or reported when its webhook was lost. A refund is now matched by its Paystack refund id (the suffix of
+      // payment_refunds.event_key `refund.processed:<id>` / `sweep:<id>`, or `data.id` of a PROCESSED inbox row). Only a row that carries no
+      // refund id (a refund_reference key, an inbox row of an ambiguous event) falls back to its amount, and each such row covers ONE refund.
+      const itemIds = new Map()                  // payment id -> Set of Paystack refund ids (strings)
+      for (const id of partialIds) itemIds.set(id, new Set((processedItems.get(id) || []).filter(x => x.id != null).map(x => String(x.id))))
+      const seenIds = new Map(), looseAmounts = new Map()   // payment id -> Set of refund ids / Map amount -> unmatched rows
+      for (const id of partialIds) { seenIds.set(id, new Set()); looseAmounts.set(id, new Map()) }
+      const noteLoose = (pid, amount) => { const m = looseAmounts.get(pid); if (m && Number.isFinite(amount)) m.set(amount, (m.get(amount) || 0) + 1) }
+      for (const r of ourRows) {
+        const suffix = String(r.event_key || '').split(':').slice(1).join(':')
+        if (suffix && itemIds.get(r.payment_id)?.has(suffix)) seenIds.get(r.payment_id).add(suffix)
+        else noteLoose(r.payment_id, Number(r.amount_cents))
+      }
       try {
         const refByPayment = new Map(partialIds.map(id => [[...known.values()].find(x => x.id === id).paystack_ref, id]))
         const refList = [...refByPayment.keys()]
@@ -771,24 +781,33 @@ async function sweepStalledRefunds(env, supabase, { now = Date.now(), alert = tr
             .eq('provider', 'paystack').eq('event_type', 'refund.processed').eq('status', 'PROCESSED').in('reference', refList.slice(i, i + 100))
           if (error) throw error
           for (const row of data || []) {
-            const amt = Number(row.payload && row.payload.data && row.payload.data.amount)
-            const set = covered.get(refByPayment.get(row.reference))
-            if (set && Number.isFinite(amt)) set.add(amt)
+            const pid = refByPayment.get(row.reference)
+            const d = (row.payload && row.payload.data) || {}
+            if (d.id != null && itemIds.get(pid)?.has(String(d.id))) { seenIds.get(pid).add(String(d.id)); continue }
+            // An event with a refund_reference is already in payment_refunds (counted above); only an AMBIGUOUS one (no id, no reference) is not,
+            // and its amount covers one refund.
+            if (d.id == null && d.refund_reference == null) noteLoose(pid, Number(d.amount))
           }
         }
       } catch (err) { console.error('stalled-refund sweep: inbox lookup failed (reporting without it):', err && err.message) }
       for (const id of partialIds) {
         const p = [...known.values()].find(x => x.id === id)
         const theirs = processedSum.get(id), mine = ours.get(id) || 0
-        const seen = covered.get(id) || new Set()
-        if (theirs > mine && (processedAmounts.get(id) || []).some(a => !seen.has(a))) {
+        const loose = looseAmounts.get(id) || new Map()
+        const missing = []                       // Paystack-processed refunds this app has no record of
+        for (const it of processedItems.get(id) || []) {
+          if (it.id != null && seenIds.get(id).has(String(it.id))) continue
+          if ((loose.get(it.amount) || 0) > 0) { loose.set(it.amount, loose.get(it.amount) - 1); continue }
+          missing.push(it)
+        }
+        if (theirs > mine && missing.length) {
           // Webhooks round 28 (G1): this was notify-only ("note it in Admin -> Payments" - no such action existed), so payment_refunds stayed short and
           // dashboard revenue kept counting money Paystack had returned. The refunds Paystack confirms as processed and this app never saw are now
           // recorded under `sweep:<refund id>`. processRefund absorbs such a row when the real event arrives later (no double count) and checks
           // Paystack before trusting a total that contains one.
           const added = []
-          for (const it of processedItems.get(id) || []) {
-            if (it.id == null || seen.has(it.amount)) continue
+          for (const it of missing) {
+            if (it.id == null) continue
             try {
               const { error: insErr } = await supabase.from('payment_refunds').insert({ payment_id: id, event_key: `sweep:${it.id}`, amount_cents: Math.round(it.amount) })
               if (!insErr) added.push(it.amount)

@@ -626,7 +626,10 @@ async function clearRefundFailed(supabase, payment) {
 // Webhooks round 28 (G1): sweepStalledRefunds records a processed refund whose webhook never arrived as payment_refunds.event_key
 // `sweep:<refund id>`. When the real event does arrive, the sweep's row for the same amount is replaced by it (never counted twice);
 // and a total that still contains a sweep row is confirmed against Paystack's list before it can reverse a sale. Both best-effort.
-async function absorbSweepRefund(supabase, payment, amount, eventId) {
+// Webhooks round 29 (B1): the sweep row is found by the refund's own id (`sweep:<data.id>`). It used to be found by amount alone, so the
+// event for refund 42 deleted the row the sweep had recorded for a different refund 41 of the same amount, leaving the books short for good.
+// Only an event that carries no refund id (a refund_reference-only event) falls back to an amount match.
+async function absorbSweepRefund(supabase, payment, amount, eventId, refundId = null) {
   try {
     if (!payment || !payment.id || !eventId || !Number.isFinite(amount) || amount <= 0) return false
     // A re-run of an event that is ALREADY recorded (Replay, re-drive) has nothing to absorb: its sweep twin, if any, was replaced the first time,
@@ -635,8 +638,10 @@ async function absorbSweepRefund(supabase, payment, amount, eventId) {
     if (!ev || !ev.event_key) return false
     const { data: have } = await supabase.from('payment_refunds').select('id').eq('payment_id', payment.id).eq('event_key', ev.event_key).limit(1)
     if (have && have.length) return false
-    const { data, error } = await supabase.from('payment_refunds').select('id').eq('payment_id', payment.id)
-      .like('event_key', 'sweep:%').eq('amount_cents', Math.round(amount)).limit(1)
+    const id = refundId == null ? '' : String(refundId).trim()
+    let q = supabase.from('payment_refunds').select('id').eq('payment_id', payment.id)
+    q = id ? q.eq('event_key', `sweep:${id}`) : q.like('event_key', 'sweep:%').eq('amount_cents', Math.round(amount))
+    const { data, error } = await q.limit(1)
     if (error || !data || !data.length) return false
     const { error: delErr } = await supabase.from('payment_refunds').delete().eq('id', data[0].id)
     return !delErr
@@ -737,7 +742,7 @@ async function processRefund(c, supabase, event, eventId, { payloadMissing = fal
   const refunded = Number(event.data?.amount)
   const ambiguous = refundIsAmbiguous(event)
   let total
-  if (eventId && !ambiguous && !payloadMissing) await absorbSweepRefund(supabase, payment, refunded, eventId)
+  if (eventId && !ambiguous && !payloadMissing) await absorbSweepRefund(supabase, payment, refunded, eventId, event.data?.id)
   if (eventId) {
     // ROUND-4 (B1/B3): the RPC only RECORDS this event's amount in payment_refunds (it no longer
     // flips the inbox row to PROCESSED — handlePaystack does that once the work below is done)

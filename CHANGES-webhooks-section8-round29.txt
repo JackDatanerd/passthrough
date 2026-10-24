@@ -1,0 +1,14 @@
+Webhooks (section 8), round 29 - independent pass
+(no migration)
+
+B1 Round 28's refund bookkeeping told refunds apart by AMOUNT, so two equal partial refunds on one sale (2 x 25%) were confused:
+   - sweepStalledRefunds (reconcile.service.js) kept a set of "amounts already seen": the second of two equal refunds, when its
+     refund.processed webhook was lost, was neither recorded in payment_refunds nor reported (dashboard revenue stayed overstated).
+   - absorbSweepRefund (webhooks.controller.js) looked for the sweep row by amount alone: the real event for refund 42 deleted the row the
+     sweep had written for a different refund 41 of the same amount, and the sweep then never re-recorded it.
+   Now a refund is matched by its Paystack refund id: payment_refunds.event_key `refund.processed:<id>` / `sweep:<id>`, or `data.id` of a
+   PROCESSED inbox row; absorbSweepRefund removes exactly `sweep:<data.id>`. Only a row that carries no refund id (a refund_reference key, an
+   ambiguous inbox event) falls back to its amount, and each such row covers ONE Paystack refund. An event with no id at all still replaces an
+   equal-amount sweep row (as before).
+
+Tests: tests/webhooks.round29.test.js (new, 7). Existing round 13 / 22 / 28 expectations unchanged.
