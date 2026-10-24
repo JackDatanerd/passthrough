@@ -103,3 +103,24 @@ describe('re-audit round', () => {
     expect(bankProblem({ bankCountry: 'GB', routingCode: '20-00-00', accountNumber: 'ab' })).toMatch(/UK accounts/)
   })
 })
+
+describe('fifth pass', () => {
+  it('Canada asks for the transit and institution numbers in two boxes and sends them joined, transit first', async () => {
+    page(); await country('CA')
+    expect(screen.queryByLabelText('Transit and institution number')).toBeNull()
+    fireEvent.change(screen.getByLabelText('Bank name'), { target: { value: 'RBC' } })
+    fireEvent.change(screen.getByLabelText('Account name'), { target: { value: 'Alex Morgan' } })
+    fireEvent.change(screen.getByLabelText('Transit number (5 digits)'), { target: { value: '12345' } })
+    fireEvent.change(screen.getByLabelText('Institution number (3 digits)'), { target: { value: '003' } })
+    fireEvent.change(screen.getByLabelText('Account number'), { target: { value: '1234567' } })
+    fireEvent.change(screen.getByLabelText('Re-enter account number'), { target: { value: '1234567' } })
+    await save()
+    await waitFor(() => expect(api.post).toHaveBeenCalled())
+    expect(api.post.mock.calls[0][1]).toEqual({ payoutMethod: 'BANK', bankName: 'RBC', accountName: 'Alex Morgan', accountNumber: '1234567', bankCountry: 'CA', routingCode: '12345-003' })
+  })
+  it('the tax ID box says what to enter and that it is stored encrypted', async () => {
+    page()
+    expect(await screen.findByText(/SSN or EIN \(US\), UTR \(UK\), or VAT \/ GST number/)).toBeTruthy()
+    expect(screen.getByText(/stored encrypted/)).toBeTruthy()
+  })
+})

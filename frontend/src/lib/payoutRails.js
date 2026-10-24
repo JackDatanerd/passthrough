@@ -36,7 +36,7 @@ const ROUTING = {
   US: { label: 'ACH routing number', placeholder: '9 digits', hint: 'the 9-digit ACH routing number (ABA)', test: validAbaRouting },
   GB: { label: 'Sort code', placeholder: '20-00-00', hint: 'the 6-digit sort code, e.g. 20-00-00', test: v => /^\d{6}$/.test(digitsOnly(v)) },
   AU: { label: 'BSB', placeholder: '062-000', hint: 'the 6-digit BSB, e.g. 062-000', test: v => /^\d{6}$/.test(digitsOnly(v)) },
-  CA: { label: 'Transit and institution number', placeholder: '12345-678', hint: 'the 5-digit transit number followed by the 3-digit institution number, e.g. 12345-678', test: v => /^\d{8}$/.test(digitsOnly(v)) },
+  CA: { label: 'Transit and institution number', placeholder: '12345-678', hint: 'the 5-digit transit number, a dash, then the 3-digit institution number, e.g. 12345-678', test: v => /^\d{5}\s*-\s*\d{3}$/.test(String(v).trim()) },
 }
 const DOMESTIC_ACCOUNT = { US: /^\d{4,17}$/, GB: /^\d{6,8}$/, AU: /^\d{5,10}$/, CA: /^\d{7,12}$/ }
 const GB_ROLL_NUMBER = /^[A-Za-z0-9][A-Za-z0-9 -]{3,17}$/   // building-society roll numbers can hold letters

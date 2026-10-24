@@ -53,7 +53,8 @@ const ROUTING_RULES = {
   US: { label: 'ACH routing number', test: validAbaRouting, hint: 'the 9-digit ACH routing number (ABA)' },
   GB: { label: 'sort code', test: v => /^\d{6}$/.test(digitsOnly(v)), hint: 'the 6-digit sort code, e.g. 20-00-00' },
   AU: { label: 'BSB', test: v => /^\d{6}$/.test(digitsOnly(v)), hint: 'the 6-digit BSB, e.g. 062-000' },
-  CA: { label: 'transit and institution number', test: v => /^\d{8}$/.test(digitsOnly(v)), hint: 'the 5-digit transit number followed by the 3-digit institution number, e.g. 12345-678' }
+  // The order is what makes it safe: 8 bare digits cannot say which half is the transit number, so the dash is required (transit-institution).
+  CA: { label: 'transit and institution number', test: v => /^\d{5}\s*-\s*\d{3}$/.test(String(v).trim()), hint: 'the 5-digit transit number, a dash, then the 3-digit institution number, e.g. 12345-678' }
 }
 const DOMESTIC_ACCOUNT_RE = { US: /^\d{4,17}$/, GB: /^\d{6,8}$/, AU: /^\d{5,10}$/, CA: /^\d{7,12}$/ }
 // UK building-society accounts are identified by a roll number that may hold letters (up to 18 characters) instead of an 8-digit account number.

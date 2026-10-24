@@ -1195,3 +1195,13 @@ Operator notes for the newest migrations. Apply each migration before deploying 
 # ROLLBACK NOTE: a Worker older than this one does not know PAYPAL; it would list a PayPal partner as mobile money, so roll the Worker back only
 # together with asking PayPal partners to re-enter their details, or not at all. Existing bank and mobile-money details need no migration: a bank
 # submission without a country still validates as before.
+
+# SEALED TAX IDS (migration 0114): partner tax IDs are now stored AES-256-GCM encrypted instead of in plain text. ORDER MATTERS:
+#   1. wrangler secret put TAX_ID_ENCRYPTION_KEY        (value: `openssl rand -base64 32`; keep a copy somewhere safe -- a tax ID sealed under
+#      one key cannot be read with another, so losing or rotating the key without re-sealing loses the stored IDs)
+#   2. apply 0114 (it only widens the length check so a sealed value fits)
+#   3. deploy the Worker
+#   4. once: SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... TAX_ID_ENCRYPTION_KEY=... node scripts/encrypt-tax-ids.cjs --apply
+#      (dry run without --apply first). Until it has run, old plain-text rows still read fine; they are just not yet encrypted.
+# Without the secret the Worker REFUSES to save a tax ID (503, "Tax IDs can't be saved right now") rather than store one in clear, and
+# /health warns. Everything else on the payout page still saves.

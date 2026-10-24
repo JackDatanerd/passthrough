@@ -59,6 +59,10 @@ npx wrangler secret put PAYSTACK_SECRET_KEY
 
 # More optional settings the code reads (all off / defaulted when unset — see DEPLOYMENT.md):
 # Separate signing key for employer-lead confirm / remove / unsubscribe links (falls back to JWT_SECRET).
+# Partner tax IDs are stored AES-256-GCM encrypted. 32 random bytes, base64:  openssl rand -base64 32
+# Do not lose or change it without re-sealing: a tax ID sealed under one key cannot be read with another.
+# TAX_ID_ENCRYPTION_KEY=
+
 # LEAD_LINK_SECRET=replace_with_random_hex
 # LEAD_LINK_SECRET_PREVIOUS=
 # Old Paystack key, ONLY while rotating PAYSTACK_SECRET_KEY (so retried webhooks still verify).

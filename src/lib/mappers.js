@@ -366,7 +366,7 @@ function partnerRowToCamel(row) {
     internalNotes:             rest.internal_notes ?? null,
     // Round 20 (migration 0099): optional tax details kept next to the payout details (admin views only; the partner's own link gets the ID masked).
     taxCountry:                rest.tax_country ?? null,
-    taxId:                     rest.tax_id ?? null,
+    taxId:                     null,   // never the stored value (it is sealed): the callers that may show it open it first
     // Which terms version the last "please accept" email went out for (the batched notice's own bookkeeping).
     termsNotifiedVersion:      rest.terms_notified_version ?? null,
     payouts:                   rest.payouts ? rest.payouts.map(payoutRowToCamel) : undefined,

@@ -488,3 +488,13 @@ describe('round 11 — employer mail caps follow the mailbox, not the spelling',
     expect(o.status).toBe('throttled')
   })
 })
+
+describe('welcome offer email dates', () => {
+  it('writes the expiry the way the other emails do (October 24, 2026), not day-first', async () => {
+    t = setup()
+    await t.mod.sendWelcomeOffer(t.env, t.db, 'u@example.com', 'Ann', { code: 'AN-7K2QH', percentOff: 30, amountCents: 2030, listAmountCents: 2900, currency: 'USD', expiresAt: '2026-10-24T09:00:00Z' })
+    const body = `${t.sent[0].html || ''} ${t.sent[0].text || ''}`
+    expect(body).toContain('October 24, 2026')
+    expect(body).not.toContain('24 October 2026')
+  })
+})

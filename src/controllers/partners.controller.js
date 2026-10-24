@@ -14,6 +14,7 @@
 
 const { z } = require('zod')
 const payoutRails = require('../lib/payoutRails')
+const fieldCrypto = require('../lib/fieldCrypto')
 const c = require('../config/constants')
 const { getSupabase } = require('../config/supabase')
 const cryptoLib = require('../lib/crypto')
@@ -583,7 +584,7 @@ async function adminUpdatePartner(ctx) {
   // account number and tax ID stay out, exactly as in the partner list.
   const updatedCamel = partnerRowToCamel(data)
   updatedCamel.payoutDetails = maskedPayoutDetailsForOwner(data.payout_method, data.payout_details)
-  updatedCamel.taxId = data.tax_id ? last4Of(data.tax_id) : null
+  updatedCamel.taxId = data.tax_id ? (last4Of(await fieldCrypto.openTaxId(ctx.env, data.tax_id)) || null) : null
   updatedCamel.detailsMasked = true
   return ctx.json({ success: true, data: updatedCamel,
     ...(rotatedToken ? { linksEmailed } : {}),
@@ -777,7 +778,7 @@ async function adminPayoutRunExport(ctx) {
     if (r.readyToPayCents <= 0) continue
     if (new Set(ledger.map(l => String(l.currency || currency).toUpperCase())).size > 1) continue
     rows.push({ id: row.id, name: row.name, email: row.email, payoutMethod: row.payout_method, payoutDetails: row.payout_details || {},
-      payoutDetailsSubmittedAt: row.payout_details_submitted_at, taxCountry: row.tax_country ?? null, taxId: row.tax_id ?? null,
+      payoutDetailsSubmittedAt: row.payout_details_submitted_at, taxCountry: row.tax_country ?? null, taxId: (await fieldCrypto.openTaxId(ctx.env, row.tax_id)) || null,
       readyToPayCents: r.readyToPayCents, currency })
   }
   await logAdminAction(ctx, supabase, 'partner.payout_run_exported', 'partner', null, { partners: rows.length })
@@ -801,6 +802,8 @@ async function adminListPartners(ctx) {
   const holdDays = holdDaysFor(ctx.env)
   const awaitingSetup = data.filter(r => !r.payout_method && r.email && !isRemovedEmail(r.email)).map(r => r.email)
   const linkMail = awaitingSetup.length ? await latestPayoutLinkEmailStatus(supabase, awaitingSetup) : new Map()
+  // Tax IDs are stored sealed; the list shows only their last four characters, so open them once here (cheap, and only rows that have one).
+  const taxMask = new Map(await Promise.all(data.filter(r => r.tax_id).map(async r => [r.id, last4Of(await fieldCrypto.openTaxId(ctx.env, r.tax_id)) || null])))
   const partners = data.map(row => {
     const camel = partnerRowToCamel(row)
     const ledger = ledgerByPartner.get(row.id) || []
@@ -809,7 +812,7 @@ async function adminListPartners(ctx) {
     // Round 23: the list never carries the full account number or tax ID (the payout-run export fetches them
     // behind a step-up from /partners/payout-export).
     camel.payoutDetails = maskedPayoutDetailsForOwner(row.payout_method, row.payout_details)
-    camel.taxId = row.tax_id ? last4Of(row.tax_id) : null
+    camel.taxId = taxMask.get(row.id) || null
     camel.detailsMasked = true
     camel.payoutLinkEmail = !row.payout_method ? (linkMail.get(String(row.email || '').toLowerCase()) || null) : null
     const cycles = buildCyclesSummary(ledger, 2, holdDays)  // [current, previous]
@@ -882,7 +885,7 @@ async function adminGetPartner(ctx) {
   // instead. It now carries the same masked form as the list; the full values come from GET /:id/payout-details, which is
   // step-up gated and logged (partner.details_viewed).
   camel.payoutDetails = maskedPayoutDetailsForOwner(row.payout_method, row.payout_details)
-  camel.taxId = row.tax_id ? last4Of(row.tax_id) : null
+  camel.taxId = row.tax_id ? (last4Of(await fieldCrypto.openTaxId(ctx.env, row.tax_id)) || null) : null
   camel.detailsMasked = true
   camel.payouts = (camel.payouts || []).map(po => ({ ...po,
     payoutDetailsSnapshot: maskedPayoutDetailsForOwner(po.payoutMethod, po.payoutDetailsSnapshot) || {} }))
@@ -1772,7 +1775,7 @@ async function getPartnerByToken(ctx) {
     payoutDetails: maskedPayoutDetailsForOwner(partner.payout_method, partner.payout_details),
     payoutDetailsMasked: !!partner.payout_method,
     // Round 20: tax details — the ID comes back as its last four characters only, like the account number.
-    taxCountry: partner.tax_country ?? '', taxIdMasked: last4Of(partner.tax_id),
+    taxCountry: partner.tax_country ?? '', taxIdMasked: last4Of(await fieldCrypto.openTaxId(ctx.env, partner.tax_id)),
     dashboardToken: await partnerLinks.dashboardTokenOf(ctx.env, partner)
   } })
 }
@@ -1821,6 +1824,9 @@ const payoutDetailsSchema = z.discriminatedUnion('payoutMethod', [
   if (d.payoutMethod !== 'BANK') return
   for (const p of payoutRails.bankRailProblems(d)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [p.path], message: p.message })
 }).transform(d => d.payoutMethod === 'BANK' ? payoutRails.cleanBankDetails(d) : d)
+// Tax IDs are only ever stored sealed (lib/fieldCrypto.js). Without the key a tax ID is refused, never stored in clear.
+const taxStorageUnavailable = ctx => ctx.json({ success: false, code: 'TAX_STORAGE_UNAVAILABLE',
+  message: 'Tax IDs can\u2019t be saved right now. Leave the tax ID blank and everything else will still save, or contact support.' }, 503)
 const last4Of = v => { const raw = String(v || '').replace(/\s+/g, ''); return raw ? `\u2026${raw.slice(-4)}` : '' }
 
 // Canonical form for comparing two payout-detail objects: same method, same keys, values compared with all
@@ -1879,7 +1885,13 @@ async function submitPayoutDetails(ctx) {
     const tax = z.object(taxFields).strict().parse(rawBody)
     const taxOnly = {}
     if (tax.taxCountry !== undefined) taxOnly.tax_country = tax.taxCountry || null
-    if (tax.taxId !== undefined)      taxOnly.tax_id = tax.taxId || null
+    if (tax.taxId !== undefined) {
+      if (tax.taxId) {
+        const sealed = await fieldCrypto.sealTaxId(ctx.env, tax.taxId)
+        if (!sealed) return taxStorageUnavailable(ctx)
+        taxOnly.tax_id = sealed
+      } else taxOnly.tax_id = null
+    }
     if (!Object.keys(taxOnly).length) return ctx.json({ success: false, message: 'Nothing to save.' }, 400)
     const supabaseTax = getSupabase(ctx.env)
     const { data: owner, error: taxErr } = await supabaseTax.from('partners')
@@ -1894,7 +1906,13 @@ async function submitPayoutDetails(ctx) {
   const details = payoutRails.canonicalPayoutDetails(looseDetails)
   const taxPatch = {}
   if (taxCountry !== undefined) taxPatch.tax_country = taxCountry || null
-  if (taxId !== undefined)      taxPatch.tax_id = taxId || null
+  if (taxId !== undefined) {
+    if (taxId) {
+      const sealed = await fieldCrypto.sealTaxId(ctx.env, taxId)
+      if (!sealed) return taxStorageUnavailable(ctx)
+      taxPatch.tax_id = sealed
+    } else taxPatch.tax_id = null
+  }
   const supabase = getSupabase(ctx.env)
 
   // Round 6: read what is being replaced so the owner alert can say WHAT changed (method + last 4 of the
@@ -3325,7 +3343,7 @@ async function adminRevealPayoutDetails(ctx) {
   for (const po of row.payouts || []) snapshots[po.id] = po.payout_details_snapshot || {}
   return ctx.json({ success: true, data: {
     payoutMethod: row.payout_method || null, payoutDetails: row.payout_details || null,
-    taxCountry: row.tax_country ?? null, taxId: row.tax_id ?? null, snapshots
+    taxCountry: row.tax_country ?? null, taxId: (await fieldCrypto.openTaxId(ctx.env, row.tax_id)) || null, snapshots
   } })
 }
 

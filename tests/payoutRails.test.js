@@ -233,3 +233,19 @@ describe('fourth pass', () => {
     expect(clientRails.bankProblem({ bankCountry: 'GB', accountNumber: 'gb82 west 1234 5698 7654 32' })).toBe('')
   })
 })
+
+// Fifth pass (carried item): the Canadian routing code's ORDER is part of its meaning.
+describe('Canadian routing code order', () => {
+  const p = d => rails.bankRailProblems({ bankName: 'x', accountName: 'y', accountNumber: '1234567', bankCountry: 'CA', ...d }).map(x => x.path)
+  it('takes transit-dash-institution only; bare digits and the reverse order are refused', () => {
+    expect(p({ routingCode: '12345-678' })).toEqual([])
+    expect(p({ routingCode: '12345 - 678' })).toEqual([])
+    expect(p({ routingCode: '12345678' })).toEqual(['routingCode'])
+    expect(p({ routingCode: '003-12345' })).toEqual(['routingCode'])
+  })
+  it('the form checks it the same way', () => {
+    expect(clientRails.bankProblem({ bankCountry: 'CA', routingCode: '12345-678', accountNumber: '1234567' })).toBe('')
+    expect(clientRails.bankProblem({ bankCountry: 'CA', routingCode: '12345678', accountNumber: '1234567' })).toMatch(/transit number, a dash/)
+    expect(clientRails.bankProblem({ bankCountry: 'CA', routingCode: '003-12345', accountNumber: '1234567' })).toMatch(/transit number, a dash/)
+  })
+})

@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { createFakeSupabase } from './helpers/fakeSupabase.cjs'
 import { loadWithStubs } from './helpers/loadWithStubs.cjs'
+import fieldCrypto from '../src/lib/fieldCrypto.js'
 
 // Section 4 round 20: partner notice on code changes, reopening a rejected application, the cross-partner ledger, tax details,
 // ENDED membership, held-until dates, one-call signup counts, and the bounded channel-tag read.
@@ -9,8 +10,10 @@ let t
 afterEach(() => t?.restore())
 
 const TOKEN = 'tok_payout_123'
+// Tax IDs are stored sealed; a key makes saving one possible (without it the save is refused, see tests/taxIdSealed.test.js).
+const TAX_KEY = Buffer.alloc(32, 9).toString('base64')
 const ctxOf = (over = {}) => ({
-  env: { FRONTEND_URL: 'https://usepassthrough.com', JWT_SECRET: 'test-link-secret-0123456789abcdef0123', PAYSTACK_CURRENCY: 'USD', ...(over.env || {}) },
+  env: { TAX_ID_ENCRYPTION_KEY: TAX_KEY, FRONTEND_URL: 'https://usepassthrough.com', JWT_SECRET: 'test-link-secret-0123456789abcdef0123', PAYSTACK_CURRENCY: 'USD', ...(over.env || {}) },
   get: () => ({ id: 'admin-1' }),
   req: {
     param: n => (over.params ? over.params[n] : 'p1'),
@@ -151,7 +154,10 @@ describe('tax details with the payout details (gap 7)', () => {
     const out = await t.mod.submitPayoutDetails(ctxOf({ token: TOKEN, body: { ...bank, taxCountry: 'ke', taxId: 'A123456789B' } }))
     expect(out.body.unchanged).toBe(true)
     const up = t.db.calls.find(c => c.table === 'partners' && c.op === 'update')
-    expect(up.patch).toEqual({ tax_country: 'KE', tax_id: 'A123456789B' })
+    expect(up.patch.tax_country).toBe('KE')
+    expect(up.patch.tax_id).toMatch(/^enc:v1:/)                       // never stored in clear
+    expect(up.patch.tax_id).not.toContain('A123456789B')
+    expect(await fieldCrypto.openTaxId({ TAX_ID_ENCRYPTION_KEY: TAX_KEY }, up.patch.tax_id)).toBe('A123456789B')
     expect(alerts).toHaveLength(0)
   })
   it('identical details and no tax fields write nothing at all (also safe before the migration)', async () => {

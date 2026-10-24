@@ -107,7 +107,9 @@ describe('securityHeaders', () => {
 describe('validateEnv', () => {
   const good = { SUPABASE_URL: 'https://x.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'k', JWT_SECRET: 'a'.repeat(48), RESEND_API_KEY: 'r', PAYSTACK_SECRET_KEY: 'p', ANTHROPIC_API_KEY: 'a', EMAIL_FROM: 'x <x@y.z>', FRONTEND_URL: 'https://usepassthrough.com', RATE_LIMIT_KV: {}, RATE_LIMIT_DO: {}, RESUMES_BUCKET: {}, FIX_QUEUE: {}, BROWSER: {}, NODE_ENV: 'production', RESEND_WEBHOOK_SECRET: 'whsec_x',
     // Round 3: the alert inbox and the Paystack redirect are expected configuration, not optional extras.
-    OWNER_ALERT_EMAIL: 'owner@usepassthrough.com', PAYSTACK_CALLBACK_URL: 'https://usepassthrough.com/payment/success' }
+    OWNER_ALERT_EMAIL: 'owner@usepassthrough.com', PAYSTACK_CALLBACK_URL: 'https://usepassthrough.com/payment/success',
+    // Partner tax IDs are stored sealed with this key (32 random bytes, base64); without it the payout page refuses to save one.
+    TAX_ID_ENCRYPTION_KEY: Buffer.alloc(32, 3).toString('base64') }
   it('ROUND 5 (G1): a missing RESEND_WEBHOOK_SECRET is warned about at startup (the endpoint would answer 500)', () => {
     const env = { ...good }; delete env.RESEND_WEBHOOK_SECRET
     const r = validateEnv(env)

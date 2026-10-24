@@ -35,7 +35,8 @@ const DELIBERATELY_UNMAPPED = {
   // usage_released_at (0100): stamps that a sale's referral-code slot was given back (so a retried release is a no-op) - bookkeeping only the usage RPCs read.
   commission_ledger: ['usage_released_at'],
     // 0107: dashboard_token_version is the counter the derived dashboard link is signed over (the link itself is never stored).
-  partners: ['payout_details_token', 'payout_token_hash', 'dashboard_token', 'dashboard_token_version', 'previous_emails'],
+  // tax_id (0099, sealed since 0114): stored AES-GCM encrypted; the controllers open it themselves where it may be shown (last four, or in full behind a step-up). The mapper never emits the stored value.
+  partners: ['payout_details_token', 'payout_token_hash', 'dashboard_token', 'dashboard_token_version', 'previous_emails', 'tax_id'],
 }
 
 function columnsFromMigrations() {

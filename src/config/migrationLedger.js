@@ -38,6 +38,7 @@ const LEDGER_NAMES = {
   111: '0111_partners_section4_round29',
   112: '0112_partners_section4_round33',
   113: '0113_payout_method_paypal',
+  114: '0114_tax_id_sealed',
 }
 
 module.exports = { LEDGER_NAMES }

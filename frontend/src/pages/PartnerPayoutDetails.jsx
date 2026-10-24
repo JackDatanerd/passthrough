@@ -48,6 +48,9 @@ export default function PartnerPayoutDetails() {
   const [bankCountry, setBankCountry] = useState('')
   const [otherCountry, setOtherCountry] = useState('')
   const [routingCode, setRoutingCode] = useState('')
+  // Canada's routing code is two numbers whose ORDER matters (transit, then institution), so it is two boxes, joined with a dash.
+  const [caTransit, setCaTransit] = useState('')
+  const [caInstitution, setCaInstitution] = useState('')
   const [swiftBic, setSwiftBic] = useState('')
   const [confirmNumber, setConfirmNumber] = useState('')
   // Round 9: the server returns the saved account / phone as its last four digits only (the link is a bearer
@@ -89,6 +92,7 @@ export default function PartnerPayoutDetails() {
           setBankCountry(!savedCountry ? '' : known ? savedCountry : OTHER_COUNTRY)
           setOtherCountry(savedCountry && !known ? savedCountry : '')
           setRoutingCode(d.routingCode || '')
+          if (savedCountry === 'CA') { const dg = String(d.routingCode || '').replace(/\D/g, ''); setCaTransit(dg.slice(0, 5)); setCaInstitution(dg.slice(5, 8)) }
           setSwiftBic(d.swiftBic || '')
           setLoadedPayout({ method: p.payoutMethod, bankName: d.bankName || '', accountName: d.accountName || '', provider: d.provider || '',
             bankCountry: savedCountry, routingCode: d.routingCode || '', swiftBic: d.swiftBic || '' })
@@ -121,6 +125,7 @@ export default function PartnerPayoutDetails() {
   const rail = bankRail(countryCode, onFileIban ? `${countryCode}00AAAA` : accountNumber)
   const routing = routingInfo(countryCode)
   // The one value the partner has to type twice, whatever the method.
+  const routingValue = countryCode === 'CA' ? (caTransit.trim() || caInstitution.trim() ? `${caTransit.trim()}-${caInstitution.trim()}` : '') : routingCode.trim()
   const idValue = method === 'BANK' ? accountNumber : method === 'PAYPAL' ? paypalEmail : phoneNumber
   const idLabel = method === 'BANK' ? (rail === 'iban' ? 'IBAN' : 'account number') : method === 'PAYPAL' ? 'PayPal email' : 'phone number'
 
@@ -137,7 +142,7 @@ export default function PartnerPayoutDetails() {
         method !== loadedPayout.method ||
         accountName.trim() !== loadedPayout.accountName ||
         (method === 'BANK' ? (bankName.trim() !== loadedPayout.bankName || countryCode !== loadedPayout.bankCountry ||
-          routingCode.trim() !== loadedPayout.routingCode || swiftBic.trim() !== loadedPayout.swiftBic)
+          routingValue.replace(/-/g, '') !== loadedPayout.routingCode.replace(/-/g, '') || swiftBic.trim() !== loadedPayout.swiftBic)
           : method === 'MOBILE_MONEY' ? provider.trim() !== loadedPayout.provider : false))
       if (edited) return fail0(`Re-enter your ${idLabel} (twice) to save the change to your payout details.`)
     }
@@ -158,7 +163,7 @@ export default function PartnerPayoutDetails() {
     setTaxSaved(false)
     const body = method === 'BANK'
       ? { payoutMethod: 'BANK', bankName: bankName.trim(), accountName: accountName.trim(), accountNumber: accountNumber.trim(), bankCountry: countryCode,
-          ...(rail === 'routing' && routingCode.trim() ? { routingCode: routingCode.trim() } : {}),
+          ...(rail === 'routing' && routingValue ? { routingCode: routingValue } : {}),
           ...(rail === 'swift' && swiftBic.trim() ? { swiftBic: swiftBic.trim() } : {}) }
       : method === 'PAYPAL'
         ? { payoutMethod: 'PAYPAL', accountName: accountName.trim(), paypalEmail: paypalEmail.trim() }
@@ -289,7 +294,15 @@ export default function PartnerPayoutDetails() {
                     )}
                     <Input label="Bank name" value={bankName} onChange={e => setBankName(e.target.value)} />
                     <Input label="Account name" value={accountName} onChange={e => setAccountName(e.target.value)} />
-                    {countryCode && rail === 'routing' && routing && (
+                    {countryCode === 'CA' && rail === 'routing' && (
+                      <>
+                        <Input label="Transit number (5 digits)" value={caTransit} maxLength={5} inputMode="numeric" autoComplete="off"
+                          onChange={e => setCaTransit(e.target.value.replace(/\D/g, ''))} placeholder="12345" />
+                        <Input label="Institution number (3 digits)" value={caInstitution} maxLength={3} inputMode="numeric" autoComplete="off"
+                          onChange={e => setCaInstitution(e.target.value.replace(/\D/g, ''))} placeholder="678" />
+                      </>
+                    )}
+                    {countryCode && countryCode !== 'CA' && rail === 'routing' && routing && (
                       <Input label={routing.label} value={routingCode} onChange={e => setRoutingCode(e.target.value)}
                         placeholder={routing.placeholder} inputMode="numeric" autoComplete="off" />
                     )}
@@ -324,6 +337,7 @@ export default function PartnerPayoutDetails() {
                   <Input label="Country of tax residence (2-letter code)" value={taxCountry} maxLength={2} autoComplete="off"
                     onChange={e => setTaxCountry(e.target.value.toUpperCase())} placeholder="US" />
                   <Input label="Tax ID" value={taxId} autoComplete="off" maxLength={40} onChange={e => setTaxId(e.target.value)}
+                    hint="Your SSN or EIN (US), UTR (UK), or VAT / GST number: whatever your tax authority calls it. It is stored encrypted."
                     placeholder={taxIdOnFile ? `On file: ${taxIdOnFile} — type a new one to replace it` : ''} disabled={clearTaxId} />
                   {taxIdOnFile && (
                     <Checkbox label="Remove the tax ID we have on file" checked={clearTaxId}

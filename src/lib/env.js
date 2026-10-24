@@ -24,6 +24,7 @@ const FEATURE_SECRETS = {
   EMAIL_FROM:          'email sender address',
   FRONTEND_URL:        'CORS + every emailed link',
   RESEND_WEBHOOK_SECRET: 'bounce / spam-complaint handling (Resend webhook)',
+  TAX_ID_ENCRYPTION_KEY: 'saving a partner\u2019s tax ID (it is stored encrypted, never in clear)',
   // Without these two nothing stops the Worker, but the failure is silent: alerts (failed jobs, payment
   // mismatches, schema behind, webhook signature failures) are written to alert_logs and emailed to nobody,
   // and Paystack redirects buyers to whatever callback the dashboard has instead of this app's success page.
@@ -55,6 +56,8 @@ function validateEnv(env) {
   if (env.LEAD_LINK_SECRET && env.JWT_SECRET && env.LEAD_LINK_SECRET === env.JWT_SECRET)
     warnings.push('LEAD_LINK_SECRET is the same value as JWT_SECRET — it only helps if it is different')
 
+  if (env.TAX_ID_ENCRYPTION_KEY && !/^[A-Za-z0-9+/]{43}=$/.test(String(env.TAX_ID_ENCRYPTION_KEY).trim()))
+    warnings.push('TAX_ID_ENCRYPTION_KEY is not 32 bytes of base64 (generate one with: openssl rand -base64 32) \u2014 tax IDs cannot be saved or read')
   for (const [k, why] of Object.entries(FEATURE_SECRETS))
     if (!env[k]) warnings.push(`${k} is not set — ${why} will not work`)
   for (const [k, why] of Object.entries(BINDINGS))
