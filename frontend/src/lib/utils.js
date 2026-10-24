@@ -53,12 +53,17 @@ export function formatDateUtc(dateStr) { return formatDate(dateStr, { utc: true 
 // "November 14" / "3:00 AM" in the VIEWER's zone, always en-US like formatDate. A bare toLocaleDateString(undefined, ...) /
 // toLocaleTimeString([], ...) follows the browser's locale ("14 November", "15:00"), so one screen mixed styles. A missing or invalid
 // value is null (the caller words the sentence without it), never "Invalid Date".
+// Round 27: both used to hand the value straight to `new Date(...)`, so null / 0 / false / true printed "January 1" / "12:00 AM"
+// (the epoch), a stray "12" printed "December 1", and a date-only string ("2026-10-24", UTC midnight) read as the previous day in
+// every timezone behind UTC. They now go through the same guard as formatDate: a missing, non-date or impossible value is null.
 export function formatMonthDay(value) {
-  const d = value instanceof Date ? value : new Date(value)
+  if (!value) return null
+  const d = parseDate(value)
   return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })
 }
 export function formatTimeOfDay(value) {
-  const d = value instanceof Date ? value : new Date(value)
+  if (!value) return null
+  const d = parseDate(value)
   return Number.isNaN(d.getTime()) ? null : d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
 }
 
@@ -217,12 +222,18 @@ export function filenameFromDisposition(headers, fallback) {
   try {
     const raw = typeof headers?.get === 'function' ? headers.get('content-disposition') : (headers?.['content-disposition'] ?? headers?.['Content-Disposition'])
     if (!raw) return fallback
-    const star = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(raw)
-    const plain = /filename\s*=\s*"([^"]+)"/i.exec(raw) || /filename\s*=\s*([^;\s]+)/i.exec(raw)
+    // RFC 5987 allows a language tag between the quotes (UTF-8'en'name.pdf); the Worker sends it empty, but another server may not.
+    const star = /filename\*\s*=\s*UTF-8'[^']*'([^;]+)/i.exec(raw)
+    // Round 27: an EMPTY quoted name (filename="") used to fail the quoted pattern and then match the two quote marks as an
+    // unquoted token, so the download was named `""`. A quoted value is final, empty or not; an unquoted token that still starts
+    // with a quote is a header cut off mid-value and is not trusted.
+    const quoted = /filename\s*=\s*"([^"]*)"/i.exec(raw)
+    const bare = quoted ? null : /filename\s*=\s*([^;\s]+)/i.exec(raw)
+    const plain = quoted ? quoted[1] : (bare && !bare[1].startsWith('"') ? bare[1] : '')
     // A malformed filename* (bad %-escape) must not throw away a perfectly good plain filename beside it.
     let name = ''
     if (star) { try { name = decodeURIComponent(star[1].trim()) } catch (_) { name = '' } }
-    if (!name && plain) name = plain[1].trim()
+    if (!name && plain) name = plain.trim()
     // No path separators, no control characters (a newline in a download name), nothing made only of dots (".."), and a sane length.
     return name && !/[\\/\x00-\x1f\x7f]/.test(name) && !/^\.+$/.test(name) && name.length <= 120 ? name : fallback
   } catch (_) { return fallback }

@@ -4,6 +4,7 @@ import api from '../../lib/api'
 import Button from '../../components/ui/Button'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
+import Alert from '../../components/ui/Alert'
 import DataTable from '../../components/ui/DataTable'
 import Input from '../../components/ui/Input'
 import Checkbox from '../../components/ui/Checkbox'
@@ -270,7 +271,7 @@ function UnrecordedCommissions() {
     } finally { setBusy(null); load() }
   }
   if (state.loading) return <Spinner />
-  if (state.error) return <p className="text-sm text-red-600">Could not load. <button type="button" className="underline" onClick={load}>Try again</button></p>
+  if (state.error) return <Alert variant="error" action={{ label: 'Try again', onClick: load }}>Could not load.</Alert>
   return (
     <div className="flex flex-col gap-2" data-testid="unrecorded-commissions">
       <p className="text-xs text-gray-500">

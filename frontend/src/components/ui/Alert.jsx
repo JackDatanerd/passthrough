@@ -22,7 +22,11 @@ const TEXT_SIZE = /(?:^|\s)text-(?:xs|sm|base|lg|xl|2xl)(?:\s|$)/
 // on the button that was pressed, so a keyboard user on a long form was never taken to the message (and a sighted one could have it
 // below the fold). With this the box takes focus (and scrolls into view) each time it goes from empty to showing a message —
 // clear the message when the next attempt starts and a repeat of the same text is brought into view again.
-export default function Alert({ variant = 'error', className, children, focusOnShow = false, ...props }) {
+// `action: { label, onClick, busy? }` (round 27): one button at the end of the message — "Try again" on a failed load, "Undo". About a
+// dozen screens hand-rolled their own retry link inside an error box, with different classes and (in three places) a raw <button>
+// that had no type; this is the one version. It never makes an empty message show: the box is still drawn only for real content.
+// `busy` keeps the button focusable (aria-disabled, click swallowed) like <Button loading>, so a keyboard user is not dropped on <body>.
+export default function Alert({ variant = 'error', className, children, focusOnShow = false, action, ...props }) {
   // Several children that are ALL empty ({a}{b} with both falsy) used to draw an empty bordered box.
   // Round 23: a numeric 0 is empty too — `{count && <x/>}` with count = 0 drew a red box holding just "0".
   const empty = !Children.toArray(children).some(c => c !== '' && c !== 0)
@@ -35,6 +39,7 @@ export default function Alert({ variant = 'error', className, children, focusOnS
   // special-cased by assistive tech and needs nothing. For the others the live region goes into the page EMPTY first and gets its
   // message in the effect that follows, so the text arrives as a change to a region that already exists. (Content is in the DOM by
   // the time any test or caller looks: the effect flushes inside the same act / tick.)
+  const act = action && typeof action.onClick === 'function' && action.label ? action : null
   const live = variant !== 'error'
   const [filled, setFilled] = useState(!live)
   useEffect(() => { setFilled(!live || !empty) }, [live, empty])
@@ -49,6 +54,19 @@ export default function Alert({ variant = 'error', className, children, focusOnS
       {...props}
     >
       {children}
+      {act && (
+        <>
+          {' '}
+          <button
+            type="button"
+            onClick={e => { if (act.busy) { e.preventDefault(); return } act.onClick(e) }}
+            aria-disabled={act.busy || undefined}
+            className="font-medium underline underline-offset-2 hover:no-underline rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-current aria-disabled:opacity-60 aria-disabled:cursor-not-allowed"
+          >
+            {act.label}
+          </button>
+        </>
+      )}
     </div>
   )
 }

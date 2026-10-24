@@ -84,6 +84,14 @@ export default function FileUpload({
   if (look === 'card') {
     const ext = (file?.name || '').split('.').pop().toUpperCase().slice(0, 4)
     const kb = file?.size ? (file.size >= 1048576 ? `${(file.size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(file.size / 1024))} KB`) : ''
+    // Round 27: the held-file chip is a drop target too. Only the empty zone was, so dragging a replacement onto the chip was refused
+    // (the drop guard shows "not allowed") while the default look replaces the file when one is dropped on it.
+    const dropProps = {
+      onDrop: e => { e.preventDefault(); dragDepth.current = 0; setDrag(false); if (!disabled) handle(e.dataTransfer.files) },
+      onDragOver: e => { e.preventDefault(); if (disabled && e.dataTransfer) e.dataTransfer.dropEffect = 'none' },
+      onDragEnter: e => { e.preventDefault(); if (disabled) return; dragDepth.current++; setDrag(true) },
+      onDragLeave: () => { if (disabled) return; dragDepth.current = Math.max(0, dragDepth.current - 1); if (dragDepth.current === 0) setDrag(false) },
+    }
     const hidden = (
       <input ref={inputRef} type="file" accept={acceptAttr} disabled={disabled} className="hidden" tabIndex={-1}
         onChange={e => { handle(e.target.files); e.target.value = '' }} />
@@ -92,7 +100,8 @@ export default function FileUpload({
       <div>
         {ariaLabel && <span id={descId} className="sr-only">{ariaLabel}</span>}
         {file ? (
-          <div data-testid="file-chip" className="flex items-center gap-2.5 rounded-xl border-[1.5px] border-green-700 bg-green-50 px-3 py-2.5 text-sm">
+          <div data-testid="file-chip" data-file-dropzone="" {...dropProps}
+            className={cn('flex items-center gap-2.5 rounded-xl border-[1.5px] px-3 py-2.5 text-sm transition-colors', drag ? 'border-blue-700 bg-blue-50' : 'border-green-700 bg-green-50')}>
             <span aria-hidden="true" className="grid h-9 w-[30px] shrink-0 place-items-center rounded-[5px] border border-gray-300 bg-white text-[10px] font-extrabold text-blue-700">{ext}</span>
             <span className="min-w-0 flex-1">
               <b className="block truncate text-gray-900">{file.name}</b>
@@ -112,10 +121,7 @@ export default function FileUpload({
             aria-describedby={ariaLabel ? descId : undefined}
             onClick={e => { if (e.target === inputRef.current) return; openPicker() }}
             onKeyDown={e => { if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); openPicker() } }}
-            onDrop={e => { e.preventDefault(); dragDepth.current = 0; setDrag(false); if (!disabled) handle(e.dataTransfer.files) }}
-            onDragOver={e => { e.preventDefault(); if (disabled && e.dataTransfer) e.dataTransfer.dropEffect = 'none' }}
-            onDragEnter={e => { e.preventDefault(); if (disabled) return; dragDepth.current++; setDrag(true) }}
-            onDragLeave={() => { if (disabled) return; dragDepth.current = Math.max(0, dragDepth.current - 1); if (dragDepth.current === 0) setDrag(false) }}
+            {...dropProps}
             className={cn('rounded-xl border-2 border-dashed px-3.5 py-5 text-center text-sm text-gray-600 transition-colors focus:outline-none focus-visible:ring-[3px] focus-visible:ring-blue-200',
               disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer', drag ? 'border-blue-700 bg-blue-50' : 'border-gray-300 bg-white hover:border-blue-700 hover:bg-blue-50')}
           >

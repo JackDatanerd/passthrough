@@ -119,7 +119,7 @@ export default function AdminPromo() {
     } finally { setSaving(false) }
   }
 
-  if (loadError) return <Alert variant="error">{loadError} <button className="underline" onClick={load}>Retry</button></Alert>
+  if (loadError) return <Alert variant="error" action={{ label: 'Retry', onClick: load }}>{loadError}</Alert>
   if (!data) return <div className="py-12 flex justify-center"><Spinner /></div>
 
   const eff = data.effective

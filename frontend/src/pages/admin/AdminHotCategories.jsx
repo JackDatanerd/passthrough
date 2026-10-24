@@ -122,7 +122,7 @@ export default function AdminHotCategories() {
   const preview = useMemo(() => (view ? mergeHomeData({ hotCategories: view.hotCategories }) : null), [view])
 
   if (loading && !real) return <div className="flex justify-center py-8"><Spinner size="sm" /></div>
-  if (!real) return <Alert variant="error">Could not load the hot categories counts. <button type="button" className="underline" onClick={load}>Try again</button></Alert>
+  if (!real) return <Alert variant="error" action={{ label: 'Try again', onClick: load }}>Could not load the hot categories counts.</Alert>
 
   const w = view.perWindow[days]
   const floor = view.threshold
