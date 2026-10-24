@@ -562,7 +562,10 @@ function scoreKeywords(resumeText, jdText, { hiddenTextChars = 0 } = {}) {
   const entries = [...pool.entries()]
   // 'js' only ever exists as the tail of a framework name ("Node.js" -> node + js); it is covered by the 'node' unigram and
   // the 'node js' bigram, and used to cost a third keyword slot and show a bare "js" in the missing list.
-  const topUnigrams = rankPool(entries.filter(([w]) => !w.includes(' ') && w !== 'js'), TOP_UNIGRAMS)
+  // A framework written "Node.js" is one requirement, not two: keep the 'node js' bigram (it displays as "Node.js") and drop the bare
+  // 'node' unigram it came with. A resume that just says "Node" still matches the bigram (see has() below).
+  const jsHeads = new Set(entries.map(([w]) => /^(\w+) js$/.exec(w)).filter(m => m && JS_FRAMEWORKS[m[1]]).map(m => m[1]))
+  const topUnigrams = rankPool(entries.filter(([w]) => !w.includes(' ') && w !== 'js' && !jsHeads.has(w)), TOP_UNIGRAMS)
   const topBigrams  = rankPool(entries.filter(([w]) => w.includes(' ')), TOP_BIGRAMS)
   const top25 = [...topUnigrams, ...topBigrams]
 
@@ -574,7 +577,11 @@ function scoreKeywords(resumeText, jdText, { hiddenTextChars = 0 } = {}) {
   const all = stemSets(resumeText)
   const ev  = zones.hasSkillsZone ? stemSets(zones.evidence) : all
   const has = (sets, kw) => {
-    if (kw.includes(' ')) { const [a, b] = kw.split(' '); return sets.bigrams.has(`${stem(a)} ${stem(b)}`) }
+    if (kw.includes(' ')) {
+      const [a, b] = kw.split(' ')
+      if (b === 'js' && JS_FRAMEWORKS[a] && sets.stems.has(stem(a))) return true
+      return sets.bigrams.has(`${stem(a)} ${stem(b)}`)
+    }
     return sets.stems.has(stem(kw))
   }
   const matched = top25.filter(kw => has(all, kw))
@@ -796,7 +803,7 @@ function scoreSections(resumeText) {
     // resumes (diacritics are folded away before matching, so "Expérience" is "experience").
     { name: 'Experience', patterns: ['experience','work history','employment history','employment','career history','professional background','internship','internships','experiencia','experiencias','berufserfahrung','erfahrung','parcours professionnel','emploi','emplois'] },
     { name: 'Education',  patterns: ['education','academic background','formation','formations','formacion','educacion','formacao','educacao','ausbildung','bildung','studium','parcours academique'] },
-    { name: 'Skills',     patterns: ['skills','technical skills','core competencies','expertise','competences','competencias','habilidades','aptitudes','kenntnisse','fahigkeiten','fertigkeiten'] },
+    { name: 'Skills',     patterns: ['skills','technical skills','core competencies','expertise','technologies','tools','tech stack','proficiencies','technical proficiencies','programming languages','competences','competencias','habilidades','aptitudes','kenntnisse','fahigkeiten','fertigkeiten'] },
     { name: 'Contact',    patterns: null },
   ]
   // Certifications was previously weighted equally with Summary as one of
@@ -901,13 +908,17 @@ function scoreSections(resumeText) {
 
 // English function words: a resume in English is full of them, one in another language is not. Two-letter words that
 // other languages also use ("a", "in", "on") are left out so they cannot make a Spanish or German resume look English.
+const FOREIGN_FUNCTION_WORDS = new Set(NON_ENGLISH_STOP.split(/\s+/).filter(Boolean))
 const EN_FUNCTION_WORDS = new Set(['the', 'and', 'of', 'to', 'for', 'with', 'by', 'is', 'as', 'at', 'from', 'that', 'this', 'using', 'are', 'was', 'into', 'across', 'through', 'their', 'our', 'also', 'which', 'while'])
 function looksEnglish(text) {
   const words = String(text || '').toLowerCase().match(/[a-z\u00c0-\u024f]+/g) || []
   if (words.length < 60) return true
-  let hits = 0
-  for (const w of words) if (EN_FUNCTION_WORDS.has(w)) hits++
-  return hits / words.length >= 0.05
+  let hits = 0, foreign = 0
+  for (const w of words) { if (EN_FUNCTION_WORDS.has(w)) hits++; if (FOREIGN_FUNCTION_WORDS.has(w)) foreign++ }
+  if (hits / words.length >= 0.05) return true
+  // Terse resume bullets ("Built X in Y, cut Z 40%") carry few of the function words above, so a low English ratio alone is not
+  // evidence of another language: it is non-English only when the Spanish/French/German/Portuguese/Italian/Swahili words are really there.
+  return foreign / words.length < 0.04
 }
 
 // Round 5 (B4): quantification used to mean only %, $, k, m, million or thousand, so "12 engineers", "14 countries",
@@ -920,6 +931,8 @@ const CONTACT_LINE_RE = /@|linkedin\.|github\.|\+?\d[\d\s().-]{8,}/i
 // "2019 - 2021" also looked like a phone number to CONTACT_LINE_RE, silently dropping every real figure on that line.
 function stripDateNoise(line) {
   return line
+    .replace(/(?<![\p{L}\p{N}])24\s*[x\u00d7/-]\s*7(?:\s*[x\u00d7/-]\s*365)?(?![\p{L}\p{N}])/giu, ' ')   // "24/7" is a schedule, not two figures
+    .replace(/(?<![\p{L}\p{N}.])\d{1,2}G(?![\p{L}\p{N}])/g, ' ')                                         // 4G / 5G
     .replace(/\b\d{1,2}\s*[\/.\-]\s*\d{1,2}\s*[\/.\-]\s*(?:\d{4}|\d{2})\b/g, ' ')
     .replace(/\b\d{1,2}\s*[\/.\-]\s*(?:19|20)\d{2}\b/g, ' ')
     .replace(/\b(?:19|20)\d{2}\s*[\/\-\u2013\u2014]\s*\d{1,2}\b(?!\s*(?:%|x\b|k\b|m\b|million|billion|thousand|\s[A-Za-z]{3,}))/g, ' ')
@@ -936,6 +949,12 @@ function stripDateNoise(line) {
 const SKILLS_SECTION_RE = /(?:^| )(?:skills?|technical|competencies|competency|expertise|technologies|technology|tools|tech|stack|languages?|proficiencies|proficiency)(?: |$)/
 const SKILLS_LABEL_LINE = /^\s*(?:[-*\u2022]\s*)?(?:(?:technical|key|core)\s+)?(?:skills?|technologies|tools|tech stack|stack|languages?|certifications?)\s*[:\u2013\u2014-]/i
 const POSTAL_LINE = /^[\p{L} .'\u2019-]+,\s*[\p{L} .'\u2019-]+\s+\d{4,6}(?:-\d{4})?$|^[\p{L} .'\u2019-]+,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?$/u
+const TIME_RESULT_CUE = /\b(?:saved?|saving|cut|reduc\w*|shav\w*|trimm\w*|decreas\w*|accelerat\w*|speed\w*|automat\w*|eliminat\w*|shorten\w*|from)\b[^.;]*$/i
+const TIME_PER = /^\s*(?:per|a|an|each|every)\s+(?:day|week|month|hour|sprint|release|cycle|run|build)\b/i
+function isTimeAchievement(line, m, unit) {
+  if (TIME_RESULT_CUE.test(line.slice(0, m.index))) return true
+  return TIME_PER.test(line.slice(m.index + m[0].length))
+}
 function countQuantifiedFigures(text) {
   let n = 0
   for (const rawLine of bulletLinesOutsideListSections(String(text || ''), SKILLS_SECTION_RE)) {
@@ -954,6 +973,7 @@ function countQuantifiedFigures(text) {
         const cue = /(?:\b(?:in|since|from|during|until|through|by|of|early|late|mid|fy|q[1-4]|on)|\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?))\s*$/i.test(l.slice(0, m.index))
         if (cue || !/s$/i.test(word)) continue
       }
+      if (/^(?:months?|weeks?|days?|hours?)\b/.test(unit) && isTimeAchievement(l, m, unit)) { n++; continue }   // "saved 15 hours a week" is a result
       if (/^(?:years?|yrs?|months?|weeks?|days?|hours?|present|current|to|and|through|until|since|from|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/.test(unit)) continue
       if (num.replace(/\D/g, '').length >= 7) continue                          // phone / id
       n++

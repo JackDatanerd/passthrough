@@ -215,6 +215,10 @@ function docxXmlToLines(xml, ctx = {}) {
   // these for an empty run), matched the run-text pattern below as an OPEN tag and swallowed everything up to the next
   // `</w:t>` — raw XML ("</w:r><w:r><w:t>") ended up inside the extracted line. It carries no text; drop it.
   xml = xml.replace(/<w:t\b[^>]*\/>/g, '')
+  // A text box holds whole paragraphs INSIDE the paragraph that anchors it. The paragraph pattern below stops at the first </w:p>, so
+  // whatever followed the box in the anchor paragraph was lost and whatever preceded it fused onto the box text. Close the anchor
+  // paragraph where the box opens, and open a fresh one where it closes, so the box and both halves each read as their own lines.
+  xml = xml.replace(/<w:txbxContent\b[^>]*>/g, '</w:p><w:p>').replace(/<\/w:txbxContent>/g, '<w:p>')
   // `<w:p ... />` (an empty, self-closed paragraph) must not open a match that
   // swallows the NEXT paragraph's closing tag.
   const paragraphs = xml.match(/<w:p\b[^>]*?(?<!\/)>[\s\S]*?<\/w:p>/g) || []

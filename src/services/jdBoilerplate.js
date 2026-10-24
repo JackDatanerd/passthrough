@@ -59,15 +59,19 @@ const ANCHOR_PHRASES = [
 // line and lost every requirement after it — the keywords were then scored against a few lines of company intro. An anchor now only
 // counts once the text is well under way; an early one is left alone.
 const ANCHOR_MIN_POSITION = 0.3
+const JOB_CONTENT_AFTER = /\b(?:requirements?|qualifications?|responsibilities|what you(?:'|\u2019)ll|you will|must[- ]have|nice[- ]to[- ]have|preferred|basic qualifications|minimum qualifications)\b/i
 function truncateAtFirstAnchor(text) {
   const lower = text.toLowerCase()
   const from = Math.floor(text.length * ANCHOR_MIN_POSITION)
-  let cutAt = text.length
+  const hits = []
   for (const phrase of ANCHOR_PHRASES) {
-    const idx = lower.indexOf(phrase, from)
-    if (idx !== -1 && idx < cutAt) cutAt = idx
+    for (let idx = lower.indexOf(phrase, from); idx !== -1; idx = lower.indexOf(phrase, idx + 1)) hits.push(idx)
   }
-  return text.slice(0, cutAt).trim()
+  hits.sort((a, b) => a - b)
+  // The legal block sits at the END of a posting. A sentence such as "We are an equal opportunity employer" in the company intro
+  // is followed by the role itself, so an anchor is only a cut point when no requirements/responsibilities follow it.
+  for (const idx of hits) if (!JOB_CONTENT_AFTER.test(text.slice(idx))) return text.slice(0, idx).trim()
+  return text.trim()
 }
 
 // Short, isolated noise that survives generic tag-stripping — these were

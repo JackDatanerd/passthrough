@@ -79,7 +79,7 @@ describe('keyword scoring on tech JDs (the old tokenizer made these invisible)',
   })
   it('matches C++, C#, Go, R, ML, AI, CI/CD, Node against a resume that has them', () => {
     const m = kw('Required: C++, C#, Go and R. Nice: ML, AI, CI/CD, Node.js experience.').matched
-    for (const t of ['C++', 'C#', 'Go', 'R', 'ML', 'ai', 'CI/CD', 'node']) expect(m).toContain(t)
+    for (const t of ['C++', 'C#', 'Go', 'R', 'ML', 'ai', 'CI/CD', 'Node.js']) expect(m).toContain(t)
   })
   it('reports a MISSING skill using its real spelling', () => {
     const missing = kw('Must know Kubernetes, Terraform and F#.').missing

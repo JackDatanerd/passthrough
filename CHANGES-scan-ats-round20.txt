@@ -1,0 +1,10 @@
+Scan/ATS round 20 (independent pass; 8 bugs)
+B-6 resume.parser: text-box paragraphs no longer swallow/fuse the anchor paragraph's text (name after a box was dropped).
+B-7 jdBoilerplate: an EEO sentence mid-posting no longer truncates Greenhouse/Lever descriptions; only a closing legal block with no requirements after it is cut.
+B-1 ats.service looksEnglish: terse English resumes no longer read as non-English (needs real foreign function words).
+B-5 ats.service scoreSections: TECHNOLOGIES / TOOLS / TECH STACK / PROFICIENCIES / PROGRAMMING LANGUAGES count as Skills.
+B-2 ats.service scoreKeywords: "Node.js"/"React.js"/"Next.js" count once (bare unigram dropped; plain "React" still matches).
+B-3 countQuantifiedFigures: time saved ("15 hours a week", "from 3 weeks to 5 days") counts.
+B-4 countQuantifiedFigures: 24/7, 24x7, 4G/5G no longer count as figures.
+B-8 DeliveredResumeEditor + QuantificationPrompts warn that saving clears the cover letter.
+tests: tests/scan.ats.round20.test.js; tests/ats.keywords.test.js line 82 now expects "Node.js" (was the duplicated "node").

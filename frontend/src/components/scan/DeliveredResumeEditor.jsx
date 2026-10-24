@@ -79,6 +79,12 @@ export default function DeliveredResumeEditor({ scan, onSaved }) {
           <ResumeFieldsForm draft={draft} setDraft={setDraft} />
           <PaperSizeSelect value={paper} onChange={setPaper} disabled={saving} hint="Both files are rebuilt on this page size when you save." />
           <Alert focusOnShow>{error}</Alert>
+          {scan.coverLetterText && (
+            <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2" data-testid="letter-cleared-warning">
+              Saving clears your cover letter, because it was written from the version you are changing — copy it first if you want to keep
+              any of it. A new letter still counts toward your limit.
+            </p>
+          )}
           <div className="flex gap-3">
             <Button onClick={save} loading={saving}>Save &amp; rebuild files</Button>
             <Button variant="ghost" onClick={() => (dirty ? setConfirmCancel(true) : setEditing(false))} disabled={saving}>Cancel</Button>

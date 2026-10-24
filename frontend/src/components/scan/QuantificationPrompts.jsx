@@ -72,6 +72,9 @@ function PromptRow({ prompt, scan, onSaved }) {
             <p className="text-xs text-gray-500">Include the figure itself — for example "by 30%", "for 12 clients" or "in 2 weeks".</p>
           )}
           <Alert focusOnShow>{error}</Alert>
+          {scan?.coverLetterText && (
+            <p className="text-xs text-amber-800" data-testid="letter-cleared-warning">Saving clears your cover letter (it was written from the current version). Copy it first if you want to keep it.</p>
+          )}
           <div className="flex gap-2">
             <Button size="sm" onClick={save} loading={saving} disabled={!trimmed || unchanged}>Save and rebuild</Button>
             <Button size="sm" variant="secondary" onClick={() => { setEditing(false); setText(prompt.bullet); setError('') }} disabled={saving}>Cancel</Button>
