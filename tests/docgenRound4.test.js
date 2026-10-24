@@ -44,8 +44,8 @@ describe('an all-caps education sub-line is not a heading', () => {
 })
 
 describe('provenance reads "40k" and "40,000" as one figure', () => {
-  const input = { experience: [{ bullets: ['Saved KES 40k monthly on vendor costs', 'Cut costs 1.2m yearly', 'Grew sales 15%'] }] }
+  const input = { experience: [{ bullets: ['Saved EUR 40k monthly on vendor costs', 'Cut costs 1.2m yearly', 'Grew sales 15%'] }] }
   const check = (i, b) => findProvenanceProblems(input, { experience: [{ bullets: [b] }] }, [{ job: 0, bullet: 0, from: [i] }])
-  it.each([[0, 'Saved KES 40,000 monthly.'], [0, 'Saved KES 40k monthly.'], [1, 'Cut costs by 1.2 million yearly.'], [1, 'Cut costs by 1,200,000 yearly.']])('%i %s is fine', (i, b) => expect(check(i, b)).toEqual([]))
-  it.each([[0, 'Saved KES 50k monthly.'], [2, 'Grew sales 25%.']])('%i %s is still a stray figure', (i, b) => expect(check(i, b).join(' ')).toMatch(/not in the input bullets/))
+  it.each([[0, 'Saved EUR 40,000 monthly.'], [0, 'Saved EUR 40k monthly.'], [1, 'Cut costs by 1.2 million yearly.'], [1, 'Cut costs by 1,200,000 yearly.']])('%i %s is fine', (i, b) => expect(check(i, b)).toEqual([]))
+  it.each([[0, 'Saved EUR 50k monthly.'], [2, 'Grew sales 25%.']])('%i %s is still a stray figure', (i, b) => expect(check(i, b).join(' ')).toMatch(/not in the input bullets/))
 })

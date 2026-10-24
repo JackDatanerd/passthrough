@@ -48,7 +48,7 @@ export function bankRail(country, accountNumber = '') {
   const c = String(country || '').toUpperCase()
   // The UK also has sort code + account number and letter-bearing building-society roll numbers, so there only the real start of a UK IBAN
   // (GB, two check digits, four bank letters) counts as an IBAN. Other IBAN countries have no other format.
-  if (IBAN_COUNTRIES.has(c) && (!ROUTING[c] || new RegExp(`^${c}\\d{2}[A-Za-z]{4}`).test(String(accountNumber).replace(/\s+/g, '')))) return 'iban'
+  if (IBAN_COUNTRIES.has(c) && (!ROUTING[c] || new RegExp(`^${c}\\d{2}[A-Za-z]{4}`, 'i').test(String(accountNumber).replace(/\s+/g, '')))) return 'iban'
   if (ROUTING[c]) return 'routing'
   if (ACCOUNT_ONLY[c]) return 'local'
   return 'swift'

@@ -222,3 +222,14 @@ describe('third pass', () => {
     return { mod, restore, state, c: body => ({ env: {}, req: { query: () => 'tok123', json: async () => body }, header: () => {}, json: (b, status = 200) => ({ body: b, status }) }) }
   }
 })
+
+// Fourth pass: IBANs are often typed in lowercase.
+describe('fourth pass', () => {
+  it('a UK IBAN typed in lowercase is still read as an IBAN', () => {
+    const p = d => rails.bankRailProblems({ bankName: 'x', accountName: 'y', ...d }).map(x => x.path)
+    expect(p({ bankCountry: 'GB', accountNumber: 'gb82 west 1234 5698 7654 32' })).toEqual([])
+    expect(p({ bankCountry: 'GB', accountNumber: 'gb82 west 1234 5698 7654 33' })).toEqual(['accountNumber'])
+    expect(clientRails.bankRail('GB', 'gb82 west 1234 5698 7654 32')).toBe('iban')
+    expect(clientRails.bankProblem({ bankCountry: 'GB', accountNumber: 'gb82 west 1234 5698 7654 32' })).toBe('')
+  })
+})

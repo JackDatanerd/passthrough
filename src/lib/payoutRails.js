@@ -69,7 +69,7 @@ const GENERIC_ROUTING_RE = /^[0-9][0-9 -]{3,19}$/
 function readsAsIban(country, acct) {
   if (!IBAN_COUNTRIES.has(country)) return false
   if (!LOCAL_RAIL_COUNTRIES.has(country)) return true
-  return new RegExp(`^${country}\\d{2}[A-Za-z]{4}`).test(String(acct || '').replace(/\s+/g, ''))
+  return new RegExp(`^${country}\\d{2}[A-Za-z]{4}`, 'i').test(String(acct || '').replace(/\s+/g, ''))
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/

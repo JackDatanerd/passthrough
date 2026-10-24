@@ -38,7 +38,7 @@ describe('Letter-paper DOCX compacts as far as it can really absorb', () => {
   const mk = n => ({ name: 'Emily Carter', email: 'emily.carter@example.com', phone: '+1 700 123 456', location: 'Austin, TX', linkedin: 'linkedin.com/in/emily-carter',
     summary: 'Data analyst with 6+ years turning messy operational data into reporting that finance and operations teams act on. Strongest in SQL, Python and Power BI.',
     experience: [0, 1, 2, 3].map(i => ({ title: 'Senior Data Analyst', company: 'Company ' + i, location: 'Austin', dates: `Jan ${2025 - i * 2} – Dec ${2026 - i * 2}`, bullets: Array.from({ length: Math.floor(n / 4) + (i < n % 4 ? 1 : 0) }, (_, j) => B[j % 6]) })),
-    education: [{ degree: 'BSc Statistics', institution: 'University of Leeds', dates: '2012 – 2016', details: null }], skills: ['SQL', 'Python', 'Power BI', 'Excel', 'Tableau'], certifications: ['Google Data Analytics Certificate'], languages: ['English', 'Swahili'] })
+    education: [{ degree: 'BSc Statistics', institution: 'University of Leeds', dates: '2012 – 2016', details: null }], skills: ['SQL', 'Python', 'Power BI', 'Excel', 'Tableau'], certifications: ['Google Data Analytics Certificate'], languages: ['English', 'Spanish'] })
   it('15 to 18 bullets (9-15% over capacity) were measured to fit one page compact; the estimator now picks compact', () => {
     for (const n of [15, 16, 17, 18]) {
       const r = estimateLoad(mk(n), 1) / capacityFor('letter', 'docx')

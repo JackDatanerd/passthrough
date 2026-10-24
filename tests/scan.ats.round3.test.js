@@ -24,7 +24,7 @@ What you'll do
 
 Requirements
 - 5+ years of backend experience with distributed systems
-- Strong knowledge of payment systems, M-Pesa integrations, and idempotency
+- Strong knowledge of payment systems, Stripe integrations, and idempotency
 - Experience with microservices, event-driven architecture and monitoring (Datadog, Grafana)
 
 Nice to have: Go, Rust, GraphQL`
@@ -43,7 +43,7 @@ Senior Software Engineer — PayCo — Austin, TX    2020 – Present
 - Mentored 4 junior engineers
 
 Software Engineer — Startup Ltd — Austin    2017 – 2020
-- Integrated M-Pesa Daraja API for mobile payments
+- Integrated the Stripe Connect API for marketplace payments
 - Implemented event-driven microservices
 
 EDUCATION

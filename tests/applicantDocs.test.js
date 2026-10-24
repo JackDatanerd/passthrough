@@ -30,7 +30,7 @@ const FULL = {
   education: [{ degree: 'MSc X', institution: 'Uni A', dates: '2020' }, { degree: 'BSc Y', institution: 'Uni B', dates: '2016', details: 'Honours.' }],
   skills: ['SQL', 'Python'], certifications: ['AWS CP', 'Google DA'],
   projects: [{ name: 'Matatu', technologies: ['Python'], description: 'Route tool.', link: 'github.com/w/matatu' }],
-  awards: ['Award 2023'], languages: ['English', 'Swahili'],
+  awards: ['Award 2023'], languages: ['English', 'Spanish'],
 }
 
 describe('lib/links hrefFor', () => {
@@ -315,14 +315,14 @@ describe('section rules are visible on every palette', () => {
 })
 
 describe('skills and languages are not doubled either', () => {
-  const rd = { name: 'A', skills: ['• SQL', '- Python', '* R', 'Excel'], languages: ['• English', '– Swahili'], experience: [{ title: 'E', company: 'X', bullets: ['b'] }] }
+  const rd = { name: 'A', skills: ['• SQL', '- Python', '* R', 'Excel'], languages: ['• English', '– Spanish'], experience: [{ title: 'E', company: 'X', bullets: ['b'] }] }
   it('strips a pasted glyph from every entry in the DOCX and the PDF template', async () => {
     const text = await extractText(await generateAtsDocx(rd, null), DOCX)
     expect(text).toContain('SQL, Python, R, Excel')
-    expect(text).toContain('English, Swahili')
+    expect(text).toContain('English, Spanish')
     const html = buildResumeHTML(rd, {}, null)
     expect(html).toContain('SQL &middot; Python &middot; R &middot; Excel')
-    expect(html).toContain('English &middot; Swahili')
+    expect(html).toContain('English &middot; Spanish')
   })
 })
 
@@ -589,7 +589,7 @@ describe('Word does not mark the applicant\'s own details as spelling errors', (
   const lang = xml => (xml.match(/<w:lang w:val="([^"]+)"/) || [])[1]
   const para = (doc, needle) => doc.match(/<w:p>[\s\S]*?<\/w:p>/g).find(p => p.includes(needle))
   const RD = { name: 'Emily Carter', email: 'w@mail.com', linkedin: 'linkedin.com/in/emilycarter-data', summary: 'We optimise the colour programme.',
-    skills: ['SQL', 'dbt'], languages: ['Swahili'], certifications: ['AWS Cloud Practitioner'], awards: ['Verizon Innovation Award'],
+    skills: ['SQL', 'dbt'], languages: ['Spanish'], certifications: ['AWS Cloud Practitioner'], awards: ['Verizon Innovation Award'],
     experience: [{ title: 'Analyst', company: 'Verizon', dates: '2020', bullets: ['Optimised the pricing model.'] }],
     education: [{ degree: 'BSc', institution: 'University of Leeds', dates: '2014', details: 'Dissertation on forecasting.' }],
     projects: [{ name: 'Matatu Optimiser', technologies: ['OR-Tools'], description: 'Route tool.', link: 'github.com/w/matatu' }] }
@@ -602,7 +602,7 @@ describe('Word does not mark the applicant\'s own details as spelling errors', (
   })
   it('exempts names, links, title lines, skills, certifications and awards - and still checks the prose', async () => {
     const { doc } = await parts(await generateAtsDocx(RD, 'https://usepassthrough.com/verify/AB12', { paper: 'a4' }))
-    for (const needle of ['Emily Carter', 'w@mail.com', 'linkedin.com/in/emilycarter-data', 'verify/AB12', 'Verizon', 'University of Leeds', 'Matatu Optimiser', 'OR-Tools', 'github.com/w/matatu', 'dbt', 'Swahili', 'AWS Cloud Practitioner', 'Verizon Innovation Award'])
+    for (const needle of ['Emily Carter', 'w@mail.com', 'linkedin.com/in/emilycarter-data', 'verify/AB12', 'Verizon', 'University of Leeds', 'Matatu Optimiser', 'OR-Tools', 'github.com/w/matatu', 'dbt', 'Spanish', 'AWS Cloud Practitioner', 'Verizon Innovation Award'])
       expect(para(doc, needle), needle).toMatch(/<w:noProof\/>/)
     for (const needle of ['We optimise the colour programme.', 'Optimised the pricing model.', 'Dissertation on forecasting.', 'Route tool.'])
       expect(para(doc, needle), needle).not.toMatch(/<w:noProof\/>/)

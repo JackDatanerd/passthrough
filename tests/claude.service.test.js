@@ -189,8 +189,8 @@ describe('scan/ats round 5: PDF fidelity gate, OCR truncation, sanitizer comment
     experience: [{ company: 'Acme Corp', title: 'Software Engineer', dates: '2019 - 2023', location: null, bullets: ['Built payment services handling retries and idempotency for the checkout flow', 'Reduced incident response time by working with on-call engineers'] }],
     education: [{ institution: 'State University', degree: 'BSc Computer Science', dates: '2015 - 2019', details: 'First class honours' }],
     skills: ['Python', 'PostgreSQL', 'Docker', 'Kafka', 'Redis', 'Go', 'AWS', 'Terraform', 'Linux', 'Git'],
-    certifications: ['AWS Certified Developer Associate'], languages: ['English', 'Swahili'], awards: ['Engineering Excellence Award'] }
-  const full = `<!DOCTYPE html><html><body><h1>Jane Doe</h1><p>jane@x.com</p><h2>Summary</h2><p>${data.summary}</p><h2>Experience</h2><h3>Software Engineer — Acme Corp 2019 - 2023</h3><ul>${data.experience[0].bullets.map(b => `<li>${b}</li>`).join('')}</ul><h2>Education</h2><p>BSc Computer Science — State University 2015 - 2019</p><p>First class honours</p><h2>Skills</h2><p>${data.skills.join(' · ')}</p><h2>Certifications</h2><p>${data.certifications[0]}</p><h2>Languages</h2><p>English, Swahili</p><h2>Awards</h2><p>Engineering Excellence Award</p></body></html>`
+    certifications: ['AWS Certified Developer Associate'], languages: ['English', 'Spanish'], awards: ['Engineering Excellence Award'] }
+  const full = `<!DOCTYPE html><html><body><h1>Jane Doe</h1><p>jane@x.com</p><h2>Summary</h2><p>${data.summary}</p><h2>Experience</h2><h3>Software Engineer — Acme Corp 2019 - 2023</h3><ul>${data.experience[0].bullets.map(b => `<li>${b}</li>`).join('')}</ul><h2>Education</h2><p>BSc Computer Science — State University 2015 - 2019</p><p>First class honours</p><h2>Skills</h2><p>${data.skills.join(' · ')}</p><h2>Certifications</h2><p>${data.certifications[0]}</p><h2>Languages</h2><p>English, Spanish</p><h2>Awards</h2><p>Engineering Excellence Award</p></body></html>`
   it('accepts a page that carries everything the resume says', () => {
     expect(svc.checkHtmlFidelity(data, full).ok).toBe(true)
   })
