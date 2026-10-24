@@ -185,12 +185,12 @@ describe('terms acceptance', () => {
   it('records the current version for a partner who never accepted (admin-created)', async () => {
     t = setup()
     const res = await t.mod.acceptPartnerTerms(ctxOf({ headers: { 'x-partner-token': 'dtok' } }))
-    expect(res.body).toMatchObject({ success: true, alreadyAccepted: false, termsVersion: '2026-10' })
-    expect(t.st.updates[0].patch).toMatchObject({ terms_version: '2026-10' })
+    expect(res.body).toMatchObject({ success: true, alreadyAccepted: false, termsVersion: '2026-10b' })
+    expect(t.st.updates[0].patch).toMatchObject({ terms_version: '2026-10b' })
     expect(typeof t.st.updates[0].patch.terms_accepted_at).toBe('string')
   })
   it('is idempotent once current, rejects a bad token and a removed partner', async () => {
-    t = setup({ partner: { ...PARTNER, terms_version: '2026-10' } })
+    t = setup({ partner: { ...PARTNER, terms_version: '2026-10b' } })
     const again = await t.mod.acceptPartnerTerms(ctxOf({ headers: { 'x-partner-token': 'dtok' } }))
     expect(again.body.alreadyAccepted).toBe(true)
     expect(t.st.updates).toHaveLength(0)
@@ -211,9 +211,9 @@ describe('terms notice', () => {
   it('mails each un-notified partner once, marks them notified, skips removed ones, reports the rest', async () => {
     t = setup({ partnersList: people })
     const res = await t.mod.adminSendTermsNotice(ctxOf())
-    expect(res.body).toMatchObject({ success: true, version: '2026-10', sent: 2, failed: 0 })
+    expect(res.body).toMatchObject({ success: true, version: '2026-10b', sent: 2, failed: 0 })
     expect(t.st.emails.filter(e => e[0] === 'terms').map(e => e[1])).toEqual(['a@x.co', 'b@x.co'])
-    expect(t.st.updates.map(u => u.patch)).toEqual([{ terms_notified_version: '2026-10' }, { terms_notified_version: '2026-10' }])
+    expect(t.st.updates.map(u => u.patch)).toEqual([{ terms_notified_version: '2026-10b' }, { terms_notified_version: '2026-10b' }])
     const sel = t.st.queries.find(q => q.table === 'partners' && q.op === 'select')
     expect(sel.or).toHaveLength(2)
     expect(sel.limit).toBe(40)
@@ -327,7 +327,7 @@ describe('partner-facing transparency', () => {
     expect(JSON.stringify(d)).not.toContain('0123')
     expect(d.payoutHoldUntil).toBeTruthy()                       // changed just now, 48h default hold
     expect(d.termsAcceptanceRequired).toBe(true)
-    expect(d.currentTermsVersion).toBe('2026-10')
+    expect(d.currentTermsVersion).toBe('2026-10b')
     expect(d.conversions[0]).toMatchObject({ isAdjustment: true, adjustmentReason: 'Bonus for the webinar', commissionAmountCents: 1500 })
     expect(d.stats.totalConversions).toBe(0)                     // a bonus is not a conversion
     expect(d.stats.pendingCents).toBe(1500)
@@ -335,7 +335,7 @@ describe('partner-facing transparency', () => {
     t.restore()
   })
   it('no hold once the window passed, and no terms prompt once accepted', async () => {
-    const res = await dash({ ...dashRow, payout_details_submitted_at: '2020-01-01T00:00:00.000Z', terms_version: '2026-10' })
+    const res = await dash({ ...dashRow, payout_details_submitted_at: '2020-01-01T00:00:00.000Z', terms_version: '2026-10b' })
     expect(res.body.data.payoutHoldUntil).toBeNull()
     expect(res.body.data.termsAcceptanceRequired).toBe(false)
     t.restore()

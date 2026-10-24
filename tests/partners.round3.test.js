@@ -225,7 +225,7 @@ describe('partner applications', () => {
     expect(t.st.alerts).toContain('New partner application')
     // Round 6: acceptance is recorded with the version, and the applicant is acknowledged.
     expect(t.st.inserts[0].terms_accepted_at).toEqual(expect.any(String))
-    expect(t.st.inserts[0].terms_version).toBe('2026-10')
+    expect(t.st.inserts[0].terms_version).toBe('2026-10b')
     expect(t.st.received).toEqual([['Ann']])   // (name) — slice(3) of (env, db, email, name)
   })
   it('honeypot: pretends success, stores nothing', async () => {

@@ -115,7 +115,10 @@ export default function PartnerPayoutDetails() {
   const fail0 = msg => showError(msg)
 
   const countryCode = bankCountry === OTHER_COUNTRY ? otherCountry.trim().toUpperCase() : bankCountry
-  const rail = bankRail(countryCode, accountNumber)
+  // Round 37: with masked details on file the account number box is empty, so a UK partner whose IBAN is on file was shown the sort-code
+  // input until they typed. An on-file UK account with no routing code is an IBAN.
+  const onFileIban = !accountNumber && !!onFile && !!loadedPayout && loadedPayout.method === 'BANK' && countryCode === loadedPayout.bankCountry && !loadedPayout.routingCode
+  const rail = bankRail(countryCode, onFileIban ? `${countryCode}00` : accountNumber)
   const routing = routingInfo(countryCode)
   // The one value the partner has to type twice, whatever the method.
   const idValue = method === 'BANK' ? accountNumber : method === 'PAYPAL' ? paypalEmail : phoneNumber
@@ -292,7 +295,7 @@ export default function PartnerPayoutDetails() {
                     )}
                     <Input label={rail === 'iban' ? 'IBAN' : 'Account number'} value={accountNumber}
                       onChange={e => setAccountNumber(e.target.value)} inputMode="text" autoComplete="off"
-                      placeholder={rail === 'iban' ? 'DE89 3704 0044 0532 0130 00' : rail === 'local' ? '12-3456-7890123-00' : ''} />
+                      placeholder={rail === 'iban' ? 'DE89 3704 0044 0532 0130 00' : ''} />
                     <Input label={rail === 'iban' ? 'Re-enter IBAN' : 'Re-enter account number'} value={confirmNumber} onChange={e => setConfirmNumber(e.target.value)} autoComplete="off" />
                     {countryCode && rail === 'swift' && (
                       <Input label="SWIFT/BIC code" value={swiftBic} onChange={e => setSwiftBic(e.target.value.toUpperCase())}

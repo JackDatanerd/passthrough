@@ -1,0 +1,10 @@
+Partners / Referral program, section 4 round 37 (no migration)
+
+- PARTNER_TERMS_VERSION '2026-10' -> '2026-10b'. The payout-rails commit changed the terms text (PayPal as a payout method, a new tax
+  paragraph) without a new version, so accepted partners were neither re-prompted nor sent the notice the terms promise. Existing "Send
+  terms notice" and the dashboard accept banner now apply to everyone who accepted '2026-10'.
+- Routing / SWIFT / country are stored in canonical form (SWIFT upper-case no spaces, routing code no spaces, country upper-case; empty
+  optional keys dropped). A loosely stored old value is rewritten quietly the next time the same details are saved (no payout hold).
+- Payout page: a UK account on file with no sort code shows the IBAN box (it showed the sort-code box until the partner typed).
+- Tests: controller-level coverage for the new rails (PayPal submit, case-only change, routing change hold, legacy account adding
+  country + SWIFT, masking, erasing a PayPal snapshot, payout-run export, wrong-method refusal) and the terms version.

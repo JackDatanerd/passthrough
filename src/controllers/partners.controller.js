@@ -1819,7 +1819,7 @@ const payoutDetailsSchema = z.discriminatedUnion('payoutMethod', [
 ]).superRefine((d, ctx) => {
   if (d.payoutMethod !== 'BANK') return
   for (const p of payoutRails.bankRailProblems(d)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [p.path], message: p.message })
-}).transform(d => d.payoutMethod === 'BANK' ? payoutRails.cleanBankDetails(d) : d)
+})
 const last4Of = v => { const raw = String(v || '').replace(/\s+/g, ''); return raw ? `\u2026${raw.slice(-4)}` : '' }
 
 // Canonical form for comparing two payout-detail objects: same method, same keys, values compared with all
@@ -1889,7 +1889,8 @@ async function submitPayoutDetails(ctx) {
     return ctx.json({ success: true, unchanged: true, message: 'Tax details saved.' })
   }
   const body = payoutDetailsSchema.parse(rawBody)
-  const { payoutMethod, taxCountry, taxId, ...details } = body
+  const { payoutMethod, taxCountry, taxId, ...looseDetails } = body
+  const details = payoutRails.canonicalPayoutDetails(looseDetails)
   const taxPatch = {}
   if (taxCountry !== undefined) taxPatch.tax_country = taxCountry || null
   if (taxId !== undefined)      taxPatch.tax_id = taxId || null
@@ -2404,7 +2405,7 @@ async function trackClick(ctx) {
 // email so the form can't be used to probe which addresses are partners.
 
 // Bump when the program terms change in a way applicants must re-accept. Stored with each acceptance.
-const PARTNER_TERMS_VERSION = '2026-10'
+const PARTNER_TERMS_VERSION = '2026-10b'   // round 37: bumped with the PayPal + tax paragraph added to PartnerTerms.jsx (the text changed, the version had not)
 
 const applicationSchema = z.object({
   name:     z.string().trim().min(1).max(200),

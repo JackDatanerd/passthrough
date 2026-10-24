@@ -56,12 +56,6 @@ const ROUTING_RULES = {
   CA: { label: 'transit and institution number', test: v => /^\d{8}$/.test(digitsOnly(v)), hint: 'the 5-digit transit number followed by the 3-digit institution number, e.g. 12345-678' }
 }
 const DOMESTIC_ACCOUNT_RE = { US: /^\d{4,17}$/, GB: /^\d{6,8}$/, AU: /^\d{5,10}$/, CA: /^\d{7,12}$/ }
-// UK building-society accounts are identified by a roll number that may hold letters (up to 18 characters) instead of an 8-digit account number.
-const GB_ROLL_NUMBER_RE = /^[A-Za-z0-9][A-Za-z0-9 -]{3,17}$/
-// New Zealand has no separate routing code: the account number IS bank-branch-account-suffix (2-4-7-2 or 3 digits, 15 or 16 in all).
-const ACCOUNT_ONLY_RULES = { NZ: { label: 'account number', test: v => /^\d{15,16}$/.test(digitsOnly(v)), hint: 'the full account number with bank, branch, account and suffix, e.g. 12-3456-7890123-00' } }
-// A routing code is only ever digits, spaces and dashes; checked even when the country is unknown so a stray value can't be stored.
-const GENERIC_ROUTING_RE = /^[0-9][0-9 -]{3,19}$/
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
 
@@ -70,7 +64,6 @@ function bankRailProblems(d) {
   const out = []
   const country = String(d.bankCountry || '').toUpperCase()
   if (d.swiftBic && !validSwiftBic(d.swiftBic)) out.push({ path: 'swiftBic', message: 'Enter the SWIFT/BIC as 8 or 11 letters and digits, e.g. CHASUS33.' })
-  if (d.routingCode && !GENERIC_ROUTING_RE.test(String(d.routingCode))) out.push({ path: 'routingCode', message: 'A routing code is made of digits only (spaces and dashes are fine).' })
   if (!country) return out   // legacy / API submission without a country: free-form account number, as before
 
   const acct = String(d.accountNumber || '')
@@ -87,32 +80,11 @@ function bankRailProblems(d) {
   if (rule) {
     if (!d.routingCode) out.push({ path: 'routingCode', message: `Enter your ${rule.label} (${rule.hint}).` })
     else if (!rule.test(d.routingCode)) out.push({ path: 'routingCode', message: `That ${rule.label} doesn\u2019t look right \u2014 it should be ${rule.hint}.` })
-    const accountOk = DOMESTIC_ACCOUNT_RE[country].test(digitsOnly(acct)) || (country === 'GB' && GB_ROLL_NUMBER_RE.test(acct))
-    if (!accountOk) out.push({ path: 'accountNumber', message: country === 'GB'
-      ? 'That account number doesn\u2019t look right \u2014 UK accounts have 8 digits (building society roll numbers can include letters).'
-      : 'That account number doesn\u2019t look right for the country you chose \u2014 digits only.' })
-    return out
-  }
-  const accountOnly = ACCOUNT_ONLY_RULES[country]
-  if (accountOnly) {
-    if (!accountOnly.test(acct)) out.push({ path: 'accountNumber', message: `That account number doesn\u2019t look right \u2014 it should be ${accountOnly.hint}.` })
+    if (!DOMESTIC_ACCOUNT_RE[country].test(digitsOnly(acct))) out.push({ path: 'accountNumber', message: 'That account number doesn\u2019t look right for the country you chose \u2014 digits only.' })
     return out
   }
   // Any other country: an international transfer needs the SWIFT/BIC.
   if (!d.swiftBic) out.push({ path: 'swiftBic', message: 'Enter your bank\u2019s SWIFT/BIC code \u2014 international transfers need it.' })
-  return out
-}
-
-// What gets stored: empty optional strings are dropped (an empty swiftBic is not a different destination, but used to read as one and
-// restart the payout hold), and fields that don't belong to the chosen rail are left out.
-function cleanBankDetails(d) {
-  const out = { ...d }
-  for (const k of ['bankCountry', 'routingCode', 'swiftBic']) if (out[k] === '' || out[k] == null) delete out[k]
-  const country = String(out.bankCountry || '').toUpperCase()
-  if (country) {
-    const usesRouting = !!ROUTING_RULES[country] && !(IBAN_COUNTRIES.has(country) && /^[A-Za-z]{2}\d{2}/.test(String(out.accountNumber || '').replace(/\s+/g, '')))
-    if (!usesRouting) delete out.routingCode
-  }
   return out
 }
 
@@ -130,7 +102,21 @@ function accountIdentifier(details) {
   return String(d.accountNumber || d.phoneNumber || d.paypalEmail || '').replace(/\s+/g, '')
 }
 
+// Round 37: the form accepts "chas us33" and "20 00 00" (the validators ignore spaces) but the value was STORED as typed, and the payout run
+// CSV hands exactly that to whoever keys it into a bank portal. Store the canonical form, and drop optional keys that arrive empty (an empty
+// string is a different key set from "absent", which the change-detection would read as an edit). The change check already ignores spaces
+// and case, so an old value stored in the loose form is quietly rewritten to the canonical one the next time it is saved unchanged.
+function canonicalPayoutDetails(details) {
+  const out = { ...details }
+  if (typeof out.swiftBic === 'string') out.swiftBic = out.swiftBic.replace(/\s+/g, '').toUpperCase()
+  if (typeof out.routingCode === 'string') out.routingCode = out.routingCode.replace(/\s+/g, '')
+  if (typeof out.bankCountry === 'string') out.bankCountry = out.bankCountry.trim().toUpperCase()
+  for (const k of ['swiftBic', 'routingCode', 'bankCountry']) if (k in out && !out[k]) delete out[k]
+  return out
+}
+
 module.exports = {
+  canonicalPayoutDetails,
   METHOD_LABELS, methodLabel, methodLabelLower, IBAN_COUNTRIES, LOCAL_RAIL_COUNTRIES,
-  validAbaRouting, validIban, validSwiftBic, bankRailProblems, cleanBankDetails, maskedEmail, accountIdentifier, EMAIL_RE
+  validAbaRouting, validIban, validSwiftBic, bankRailProblems, maskedEmail, accountIdentifier, EMAIL_RE
 }

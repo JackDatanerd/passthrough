@@ -308,7 +308,7 @@ describe('program terms', () => {
   it('getProgramTerms returns the live numbers the payout run enforces', async () => {
     t = setup()
     const res = await t.mod.getProgramTerms(ctxOf({ env: { COMMISSION_HOLD_DAYS: '14', COMMISSION_MIN_PAYOUT_CENTS: '2000', PAYSTACK_CURRENCY: 'KES' } }))
-    expect(res.body.data).toMatchObject({ termsVersion: '2026-10', holdDays: 14, minPayoutCents: 2000, currency: 'KES', payoutDetailsHoldHours: 48, reapplyCooldownDays: 30 })
+    expect(res.body.data).toMatchObject({ termsVersion: '2026-10b', holdDays: 14, minPayoutCents: 2000, currency: 'KES', payoutDetailsHoldHours: 48, reapplyCooldownDays: 30 })
   })
   const app = { name: 'Ann', email: 'ann@x.co', audience: 'newsletter' }
   const appSetup = o => setup({ partnersSelect: () => ({ data: [], error: null }), other: (q, st) => {
@@ -324,7 +324,7 @@ describe('program terms', () => {
   it('a stored application records acceptance + version and sends the acknowledgment', async () => {
     t = appSetup()
     await t.mod.applyAsPartner(ctxOf({ body: { ...app, acceptTerms: true } }))
-    expect(t.st.appInserts[0]).toMatchObject({ terms_version: '2026-10' })
+    expect(t.st.appInserts[0]).toMatchObject({ terms_version: '2026-10b' })
     expect(Date.parse(t.st.appInserts[0].terms_accepted_at)).toBeGreaterThan(Date.now() - 5000)
     expect(t.st.emails).toEqual([['Ann']])
   })
@@ -352,7 +352,7 @@ describe('adminApproveApplication', () => {
         if (q.table === 'partner_applications' && q.op === 'update') {
           s.appUpdates.push(q.patch)
           if (q.patch.status === 'PENDING' && o.restoreError) return { data: null, error: o.restoreError }
-          return { data: q.patch.status === 'APPROVED' ? { id: 'a1', name: 'Ann', email: 'ann@x.co', terms_accepted_at: '2026-10-01T00:00:00Z', terms_version: '2026-10' } : null, error: null }
+          return { data: q.patch.status === 'APPROVED' ? { id: 'a1', name: 'Ann', email: 'ann@x.co', terms_accepted_at: '2026-10-01T00:00:00Z', terms_version: '2026-10b' } : null, error: null }
         }
         if (q.table === 'partners' && q.op === 'insert') { s.partnerInsert = q.values; return { data: o.insertError ? null : { id: 'newp', commission_rate: 0.2, payout_details_token: 'tk', dashboard_token: 'dk', ...q.values }, error: o.insertError || null } }
         return undefined
@@ -369,7 +369,7 @@ describe('adminApproveApplication', () => {
     t = approveSetup()
     const res = await t.mod.adminApproveApplication(ctxOf({ params: { id: 'a1' }, body: {} }))
     expect(res.body.success).toBe(true)
-    expect(t.st.partnerInsert).toMatchObject({ terms_accepted_at: '2026-10-01T00:00:00Z', terms_version: '2026-10' })
+    expect(t.st.partnerInsert).toMatchObject({ terms_accepted_at: '2026-10-01T00:00:00Z', terms_version: '2026-10b' })
   })
   it('a failed approval is restored to PENDING', async () => {
     t = approveSetup({ insertError: { message: 'boom' } })
