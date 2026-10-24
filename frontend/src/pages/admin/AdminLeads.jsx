@@ -719,7 +719,7 @@ export default function AdminLeads() {
                     <Select
                       aria-label={`Status for ${l.email}`}
                       value={l.status}
-                      disabled={busyId === l.id}
+                      pending={busyId === l.id}
                       onChange={e => changeStatus(l, e.target.value)}
                       size="sm"
                       wrapperClassName="w-fit"
@@ -747,7 +747,7 @@ export default function AdminLeads() {
                     key={`${l.id}:${l.notes || ''}`}
                     aria-label={`Notes for ${l.email}`}
                     defaultValue={l.notes || ''}
-                    disabled={busyId === l.id}
+                    pending={busyId === l.id}
                     maxLength={2000}
                     onBlur={e => saveNotes(l, e.target.value.trim())}
                     placeholder="Add a note…"

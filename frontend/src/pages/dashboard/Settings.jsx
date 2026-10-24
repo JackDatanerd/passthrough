@@ -647,7 +647,7 @@ export default function Settings() {
             {notifyScanResults !== null && (
               <Checkbox
                 checked={notifyScanResults}
-                disabled={prefSaving}
+                pending={prefSaving}
                 onChange={handleToggleNotify}
                 label={<span className="font-medium text-gray-900">Email me when a scan finishes</span>}
                 description="The score summary after each scan."
@@ -656,7 +656,7 @@ export default function Settings() {
             {notifyOutcomeFollowup !== null && (
               <Checkbox
                 checked={notifyOutcomeFollowup}
-                disabled={prefSaving}
+                pending={prefSaving}
                 onChange={handleToggleFollowup}
                 label={<span className="font-medium text-gray-900">Ask me how it went after a fix</span>}
                 description="One email, a few weeks after a fixed resume is delivered, asking whether it led to an interview."

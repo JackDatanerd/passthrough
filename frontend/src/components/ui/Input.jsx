@@ -14,7 +14,9 @@ import { useCharCount, FieldFooter } from './CharCount'
 //    an accessible name (several forms used placeholder-only fields).
 // `size="sm"` is the compact field used in toolbars and inline forms (search boxes, a rename field) — those had hand-rolled
 // `<input>`s because the only size here was the full form-field one. (It shadows the native `size` attribute, as Select's does.)
-const Input = forwardRef(function Input({ label, error, hint, className, wrapperClassName, id, endAdornment, size = 'md', 'aria-describedby': extraDescribedBy, showCount = false, ...props }, ref) {
+// `pending`: read-only and aria-disabled instead of natively disabled while a request that involves this field runs — a disabled field
+// drops keyboard focus onto <body>. The value stays and is still submitted.
+const Input = forwardRef(function Input({ label, error, hint, className, wrapperClassName, id, endAdornment, size = 'md', 'aria-describedby': extraDescribedBy, showCount = false, pending = false, ...props }, ref) {
   const autoId = useId()
   const inputId = id || autoId
   // BUG FIX (Section 11 audit): this used to include `${inputId}-hint`
@@ -39,11 +41,12 @@ const Input = forwardRef(function Input({ label, error, hint, className, wrapper
         size === 'sm' ? 'py-1.5 text-base sm:text-sm' : 'py-2.5 text-base sm:py-2 sm:text-sm',
         'focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
         error ? 'border-red-400 bg-red-50' : 'border-gray-300 bg-white',
-        'disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed',
+        'disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed aria-disabled:bg-gray-100 aria-disabled:text-gray-500',
         className
       )}
       {...props}
       {...handlers}
+      {...(pending ? { readOnly: true, 'aria-disabled': true } : {})}
       aria-invalid={error ? true : props['aria-invalid']}   // after the spread: an error always marks the field invalid
     />
   )

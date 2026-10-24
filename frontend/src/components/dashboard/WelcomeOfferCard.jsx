@@ -1,6 +1,7 @@
 import Button from '../ui/Button'
 import CopyButton from '../ui/CopyButton'
 import { fmtPrice } from '../../hooks/usePricing'
+import { formatMonthDay } from '../../lib/utils'
 
 // The account's personal welcome offer (hooks/useWelcomeOffer), shown on the dashboard so a new account sees it without having to
 // find the email. The code is applied for them at checkout (it belongs to this account alone), so the card says that first and
@@ -20,7 +21,7 @@ export default function WelcomeOfferCard({ offer, onScan }) {
           It is applied for you at checkout, and it works once.
         </p>
         <p className="text-xs text-emerald-900/70 mt-1">
-          Expires {expires.toLocaleDateString(undefined, { day: 'numeric', month: 'long' })} · {left}
+          Expires {formatMonthDay(expires) ?? '—'} · {left}
         </p>
       </div>
       <div className="flex flex-col items-start gap-2 sm:items-end shrink-0">

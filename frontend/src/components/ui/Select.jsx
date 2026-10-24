@@ -31,7 +31,9 @@ const sizes = {
   sm: 'px-2 py-1 text-base sm:text-xs',
 }
 
-const Select = forwardRef(function Select({ label, error, hint, className, wrapperClassName, id, size = 'md', children, 'aria-describedby': extraDescribedBy, ...props }, ref) {
+// `pending`: the same "in flight" state as <Button pending>, for a select that saves on change. A natively disabled control loses focus (a keyboard
+// user who picked a value was dropped on <body>); `pending` keeps focus, marks it aria-disabled and ignores changes until the save ends.
+const Select = forwardRef(function Select({ label, error, hint, className, wrapperClassName, id, size = 'md', pending = false, children, 'aria-describedby': extraDescribedBy, ...props }, ref) {
   const autoId = useId()
   const selectId = id || autoId
   // Unlike Input there is no placeholder to fall back on: a select with no <label>, aria-label or
@@ -67,10 +69,11 @@ const Select = forwardRef(function Select({ label, error, hint, className, wrapp
           // bg-white lives in the ternary: both bg-* on the control at once, and the stylesheet (not the
           // class order) picks the winner — bg-white used to beat bg-red-50, so the error tint never showed.
           error ? 'border-red-400 bg-red-50' : 'border-gray-300 bg-white',
-        'disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed',
+        'disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed aria-disabled:bg-gray-100 aria-disabled:text-gray-500 aria-disabled:cursor-not-allowed',
           className
         )}
         {...props}
+        {...(pending ? { 'aria-disabled': true, onChange: () => {}, onMouseDown: e => e.preventDefault() } : {})}
         aria-invalid={error ? true : props['aria-invalid']}   // after the spread: an error always marks the field invalid
       >
         {children}

@@ -119,8 +119,10 @@ export default function Menu({
     const all = items()
     const at = all.indexOf(document.activeElement)
     let next = null
+    // Focus not on an item (at = -1; an aria-disabled item that was clicked, say): ArrowDown goes to the first, ArrowUp to the LAST —
+    // the arithmetic alone sent ArrowUp to the second-to-last.
     if (e.key === 'ArrowDown') next = all[(at + 1) % all.length]
-    else if (e.key === 'ArrowUp') next = all[(at - 1 + all.length) % all.length]
+    else if (e.key === 'ArrowUp') next = at < 0 ? all[all.length - 1] : all[(at - 1 + all.length) % all.length]
     else if (e.key === 'Home') next = all[0]
     else if (e.key === 'End') next = all[all.length - 1]
     else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); return }

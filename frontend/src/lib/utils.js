@@ -50,6 +50,18 @@ export function formatDate(dateStr, opts) {
 // the 1st-15th cycle. Used wherever a partner sees a moment that belongs to a cycle.
 export function formatDateUtc(dateStr) { return formatDate(dateStr, { utc: true }) }
 
+// "November 14" / "3:00 AM" in the VIEWER's zone, always en-US like formatDate. A bare toLocaleDateString(undefined, ...) /
+// toLocaleTimeString([], ...) follows the browser's locale ("14 November", "15:00"), so one screen mixed styles. A missing or invalid
+// value is null (the caller words the sentence without it), never "Invalid Date".
+export function formatMonthDay(value) {
+  const d = value instanceof Date ? value : new Date(value)
+  return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })
+}
+export function formatTimeOfDay(value) {
+  const d = value instanceof Date ? value : new Date(value)
+  return Number.isNaN(d.getTime()) ? null : d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+}
+
 // Today's date as YYYY-MM-DD in the VIEWER's zone, for file names. `new Date().toISOString().slice(0, 10)` is the UTC day, so a file
 // exported at 01:00 in Berlin (or at 8 pm in New York) was named for the wrong day.
 export function dateStamp(date = new Date()) {
@@ -289,7 +301,7 @@ export function csvCell(v) {
   if (typeof v === 'number' && !Number.isFinite(v)) return ''
   // A negative amount handed over as a string ("-12.00", from .toFixed(2)) is a number, not a formula: the apostrophe guard below
   // turned it into the text '-12.00. Only a plain decimal qualifies, so "-1+1" and the like still get the guard.
-  if (typeof v === 'string' && /^-\d+(?:\.\d+)?$/.test(v)) return v
+  if (typeof v === 'string' && /^-(?:\d+(?:\.\d+)?|\.\d+)$/.test(v)) return v
   if (typeof v === 'object' && typeof v.__csvText === 'string') {
     const raw = v.__csvText
     if (raw === '') return ''

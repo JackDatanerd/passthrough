@@ -7,11 +7,15 @@ import FieldError from './FieldError'
 // typed per call site). With `label`, the whole row is clickable; without it, pass
 // `aria-label`. Spread props (checked, onChange, disabled, …) go to the <input>.
 //
+// `pending` (the same "in flight" state as <Button pending>): for a box that saves the moment it is toggled. The native `disabled` attribute
+// makes a browser drop focus from the control, so a keyboard user who toggled it was left on <body>; `pending` keeps it focusable, marks it
+// aria-disabled and swallows the toggle instead. Use it instead of `disabled={saving}`.
+//
 // `description` is a second, quieter line under the label (what the option actually does) and `error`
 // a message tied to the box (aria-invalid + aria-describedby, announced when it appears) — the two
 // things the hand-rolled consent / preference checkboxes (Register's terms, Settings' email opt-in)
 // had to build themselves because this component had neither. Both need a `label`.
-const Checkbox = forwardRef(function Checkbox({ label, description, error, alignTop, className, wrapperClassName, id, indeterminate, 'aria-describedby': extraDescribedBy, ...props }, ref) {
+const Checkbox = forwardRef(function Checkbox({ label, description, error, alignTop, className, wrapperClassName, id, indeterminate, pending = false, 'aria-describedby': extraDescribedBy, ...props }, ref) {
   const autoId = useId()
   const inputId = id || autoId
   const noteId = `${inputId}-note`
@@ -36,6 +40,10 @@ const Checkbox = forwardRef(function Checkbox({ label, description, error, align
       // After the spread, so neither can be replaced by a caller's own props: the error stays tied to the box (the caller's
       // description is joined to it, not swapped for it) and an error always marks the box invalid.
       aria-invalid={showError ? true : props['aria-invalid']}
+      {...(pending ? {
+        'aria-disabled': true,
+        onChange: () => {},   // controlled: React puts `checked` back as soon as the event ends (preventDefault on the click would fight that)
+      } : {})}
       aria-describedby={[showError && noteId, extraDescribedBy].filter(Boolean).join(' ') || undefined}
     />
   )
@@ -43,7 +51,7 @@ const Checkbox = forwardRef(function Checkbox({ label, description, error, align
   if (!label) return wrapperClassName ? <span className={wrapperClassName}>{input}</span> : input
   // Multi-line text (a description, or a long consent sentence — `alignTop`) keeps the box on the first line.
   const top = !!description || !!alignTop
-  const disabled = !!props.disabled
+  const disabled = !!props.disabled || pending
   const row = (
     <label
       htmlFor={inputId}

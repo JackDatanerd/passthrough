@@ -2,10 +2,11 @@
 // { limit, used, remaining, resetsAt } — resetsAt is the next UTC midnight as an ISO string,
 // shown here in the viewer's own clock so "resets at 3:00 AM" means THEIR 3 AM.
 // Pure, so the rules can be tested. Returns null when there is nothing trustworthy to say.
+import { formatTimeOfDay } from './utils'
+
 export function describeQuota(quota) {
   if (!quota || !Number.isFinite(quota.limit) || !Number.isFinite(quota.remaining)) return null
-  const when = new Date(quota.resetsAt)
-  const time = Number.isNaN(when.getTime()) ? null : when.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  const time = formatTimeOfDay(new Date(quota.resetsAt))
   const limit = quota.limit
   const remaining = Math.max(0, Math.min(limit, quota.remaining))
   if (remaining === 0) {
@@ -19,6 +20,5 @@ export function describeQuota(quota) {
 
 // "3:00 AM" in the viewer's own clock: when the free scans come back (null when unknown).
 export function resetTimeLabel(quota) {
-  const when = new Date(quota?.resetsAt)
-  return Number.isNaN(when.getTime()) ? null : when.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  return formatTimeOfDay(new Date(quota?.resetsAt))
 }

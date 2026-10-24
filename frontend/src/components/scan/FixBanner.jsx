@@ -4,6 +4,7 @@ import { usePricing, fmtPrice } from '../../hooks/usePricing'
 import { ATS_BADGE_THRESHOLD, ATS_PASS_THRESHOLD, MAX_FIX_RETRIES } from '../../lib/scoreThresholds'
 import { ReferralCodeEntry, PricingFailedNotice } from '../ui/ReferralCodeEntry'
 import NewTag from '../ui/NewTag'
+import { formatMonthDay } from '../../lib/utils'
 import { coverLetterText } from '../../lib/coverLetterOffer'
 
 // A typical professional resume writer's fee, in cents (USD only - see showWriterCompare). Used as the
@@ -168,7 +169,7 @@ export default function FixBanner({
     <p role="status" className="mb-3 text-sm font-medium text-emerald-700" data-testid="welcome-applied">
       ✓ Welcome price applied: {welcomeOffer.percentOff}% off the Full fix + Verified, {fmtPrice(fixQuote.amount, currency)} instead of {fmtPrice(welcomeOffer.listAmountCents, currency)}.{' '}
       <span className="font-normal text-emerald-700/80">
-        Yours alone, and it works once, until {new Date(welcomeOffer.expiresAt).toLocaleDateString(undefined, { day: 'numeric', month: 'long' })}.
+        Yours alone, and it works once, until {formatMonthDay(welcomeOffer.expiresAt) ?? '—'}.
       </span>
     </p>
   ) : null

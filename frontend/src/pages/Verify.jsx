@@ -9,7 +9,7 @@ import Spinner from '../components/ui/Spinner'
 import Form from '../components/ui/Form'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
-import { formatDate, downloadBlob } from '../lib/utils'
+import { formatDate, formatTimeOfDay, downloadBlob } from '../lib/utils'
 import CopyButton from '../components/ui/CopyButton'
 import { ATS_BADGE_THRESHOLD } from '../lib/scoreThresholds'
 import { sha256Hex, classifyFingerprint, fileKindOf, extractSha256, MAX_CHECK_BYTES, MAX_CHECK_FILES } from '../lib/fileFingerprint'
@@ -427,8 +427,7 @@ export default function Verify() {
 
   const lookupLabel = checkLabelFor(lookupResult, data)
   const checkedAtTime = data?.integrityCheckedAt ? new Date(data.integrityCheckedAt) : null
-  const checkedAtLabel = checkedAtTime && !Number.isNaN(checkedAtTime.getTime())
-    ? checkedAtTime.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''
+  const checkedAtLabel = (checkedAtTime && formatTimeOfDay(checkedAtTime)) || ''
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">

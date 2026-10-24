@@ -105,7 +105,10 @@ export function ToastProvider({ children }) {
     // longer by default. `duration: 0` keeps a toast until it is dismissed.
     // `action: { label, onClick }` adds one button (Undo, Retry): it runs onClick and dismisses the toast. A toast with an
     // action is never merged into an identical one, and it stays 10s by default — long enough to reach the button.
-    const show = ({ message, type = 'info', action, duration = action ? 10000 : type === 'error' ? 9000 : 4000 }) => {
+    // `toast('Saved')` is a message with the defaults; destructuring the string as an object lost it and showed nothing.
+    const show = (arg) => {
+      const { message, type = 'info', action, duration = action ? 10000 : type === 'error' ? 9000 : 4000 } =
+        arg !== null && typeof arg === 'object' && !isValidElement(arg) && !(arg instanceof Error) ? arg : { message: arg }
       let text = normalizeMessage(message)
       // A blank message (an undefined server field, say) used to draw an empty coloured box — for an error, no sign that
       // anything failed. An error says so generically; any other blank toast is not shown.
