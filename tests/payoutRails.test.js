@@ -180,3 +180,45 @@ describe('stray and empty fields (re-audit)', () => {
     expect(rails.cleanBankDetails({ ...base, bankCountry: 'SG', swiftBic: 'DBSSSGSG', routingCode: '' })).toEqual({ ...base, bankCountry: 'SG', swiftBic: 'DBSSSGSG' })
   })
 })
+
+// Third independent pass: letter-led UK roll numbers, long IBANs, and the rules a later change must not drop.
+describe('third pass', () => {
+  const base = { payoutMethod: 'BANK', bankName: 'Chase', accountName: 'Alex Morgan' }
+  const problems = d => rails.bankRailProblems({ ...base, ...d }).map(p => p.path)
+  it('a UK roll number that starts with two letters and two digits is a roll number, not a broken IBAN', () => {
+    expect(problems({ bankCountry: 'GB', routingCode: '20-00-00', accountNumber: 'AB12 3456 78' })).toEqual([])
+  })
+  it('a real UK IBAN, and a mistyped one, are still read as IBANs', () => {
+    expect(problems({ bankCountry: 'GB', accountNumber: 'GB82 WEST 1234 5698 7654 32' })).toEqual([])
+    expect(problems({ bankCountry: 'GB', accountNumber: 'GB82 WEST 1234 5698 7654 33' })).toEqual(['accountNumber'])
+  })
+  it('the client form reads them the same way', () => {
+    expect(clientRails.bankRail('GB', 'AB12 3456 78')).toBe('routing')
+    expect(clientRails.bankRail('GB', 'GB82 WEST 1234 5698 7654 32')).toBe('iban')
+    expect(clientRails.bankRail('GB', 'GB00AAAA')).toBe('iban')   // what the form passes when an IBAN is on file
+    expect(clientRails.bankRail('NZ')).toBe('local')
+  })
+  it('a Maltese IBAN is accepted with its spaces (38 characters)', async () => {
+    t = setupBank()
+    await t.mod.submitPayoutDetails(t.c({ ...base, accountNumber: 'MT84 MALT 0110 0001 2345 MTLC AST0 01S', bankCountry: 'MT' }))
+    expect(t.state.patch.payout_details.accountNumber).toBe('MT84 MALT 0110 0001 2345 MTLC AST0 01S')
+  })
+  it('keeps the round-2 rules in place (a later change must not drop them)', () => {
+    expect(typeof rails.cleanBankDetails).toBe('function')
+    expect(problems({ bankCountry: 'NZ', accountNumber: '12-3456-7890123-00' })).toEqual([])
+    expect(problems({ bankCountry: 'US', routingCode: '=cmd|calc', accountNumber: '000123456789' })).toContain('routingCode')
+  })
+  function setupBank() {
+    const state = { patch: null }
+    const db = createFakeSupabase(q => {
+      if (q.table === 'partners' && q.op === 'select') return { data: { payout_method: null, payout_details: null }, error: null }
+      if (q.table === 'partners' && q.op === 'update') return (state.patch = q.patch, { data: { name: 'Alex', email: 'alex@x.co' }, error: null })
+      return undefined
+    })
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/email.service.js': { sendPayoutDetailsChanged: async () => true, sendOwnerAlert: async () => true },
+    })
+    return { mod, restore, state, c: body => ({ env: {}, req: { query: () => 'tok123', json: async () => body }, header: () => {}, json: (b, status = 200) => ({ body: b, status }) }) }
+  }
+})

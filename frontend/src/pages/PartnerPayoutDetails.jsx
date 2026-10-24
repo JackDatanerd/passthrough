@@ -20,7 +20,7 @@ import { formatDateTime } from '../lib/utils'
 // Mirrors the server's formats (partners.controller.js: ACCOUNT_NUMBER_RE / PHONE_RE) so a
 // typo is caught here with a plain message instead of a round trip — and, together with the
 // re-enter-to-confirm fields, before real money is sent to a wrong account later.
-const ACCOUNT_NUMBER_RE = /^[A-Za-z0-9][A-Za-z0-9 \-]{3,33}$/
+const ACCOUNT_NUMBER_RE = /^[A-Za-z0-9][A-Za-z0-9 \-]{3,41}$/
 const PHONE_RE          = /^\+?\(?[0-9][0-9 ()\-]{6,19}$/
 const squash = v => String(v || '').replace(/\s+/g, '')
 
@@ -118,7 +118,7 @@ export default function PartnerPayoutDetails() {
   // Round 37: with masked details on file the account number box is empty, so a UK partner whose IBAN is on file was shown the sort-code
   // input until they typed. An on-file UK account with no routing code is an IBAN.
   const onFileIban = !accountNumber && !!onFile && !!loadedPayout && loadedPayout.method === 'BANK' && countryCode === loadedPayout.bankCountry && !loadedPayout.routingCode
-  const rail = bankRail(countryCode, onFileIban ? `${countryCode}00` : accountNumber)
+  const rail = bankRail(countryCode, onFileIban ? `${countryCode}00AAAA` : accountNumber)
   const routing = routingInfo(countryCode)
   // The one value the partner has to type twice, whatever the method.
   const idValue = method === 'BANK' ? accountNumber : method === 'PAYPAL' ? paypalEmail : phoneNumber
@@ -177,7 +177,7 @@ export default function PartnerPayoutDetails() {
     const number = idValue
     if (method === 'BANK') {
       if (!ACCOUNT_NUMBER_RE.test(body.accountNumber))
-        return fail('That account number doesn\'t look right — use 4–34 letters, digits, spaces or dashes.')
+        return fail('That account number doesn\'t look right — use 4–42 letters, digits, spaces or dashes.')
       const problem = bankProblem(body)
       if (problem) return fail(problem)
     }
@@ -295,7 +295,7 @@ export default function PartnerPayoutDetails() {
                     )}
                     <Input label={rail === 'iban' ? 'IBAN' : 'Account number'} value={accountNumber}
                       onChange={e => setAccountNumber(e.target.value)} inputMode="text" autoComplete="off"
-                      placeholder={rail === 'iban' ? 'DE89 3704 0044 0532 0130 00' : ''} />
+                      placeholder={rail === 'iban' ? 'DE89 3704 0044 0532 0130 00' : rail === 'local' ? '12-3456-7890123-00' : ''} />
                     <Input label={rail === 'iban' ? 'Re-enter IBAN' : 'Re-enter account number'} value={confirmNumber} onChange={e => setConfirmNumber(e.target.value)} autoComplete="off" />
                     {countryCode && rail === 'swift' && (
                       <Input label="SWIFT/BIC code" value={swiftBic} onChange={e => setSwiftBic(e.target.value.toUpperCase())}

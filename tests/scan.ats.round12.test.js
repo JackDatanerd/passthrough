@@ -336,9 +336,9 @@ describe('B9 - a link that already shows its URL is not printed twice', () => {
   const docx = require('../src/services/docx.service')
   const parser = require('../src/services/resume.parser')
   it('an address with & in its query string appears once in the extracted contact line', async () => {
-    const bytes = await docx.generateAtsDocx({ name: 'Hannah W', email: 'a@b.co', portfolio: 'https://amina.dev/?a=1&b=2', experience: [{ company: 'Acme', title: 'Eng', dates: '2020 - 2024', bullets: ['Built APIs'] }] }, null, {})
+    const bytes = await docx.generateAtsDocx({ name: 'Hannah W', email: 'a@b.co', portfolio: 'https://hannah.dev/?a=1&b=2', experience: [{ company: 'Acme', title: 'Eng', dates: '2020 - 2024', bullets: ['Built APIs'] }] }, null, {})
     const text = await parser.extractText(bytes, DOCX_MIME)
-    expect(text.match(/amina\.dev\/\?a=1&b=2/g)).toHaveLength(1)
+    expect(text.match(/hannah\.dev\/\?a=1&b=2/g)).toHaveLength(1)
   })
 })
 

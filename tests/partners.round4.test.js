@@ -267,7 +267,7 @@ describe('G4 — payout details are format-checked', () => {
   }
   const bank = n => ({ payoutMethod: 'BANK', bankName: 'B', accountName: 'K', accountNumber: n })
   const momo = n => ({ payoutMethod: 'MOBILE_MONEY', provider: 'M-Pesa', accountName: 'K', phoneNumber: n })
-  it.each([['1'], ['12'], ['abc!defg'], ['x'.repeat(40)]])('rejects bank account number %s', async n => { await expect(submit(bank(n))).rejects.toThrow() })
+  it.each([['1'], ['12'], ['abc!defg'], ['x'.repeat(43)]])('rejects bank account number %s', async n => { await expect(submit(bank(n))).rejects.toThrow() })
   it.each([['0700'], ['phone-me'], ['+'], ['1'.repeat(30)]])('rejects phone %s', async n => { await expect(submit(momo(n))).rejects.toThrow() })
   it.each([['0123456789'], ['GB82 WEST 1234 5698 7654 32'], ['12-3456-78']])('accepts bank account number %s', async n => { expect((await submit(bank(n))).status).toBe(200) })
   it.each([['+1 415 555 0132'], ['0712345678'], ['(0712) 345-678']])('accepts phone %s', async n => { expect((await submit(momo(n))).status).toBe(200) })

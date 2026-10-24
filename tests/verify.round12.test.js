@@ -59,11 +59,11 @@ describe('public first name: surname-first with titles and particles (round 12)'
     ['Van Dyke, Dick', 'Dick'],
     ['Smith,John', 'John'],
     ['Doe, John', 'John'],                   // unchanged: the original rule
-    ['Wanjiku, Mary Nelson', 'Mary'],
+    ['Whitaker, Mary Nelson', 'Mary'],
     ['John Smith, PhD', 'John'],             // a trailing qualification is not surname-first
     ['John, PhD', 'John'],                   // was null
     ['Reynolds, Jr.', 'Reynolds'],
-    ['Nelson Kamau, CPA(K)', 'Nelson'],
+    ['Nelson Walker, CPA(US)', 'Nelson'],
     ['Jane Doe, Senior Engineer', 'Jane'],   // a job title after a comma is not a surname-first marker
     ['Van Persie', 'Van'],                   // particles without a comma are left alone
     ['Mba Chukwuemeka', 'Mba'],              // Mba is a name, not a credential...

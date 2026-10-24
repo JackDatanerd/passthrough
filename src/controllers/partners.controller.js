@@ -1783,13 +1783,14 @@ async function getPartnerByToken(ctx) {
 // phone number with letters was accepted and real money later went to the wrong place.
 // Formats stay deliberately permissive (spaces/dashes allowed, IBANs and every national
 // scheme fit) — this catches typos and junk, not every invalid account.
-const ACCOUNT_NUMBER_RE = /^[A-Za-z0-9][A-Za-z0-9 \-]{3,33}$/
+// Up to 42 characters: the longest IBAN (Malta, 31) is 38 with its spaces. The IBAN / local-format checks do the real validating.
+const ACCOUNT_NUMBER_RE = /^[A-Za-z0-9][A-Za-z0-9 \-]{3,41}$/
 const PHONE_RE          = /^\+?\(?[0-9][0-9 ()\-]{6,19}$/
 const bankDetailsSchema = z.object({
   payoutMethod:  z.literal('BANK'),
   bankName:      z.string().trim().min(1).max(200),
   accountName:   z.string().trim().min(1).max(200),
-  accountNumber: z.string().trim().regex(ACCOUNT_NUMBER_RE, 'Enter a valid account number (4–34 letters, digits, spaces or dashes).'),
+  accountNumber: z.string().trim().regex(ACCOUNT_NUMBER_RE, 'Enter a valid account number (4–42 letters, digits, spaces or dashes).'),
   // Western-market round: where the account is held decides which routing details are needed (see lib/payoutRails.js).
   // All three are optional here so a submission without them (an older client, a script) still validates as before;
   // the superRefine below enforces the right combination once a country is given.
@@ -1819,7 +1820,7 @@ const payoutDetailsSchema = z.discriminatedUnion('payoutMethod', [
 ]).superRefine((d, ctx) => {
   if (d.payoutMethod !== 'BANK') return
   for (const p of payoutRails.bankRailProblems(d)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [p.path], message: p.message })
-})
+}).transform(d => d.payoutMethod === 'BANK' ? payoutRails.cleanBankDetails(d) : d)
 const last4Of = v => { const raw = String(v || '').replace(/\s+/g, ''); return raw ? `\u2026${raw.slice(-4)}` : '' }
 
 // Canonical form for comparing two payout-detail objects: same method, same keys, values compared with all
