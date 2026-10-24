@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import Footer from './Footer'
 import SkipLink from './SkipLink'
+import LogoMark from './LogoMark'
 import { cn } from '../../lib/utils'
 import Alert from '../ui/Alert'
 import { useAuth } from '../../hooks/useAuth'
@@ -13,6 +14,9 @@ import { consumeFlash, peekFlash, flashMessage } from '../../lib/flash'
 // (Stories, Hot categories, Pricing, For employers) belong to the public site, so they are not repeated here.
 // `badge` marks the tab that carries the "waiting for you" count.
 const tabs = [
+  // The front door: a real page of its own, so a signed-in person never lands in the marketing site to scan.
+  { label: 'Scan',     to: '/scan' },
+  // "Scans" is the list; an open result (/scan/:id) belongs to it, so it stays lit while one is read.
   { label: 'Scans',    to: '/dashboard', badge: true },
   // Verified links in one place: the credential is the product, so it gets its own tab.
   { label: 'Proof',    to: '/dashboard/proof' },
@@ -29,7 +33,8 @@ const tabs = [
 // since every other tab lives beneath it).
 function isActive(pathname, to) {
   const path = (pathname.replace(/\/+$/, '') || '/').toLowerCase()   // the router matches case-insensitively, so must this
-  return path === to || (to !== '/dashboard' && path.startsWith(`${to}/`))
+  if (to === '/dashboard' && /^\/scan\/[^/]/.test(path)) return true
+  return path === to || (to !== '/dashboard' && to !== '/scan' && path.startsWith(`${to}/`))
 }
 
 export default function DashboardLayout({ children }) {
@@ -51,7 +56,8 @@ export default function DashboardLayout({ children }) {
             must never be hidden. One row from sm upward (logo, tabs, sign out); on a phone the tabs drop to their
             own row and scroll sideways rather than wrap. */}
         <div className="max-w-5xl mx-auto px-4 flex flex-wrap items-center gap-x-4 sm:flex-nowrap">
-          <Link to="/" className="order-1 h-14 flex items-center font-bold text-blue-700 text-lg tracking-tight shrink-0">
+          <Link to="/" className="order-1 h-14 flex items-center gap-2 font-display font-extrabold text-ink text-xl tracking-[-0.03em] shrink-0">
+            <LogoMark className="w-7 h-7" />
             Passthrough
           </Link>
           <nav aria-label="Dashboard" className="order-3 w-full sm:order-2 sm:w-auto sm:flex-1 min-w-0 flex gap-0.5 overflow-x-auto pb-2 sm:pb-0">

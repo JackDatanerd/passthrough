@@ -34,7 +34,7 @@ const JD = 'Senior engineer. '.repeat(10)
 function setup(scan, { path = '/scan/s1' } = {}) {
   api.get.mockImplementation(async url => url.startsWith('/payments/pending') ? { data: { data: { pending: null } } } : { data: { data: scan } })
   return render(<MemoryRouter initialEntries={[path]}><Routes>
-    <Route path="/scan/:id" element={<ScanResult />} /><Route path="/" element={<div>home</div>} />
+    <Route path="/scan/:id" element={<ScanResult />} /><Route path="/scan/:id/:tab" element={<ScanResult />} /><Route path="/" element={<div>home</div>} />
   </Routes></MemoryRouter>)
 }
 beforeEach(() => {
@@ -55,13 +55,13 @@ describe('a failed scan says why', () => {
     setup(failed({ failure: { code, message, retryable: false } }))
     expect(await screen.findByTestId('scan-failure-message')).toHaveTextContent(message)
     expect(screen.queryByRole('button', { name: 'Retry this scan' })).toBeNull()
-    expect(screen.getByRole('link', { name: 'Upload a different file' })).toHaveAttribute('href', '/')
+    expect(screen.getByRole('link', { name: 'Upload a different file' })).toHaveAttribute('href', '/scan')
   })
   it('a typed background that needs more detail says so and links back to the box', async () => {
     setup(failed({ inputMode: 'brain_dump', failure: { code: 'NEEDS_MORE_DETAIL', message: 'Tell us a little more about your roles.', retryable: false } }))
     expect(await screen.findByTestId('scan-failure-message')).toHaveTextContent('Tell us a little more about your roles.')
     expect(screen.queryByRole('button', { name: 'Retry this scan' })).toBeNull()
-    expect(screen.getByRole('link', { name: 'Add more detail and try again' })).toHaveAttribute('href', '/?mode=brainDump')
+    expect(screen.getByRole('link', { name: 'Add more detail and try again' })).toHaveAttribute('href', '/scan?mode=brainDump')
   })
   it('a problem on our side keeps the retry button and the existing reassurance', async () => {
     setup(failed({ failure: { code: 'SYSTEM', message: 'Something went wrong on our side while scoring this resume.', retryable: true } }))

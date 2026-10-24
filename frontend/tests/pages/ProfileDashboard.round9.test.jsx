@@ -40,7 +40,7 @@ describe('Settings — additional profile actions', () => {
   it('"Scan with this" deep-links the scan form to that profile', async () => {
     renderSettings()
     await screen.findByText('Product roles')
-    expect(screen.getByRole('link', { name: 'Scan with this' }).getAttribute('href')).toBe('/?mode=savedProfile&profile=p1')
+    expect(screen.getByRole('link', { name: 'Scan with this' }).getAttribute('href')).toBe('/scan?mode=savedProfile&profile=p1')
   })
   it('"Make main" posts the swap, then reloads the list', async () => {
     renderSettings()
@@ -90,7 +90,7 @@ describe('Settings — the two email switches', () => {
 })
 
 describe('Dashboard — rescan shortcut', () => {
-  it('rows that can be rescanned link to /?from=<id>; failed scans do not', async () => {
+  it('rows that can be rescanned link to /scan?from=<id>; failed scans do not', async () => {
     const router = createMemoryRouter([{ path: '/dashboard', element: <DashboardIndex /> }], { initialEntries: ['/dashboard'] })
     render(<RouterProvider router={router} />)
     await screen.findByText('Job one')
@@ -103,6 +103,6 @@ describe('Dashboard — rescan shortcut', () => {
       const link = within(row).queryByRole('menuitem', { name: /against another job/ })
       hrefs.push(link ? link.getAttribute('href') : null)
     }
-    expect(hrefs.filter(Boolean)).toEqual(['/?from=s1'])
+    expect(hrefs.filter(Boolean)).toEqual(['/scan?from=s1'])
   })
 })

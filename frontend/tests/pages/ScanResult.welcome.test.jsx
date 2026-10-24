@@ -46,7 +46,7 @@ function setupApi({ offer = OFFER, offerFails = false } = {}) {
   })
   api.post.mockResolvedValue({ data: { data: { access_code: 'AC', reference: 'R' } } })
 }
-const renderPage = () => render(<MemoryRouter initialEntries={['/scan/s1']}><Routes><Route path="/scan/:id" element={<ScanResult />} /></Routes></MemoryRouter>)
+const renderPage = () => render(<MemoryRouter initialEntries={['/scan/s1']}><Routes><Route path="/scan/:id" element={<ScanResult />} /><Route path="/scan/:id/:tab" element={<ScanResult />} /></Routes></MemoryRouter>)
 const initBody = () => api.post.mock.calls.find(([url]) => url === '/payments/initialize')?.[1]
 
 beforeEach(() => {

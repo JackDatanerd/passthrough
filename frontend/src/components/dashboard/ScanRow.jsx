@@ -76,7 +76,7 @@ export default function ScanRow({ scan, now, credits = 0, prices = {}, selected,
         {['share', 'retryfix', 'download'].includes(need) && <ButtonLink to={to} size="sm" variant="secondary" title="Your files are on the scan page">Download</ButtonLink>}
         <Menu label={`More actions for ${heading}`}>
           <button type="button" role="menuitem" className={itemClass} onClick={() => onBreakdown(scan)}>See the breakdown</button>
-          {RESCANNABLE.includes(scan.status) && <Link role="menuitem" className={itemClass} to={`/?from=${scan.id}`}>Scan this resume against another job</Link>}
+          {RESCANNABLE.includes(scan.status) && <Link role="menuitem" className={itemClass} to={`/scan?from=${scan.id}`}>Scan this resume against another job</Link>}
           <button type="button" role="menuitem" className={`${itemClass} text-red-600`} disabled={!canDeleteScan(scan, now)}
             title={canDeleteScan(scan, now) ? 'Delete this scan' : 'Available once processing finishes'}
             aria-label={`Delete ${heading}`} onClick={() => onDelete(scan)}>Delete…</button>

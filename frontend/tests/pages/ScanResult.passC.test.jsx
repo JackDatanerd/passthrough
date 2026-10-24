@@ -31,14 +31,15 @@ const delivered = (over = {}) => ({ id: 's1', status: 'FIX_DELIVERED', fixPurcha
 function setup(scan, { path = '/scan/s1' } = {}) {
   api.get.mockImplementation(async url => url.startsWith('/payments/pending') ? { data: { data: { pending: null } } } : { data: { data: scan } })
   return render(<MemoryRouter initialEntries={[path]}><Routes>
-    <Route path="/scan/:id" element={<ScanResult />} /><Route path="/" element={<div>home</div>} />
+    <Route path="/scan/:id" element={<ScanResult />} /><Route path="/scan/:id/:tab" element={<ScanResult />} /><Route path="/" element={<div>home</div>} />
   </Routes></MemoryRouter>)
 }
 beforeEach(() => { for (const k of ['get', 'post', 'patch', 'delete']) api[k].mockReset(); auth.user = { id: 'u1', emailVerified: true, freeFixCredits: 0 } })
 
 describe('ScanResult — editor gate', () => {
   it('an uploaded file gets the editor (its preview card) before purchase, even with no structure yet', async () => {
-    setup({ id: 's1', status: 'COMPLETE_FAIL', fixPurchased: false, atsScore: 60, inputMode: 'file', originalResumeData: null, userId: 'u1' })
+    // The editor is part of "Why": what we read from the file, and a chance to correct it before paying.
+    setup({ id: 's1', status: 'COMPLETE_FAIL', fixPurchased: false, atsScore: 60, inputMode: 'file', originalResumeData: null, userId: 'u1' }, { path: '/scan/s1/why' })
     expect(await screen.findByTestId('resume-editor')).toBeInTheDocument()
   })
   it('a typed background with no structure yet does not', async () => {
@@ -51,13 +52,20 @@ describe('ScanResult — editor gate', () => {
 
 describe('ScanResult — delivered resume', () => {
   it('the signed-in owner gets the editor and the cover letter panel', async () => {
-    setup(delivered())
+    // The editor lives with the resume; the cover letter is the Apply step.
+    const { unmount } = setup(delivered())
     expect(await screen.findByTestId('delivered-editor')).toBeInTheDocument()
-    expect(screen.getByTestId('cover-letter')).toBeInTheDocument()
+    expect(screen.queryByTestId('cover-letter')).not.toBeInTheDocument()
+    unmount()
+    setup(delivered(), { path: '/scan/s1/apply' })
+    expect(await screen.findByTestId('cover-letter')).toBeInTheDocument()
   })
   it('no cover letter panel without a stored job description; neither tool for a non-owner or a Passthrough takedown', async () => {
-    setup(delivered({ jobDescriptionText: '' }))
+    const { unmount } = setup(delivered({ jobDescriptionText: '' }))
     expect(await screen.findByTestId('delivered-editor')).toBeInTheDocument()
+    unmount()
+    setup(delivered({ jobDescriptionText: '' }), { path: '/scan/s1/apply' })
+    expect(await screen.findByTestId('tab-apply')).toBeInTheDocument()
     expect(screen.queryByTestId('cover-letter')).not.toBeInTheDocument()
   })
   it('hidden from someone who is not the owner', async () => {

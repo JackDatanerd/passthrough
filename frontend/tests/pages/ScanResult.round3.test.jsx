@@ -35,7 +35,7 @@ const JD = 'Senior engineer. '.repeat(10)
 function setup(scan, { path = '/scan/s1' } = {}) {
   api.get.mockImplementation(async url => url.startsWith('/payments/pending') ? { data: { data: { pending: null } } } : { data: { data: scan } })
   return render(<MemoryRouter initialEntries={[path]}><Routes>
-    <Route path="/scan/:id" element={<ScanResult />} /><Route path="/" element={<div>home</div>} />
+    <Route path="/scan/:id" element={<ScanResult />} /><Route path="/scan/:id/:tab" element={<ScanResult />} /><Route path="/" element={<div>home</div>} />
   </Routes></MemoryRouter>)
 }
 beforeEach(() => {
@@ -80,7 +80,7 @@ describe('ScanResult — retry a failed scan in place (G1)', () => {
   })
   it('"start over" for a saved-profile scan goes back into saved-profile mode', async () => {
     setup(failed({ inputMode: 'saved_profile' }))
-    expect(await screen.findByRole('link', { name: 'Start over with different input' })).toHaveAttribute('href', '/?mode=savedProfile')
+    expect(await screen.findByRole('link', { name: 'Start over with different input' })).toHaveAttribute('href', '/scan?mode=savedProfile')
   })
 })
 
@@ -105,7 +105,7 @@ describe('ScanResult — formatted-file check before a Badge (G2)', () => {
 
 describe('ScanResult — the job description and the delivered score\'s breakdown', () => {
   it('shows the job description that was scored (G5)', async () => {
-    setup({ id: 's1', status: 'COMPLETE_FAIL', fixPurchased: false, userId: 'u1', inputMode: 'brain_dump', atsScore: 60, jobDescriptionText: JD })
+    setup({ id: 's1', status: 'COMPLETE_FAIL', fixPurchased: false, userId: 'u1', inputMode: 'brain_dump', atsScore: 60, jobDescriptionText: JD }, { path: '/scan/s1/why' })
     expect(await screen.findByTestId('jd-panel')).toBeInTheDocument()
   })
   const delivered = (over = {}) => ({ id: 's1', status: 'FIX_DELIVERED', fixPurchased: true, userId: 'u1', atsScore: 60, fixAtsScore: 70, fixTier: 'FIX', fixRetryCount: 0, jobDescriptionText: JD, inputMode: 'file', rewrittenResumeData: { name: 'J' }, originalResumeData: { name: 'J' }, fixAtsDetail: { keywords: { matched: [], missing: ['docker'] } }, ...over })

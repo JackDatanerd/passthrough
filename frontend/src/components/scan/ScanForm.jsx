@@ -1,8 +1,3 @@
-import { useState, useEffect, useRef } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
-import api, { getErrorMessage } from '../../lib/api'
-import { describeQuota } from '../../lib/quota'
-import { useAuth } from '../../hooks/useAuth'
 import Button from '../ui/Button'
 import Input from '../ui/Input'
 import Textarea from '../ui/Textarea'
@@ -10,277 +5,24 @@ import Select from '../ui/Select'
 import Checkbox from '../ui/Checkbox'
 import FileUpload from '../ui/FileUpload'
 import Form from '../ui/Form'
-import { addAnonScanToken } from '../../lib/anonScans'
 import Alert from '../ui/Alert'
 import ProgressBar from '../ui/ProgressBar'
-import { isCancelError } from '../../lib/errors'
 import ResumeFieldsForm from './ResumeFieldsForm'
 import PaperSizeSelect from './PaperSizeSelect'
-import { loadBrainDumpDraft, saveBrainDumpDraft, markDraftSent } from '../../lib/brainDumpDraft'
-import { manualHasContent, filled, EMPTY_MANUAL } from '../../lib/resumeForm'
+import useScanForm, { MAX_RESUME_CHARS, MAX_JD_CHARS } from './useScanForm'
 import { formatNumber } from '../../lib/utils'
 
-// Mirrors backend/src/config/constants.js MIN_BRAIN_DUMP_CHARS. No shared
-// constants file between frontend/backend in this project (same pattern as
-// the existing JD-length check below, which mirrors the backend's own
-// hardcoded 50-char minimum) — kept in sync manually, same as that one.
-const MIN_BRAIN_DUMP_CHARS = 100
-// AUDIT FIX (feature gap — section audit "generate a resume from scratch"):
-// mirrors backend/src/config/constants.js MAX_RESUME_CHARS. The backend has
-// always silently truncated brainDumpText past this length (createScan /
-// structureBrainDump) — there was previously no maxLength, no counter, and
-// no warning anywhere in this component, so a detailed multi-role career
-// narrative (naturally more verbose per fact than a bullet-formatted resume)
-// could lose an entire job or degree off the end with zero indication why
-// the AI "forgot" it.
-const MAX_RESUME_CHARS = 12000
-// Mirrors backend MAX_JD_CHARS. Since round 3 the backend FITS a longer posting instead of cutting
-// the first N characters: company intro, benefits and legal text go first, the role and requirements
-// are kept. The counter is a heads-up, not a hard stop, and the result page shows the text scored.
-const MAX_JD_CHARS = 5000
-
+// The compact scan card (homepage hero, and anywhere a small form is wanted). All of its state and rules live in
+// useScanForm, shared with the full /scan page (ScanComposer.jsx), so the two cannot drift apart.
 export default function ScanForm() {
-  const navigate  = useNavigate()
-  const { user }  = useAuth()
-  const [params]  = useSearchParams()
-  // What was being typed when the page was last left (a failed scan, a closed tab) comes back —
-  // see lib/brainDumpDraft.js. Dropped by ScanResult once that scan's result exists.
-  const [draft0] = useState(() => loadBrainDumpDraft(user?.id || null))
-
-  // PHASE 1 — entry mode toggle: upload an existing resume, or start from
-  // a pasted brain dump when the user doesn't have a polished resume yet.
-  // PHASE 4 — a third mode, 'savedProfile', only available (and only shown
-  // as an option) to a logged-in user who has previously saved one.
-  // Opens where the person left off: a kept background or a half-filled form brings its own tab forward (an explicit
-  // ?mode= link, handled below, still wins).
-  const [entryMode, setEntryMode] = useState(() =>
-    params.get('mode') || params.get('from') ? 'upload'
-      : draft0?.text?.trim() ? 'brainDump' : draft0?.manual ? 'manual' : 'upload') // 'upload' | 'brainDump' | 'manual' | 'savedProfile' | 'rescan'
-  // Fourth way in: fill the structured form yourself (no AI structuring, no length box). A kept draft comes back; a signed-in
-  // person starts with their account name and email in the (visible, editable) fields instead of the server adding them
-  // behind their back to a form they left blank.
-  const [manualData, setManualData] = useState(() => draft0?.manual
-    ? { ...EMPTY_MANUAL, ...draft0.manual }
-    : { ...EMPTY_MANUAL, name: user?.name || '', email: user?.email || '' })
-  const restoredManual = !!draft0?.manual
-  // FEATURE GAP CLOSED (Scan/ATS pass): "scan this same resume against another job"
-  // for scans that came from an upload or a typed background (saved-profile users
-  // always had it). Arrives as /?from=<scanId> from a results page; holds the
-  // earlier scan's label once it has loaded.
-  const [rescanSource, setRescanSource] = useState(null)
-  const [useImproved, setUseImproved] = useState(false)
-  const [file,          setFile         ] = useState(null)
-  // Whose draft this is. Set once and never reset to null when the session ends while the form is open —
-  // otherwise the next keystroke would re-save the last person's text as an unowned draft.
-  const draftOwner = useRef(user?.id || null)
-  const [brainDumpText, setBrainDumpText] = useState(() => (draft0?.text || '').slice(0, MAX_RESUME_CHARS))
-  const [hasSavedProfile, setHasSavedProfile] = useState(false)
-  // Additional named profiles (Settings) — '' means the primary profile.
-  const [extraProfiles, setExtraProfiles] = useState([])
-  const [profileChoice, setProfileChoice] = useState('')
-  const [primaryAvailable, setPrimaryAvailable] = useState(true)
-  // Today's free-scan allowance, shown next to the submit button (signed-in only).
-  const [quota, setQuota] = useState(null)
-  // Anonymous users describing their background in free text rarely think
-  // to state their own name — Claude is correctly instructed never to
-  // invent one, which means it's frequently left blank. Logged-in users
-  // already have a server-side fallback to their account name/email; this
-  // covers the case that fallback can't reach.
-  const [contactName,  setContactName ] = useState(draft0?.name || '')
-  const [contactEmail, setContactEmail] = useState(draft0?.email || '')
-  // G6 (round 3): optional address for an anonymous FILE upload, so the result link can be emailed back.
-  const [uploadEmail, setUploadEmail] = useState('')
-  const restored = !!(draft0 && draft0.text.trim())
-
-  const [useUrl,  setUseUrl ] = useState(false)
-  const [jobUrl,  setJobUrl ] = useState('')
-  const [jdText,  setJdText ] = useState('')
-  const [paperSize, setPaperSize] = useState('')   // '' = Automatic; 'letter' | 'a4' = the person's choice
-  const [loading, setLoading] = useState(false)
-  // Upload progress (0-100) and the controller that cancels it: a 5MB resume on a slow phone link takes over a minute,
-  // and the button used to spin with no sign of movement and no way out.
-  const [uploadPct, setUploadPct] = useState(null)
-  const uploadAbort = useRef(null)
-  useEffect(() => () => uploadAbort.current?.abort(), [])
-  const [error,   setError  ] = useState('')
-
-  // PHASE 4 — check whether this user has a saved profile, so the third
-  // toggle option can be shown. Anonymous visitors skip this entirely —
-  // there's no account to have saved a profile to.
-  useEffect(() => {
-    if (!user) return
-    api.get('/profile')
-      .then(res => { const extras = res.data.data.extraProfiles || []; setExtraProfiles(extras); setPrimaryAvailable(!!res.data.data.hasSavedProfile); setHasSavedProfile(!!res.data.data.hasSavedProfile || extras.length > 0); if (!res.data.data.hasSavedProfile && extras.length) setProfileChoice(extras[0].id); const wanted = params.get('profile'); if (wanted && extras.some(x => x.id === wanted)) setProfileChoice(wanted); setQuota(res.data.data.quota || null) })
-      .catch(() => {}) // fail silently — worst case the toggle just doesn't show
-  }, [user])
-
-  useEffect(() => {
-    if (user?.id && !draftOwner.current) draftOwner.current = user.id
-    saveBrainDumpDraft({ text: brainDumpText, name: contactName, email: contactEmail, manual: manualData, owner: draftOwner.current })
-  }, [brainDumpText, contactName, contactEmail, manualData, user?.id])
-
-  // Deep links from the landing page's "three ways to start" cards: /?mode=brainDump | manual.
-  useEffect(() => {
-    const m = params.get('mode')
-    if (m === 'brainDump' || m === 'manual') setEntryMode(m)
-  }, [])
-
-  // PHASE 4 — the dashboard's "Rescan with new JD" button links here with
-  // ?mode=savedProfile. Pre-select that tab once we've confirmed the
-  // profile actually exists (avoids selecting a mode that would just
-  // immediately fail server-side if the profile was deleted elsewhere).
-  useEffect(() => {
-    if (params.get('mode') === 'savedProfile' && hasSavedProfile) {
-      setEntryMode('savedProfile')
-    }
-  }, [hasSavedProfile])
-
-  // /?from=<scanId>: the earlier scan must belong to this (logged-in) user; if it
-  // can't be loaded the form just stays on its normal upload mode.
-  const fromScanId = params.get('from')
-  useEffect(() => {
-    if (!user || !fromScanId) return
-    let cancelled = false
-    api.get(`/scan/${encodeURIComponent(fromScanId)}`)
-      .then(res => {
-        const d = res.data.data
-        if (cancelled || !d || !['COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED'].includes(d.status)) return
-        setRescanSource({
-          id: d.id,
-          // A delivered paid resume can be scanned instead of the original upload.
-          hasImproved: d.status === 'FIX_DELIVERED' && !!d.fixPurchased && !!(d.userEditedResumeData || d.rewrittenResumeData),
-          paperSize: d.paperSize || '',
-          label: d.resumeOriginalName
-            || (d.inputMode === 'brain_dump' ? 'the background you wrote' : d.inputMode === 'file' ? 'the resume you uploaded' : 'your saved profile'),
-        })
-        setPaperSize(d.paperSize || '')
-        setEntryMode('rescan')
-      })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [user, fromScanId])
-
-  function switchEntryMode(mode) {
-    setEntryMode(mode)
-    setError('')
-  }
-
-  async function handleSubmit(e) {
-    e?.preventDefault?.()
-    if (entryMode === 'upload' && !file)
-      return setError('Please upload your resume.')
-    if (entryMode === 'rescan' && !rescanSource)
-      return setError('We could not load that earlier scan. Upload your resume instead.')
-    if (entryMode === 'brainDump' && brainDumpText.trim().length < MIN_BRAIN_DUMP_CHARS)
-      return setError(`Tell us a bit more about your background (min ${MIN_BRAIN_DUMP_CHARS} characters).`)
-    if (entryMode === 'manual' && !manualHasContent(manualData))
-      return setError('Add at least one job, school, project, skill or a summary first.')
-    if (entryMode === 'manual' && !user) {
-      if (!filled(manualData.name))
-        return setError('Please enter your name.')
-      if (filled(manualData.email) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(manualData.email.trim()))
-        return setError('Please enter a valid email address.')
-    }
-    if (entryMode === 'upload' && !user && uploadEmail.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(uploadEmail.trim()))
-      return setError('Please enter a valid email address, or leave it blank.')
-    if (entryMode === 'brainDump' && !user) {
-      if (!contactName.trim())
-        return setError('Please enter your name.')
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail.trim()))
-        return setError('Please enter a valid email address.')
-    }
-    if (!useUrl && jdText.length < 50)
-      return setError('Job description too short (min 50 characters).')
-    if (useUrl  && !jobUrl.trim())
-      return setError('Please enter a job posting URL.')
-
-    setError('')
-    setLoading(true)
-    const controller = new AbortController()
-    uploadAbort.current = controller
-    setUploadPct(0)
-    try {
-      const formData = new FormData()
-      if (entryMode === 'upload') {
-        formData.append('resume', file)
-        if (!user && uploadEmail.trim()) formData.append('contactEmail', uploadEmail.trim())
-      } else if (entryMode === 'savedProfile') {
-        formData.append('useSavedProfile', 'true')
-        if (profileChoice) formData.append('savedProfileId', profileChoice)
-      } else if (entryMode === 'rescan') {
-        formData.append('sourceScanId', rescanSource.id)
-        if (rescanSource.hasImproved && useImproved) formData.append('rescanVersion', 'delivered')
-      } else if (entryMode === 'manual') {
-        formData.append('resumeDataJson', JSON.stringify(manualData))
-      } else {
-        formData.append('brainDumpText', brainDumpText.trim())
-        if (!user) {
-          formData.append('contactName', contactName.trim())
-          formData.append('contactEmail', contactEmail.trim())
-        }
-      }
-      // Only sent when it says something: a rescan whose source was set to a size and is now back on Automatic says so explicitly.
-      if (paperSize) formData.append('paperSize', paperSize)
-      else if (entryMode === 'rescan' && rescanSource?.paperSize) formData.append('paperSize', 'auto')
-      if (useUrl && jobUrl.trim())
-        formData.append('jobDescriptionUrl', jobUrl.trim())
-      else
-        formData.append('jobDescriptionText', jdText)
-
-      const res = await api.post('/scan', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-        signal: controller.signal,
-        onUploadProgress: e => { if (e && e.total > 0) setUploadPct(Math.min(100, Math.round((e.loaded / e.total) * 100))) },
-      })
-      const { scanId, anonToken } = res.data.data
-
-      // AUDIT FIX (feature gap): previously overwrote a single localStorage
-      // slot, so only the LAST anon scan before registering was ever
-      // claimable — see anonScans.js.
-      if (anonToken) addAnonScanToken(scanId, anonToken)
-      // Which scan this draft produced: only that scan's result clears it (lib/brainDumpDraft.js).
-      if (entryMode === 'brainDump') markDraftSent(scanId, 'text')
-      else if (entryMode === 'manual') markDraftSent(scanId, 'manual')
-
-      navigate(`/scan/${scanId}`)
-    } catch (err) {
-      // The person pressed "Cancel upload": nothing failed, so nothing is shown (the form keeps everything they entered).
-      if (isCancelError(err)) { setError(''); return }
-      const msg = getErrorMessage(err, 'Something went wrong. Please try again.')
-      // AUDIT FIX: this only auto-switched back to paste mode when the
-      // backend explicitly marked the failure `blocked: true` (LinkedIn,
-      // listing pages, Workday). Every other JD-URL fetch failure — a 404,
-      // a timeout, a page that just didn't extract enough text — left the
-      // UI sitting in URL mode with the same URL, even though the error
-      // message itself says "paste instead" either way.
-      //
-      // AUDIT FIX (Auth/Scan round): that fix over-corrected — it flipped out
-      // of URL mode on ANY failure while useUrl was on, including ones that
-      // have nothing to do with the URL at all: a 429 (rate limit / daily
-      // scan cap) or a 413 (file too large) on the whole submission. Losing
-      // URL mode there just discarded a URL that was never actually the
-      // problem. A JD-URL fetch failure is always a 400 (see createScan in
-      // scan.controller.js) — only that status means the URL itself failed.
-      // Round 5: status 400 alone also covers an empty file, a bad email and malformed form data, none of which are the
-      // URL's fault - the person lost a perfectly good link. The server now names a JD-URL failure explicitly.
-      if (useUrl && err.response?.status === 400 && err.response?.data?.code === 'JD_URL_FAILED') setUseUrl(false)
-      setError(msg)
-    } finally {
-      setLoading(false)
-      setUploadPct(null)
-      uploadAbort.current = null
-    }
-  }
-
-  const submitLabel = entryMode === 'upload'
-    ? 'Scan My Resume — Free'
-    : entryMode === 'savedProfile'
-      ? 'Score My Profile Against This JD — Free'
-      : entryMode === 'rescan'
-        ? 'Scan Against This Job — Free'
-        : entryMode === 'manual'
-          ? 'Score My Resume — Free'
-          : 'Build & Score My Resume — Free'
+  const {
+    user, entryMode, switchEntryMode, file, setFile, uploadEmail, setUploadEmail,
+    brainDumpText, setBrainDumpText, restored, contactName, setContactName, contactEmail, setContactEmail,
+    manualData, setManualData, restoredManual, rescanSource, useImproved, setUseImproved,
+    hasSavedProfile, extraProfiles, profileChoice, setProfileChoice, primaryAvailable,
+    useUrl, setUseUrl, jobUrl, setJobUrl, jdText, setJdText, restoredJd, paperSize, setPaperSize,
+    loading, uploadPct, cancelUpload, error, quotaText, submitLabel, handleSubmit,
+  } = useScanForm()
 
   return (
     <Form onSubmit={handleSubmit} className="flex flex-col gap-5">
@@ -484,12 +226,14 @@ export default function ScanForm() {
           <div className="flex rounded-md overflow-hidden border border-gray-300 text-sm">
             <button type="button"
               onClick={() => setUseUrl(false)}
+              aria-pressed={!useUrl}
               className={`px-3 py-2.5 sm:py-1.5 transition-colors ${!useUrl ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
             >
               Paste text
             </button>
             <button type="button"
               onClick={() => setUseUrl(true)}
+              aria-pressed={useUrl}
               className={`px-3 py-2.5 sm:py-1.5 transition-colors ${useUrl ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
             >
               URL
@@ -497,6 +241,11 @@ export default function ScanForm() {
           </div>
         </div>
 
+        {restoredJd && (
+          <p role="status" className="mb-2 text-xs text-blue-800 bg-blue-50 border border-blue-100 rounded-md px-3 py-1.5">
+            We kept the job you were adding last time — it's back below.
+          </p>
+        )}
         {useUrl ? (
           <div>
             <Input
@@ -548,21 +297,20 @@ export default function ScanForm() {
         <div className="flex flex-col gap-1">
           <ProgressBar value={uploadPct} label="Uploading your resume" doneLabel="Reading your resume…" />
           {uploadPct < 100 && (
-            <button type="button" onClick={() => uploadAbort.current?.abort()}
+            <button type="button" onClick={cancelUpload}
               className="self-start text-xs text-gray-600 underline hover:text-red-600">
               Cancel upload
             </button>
           )}
         </div>
       )}
-      {user && describeQuota(quota) && (
-        <p role="status" className={`text-xs ${describeQuota(quota).exhausted ? 'text-amber-700 font-medium' : 'text-gray-500'}`}>
-          {describeQuota(quota).text}
+      {user && quotaText && (
+        <p role="status" className={`text-xs ${quotaText.exhausted ? 'text-amber-700 font-medium' : 'text-gray-500'}`}>
+          {quotaText.text}
         </p>
       )}
       <p className="text-xs text-gray-500">
-        No account needed. Results in ~30 seconds.
-        {!user && ' Without an account, your result is kept for 24 hours — create a free account to keep it.'}
+        {user ? 'Results in ~30 seconds.' : 'No account needed. Results in ~30 seconds. Without an account, your result is kept for 24 hours — create a free account to keep it.'}
       </p>
     </Form>
   )

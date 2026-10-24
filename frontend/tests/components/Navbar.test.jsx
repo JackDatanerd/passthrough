@@ -60,10 +60,10 @@ describe('Navbar', () => {
     expect(home.querySelector('svg[aria-hidden="true"]')).not.toBeNull()
   })
 
-  it('the one button is the scan: "Scan free" jumps to the homepage scan card, for signed-out and signed-in alike', () => {
-    for (const user of [null, { role: 'USER' }]) {
+  it('the one button is the scan: a visitor jumps to the homepage scan card, a signed-in person goes to the /scan page', () => {
+    for (const [user, href] of [[null, '/#scan-form'], [{ role: 'USER' }, '/scan']]) {
       const { unmount } = renderNavbar({ user, logout: () => {} })
-      expect(screen.getByRole('link', { name: 'Scan free' })).toHaveAttribute('href', '/#scan-form')
+      expect(screen.getByRole('link', { name: 'Scan free' })).toHaveAttribute('href', href)
       unmount()
     }
   })

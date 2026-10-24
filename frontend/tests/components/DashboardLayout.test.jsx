@@ -36,7 +36,7 @@ describe('DashboardLayout tabs', () => {
   it('renders all the dashboard tabs, in order, and the page content', () => {
     renderAt('/dashboard')
     const order = [...screen.getByRole('navigation', { name: 'Dashboard' }).querySelectorAll('a')].map(a => a.textContent)
-    expect(order).toEqual(['Scans', 'Proof', 'My Story', 'Payments', 'Settings'])
+    expect(order).toEqual(['Scan', 'Scans', 'Proof', 'My Story', 'Payments', 'Settings'])
     expect(screen.getByText('Page content')).toBeInTheDocument()
   })
 

@@ -773,7 +773,7 @@ export default function Settings() {
                 )}
               </div>
               <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-gray-200 pt-4">
-                <Link to="/?mode=savedProfile"
+                <Link to="/scan?mode=savedProfile"
                   className="inline-flex items-center justify-center rounded-md px-3 py-1.5 text-sm font-medium bg-blue-700 hover:bg-blue-800 text-white">
                   Scan against a new job
                 </Link>
@@ -852,7 +852,7 @@ export default function Settings() {
                         )}
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        <Link to={`/?mode=savedProfile&profile=${p.id}`}
+                        <Link to={`/scan?mode=savedProfile&profile=${p.id}`}
                           className="inline-flex items-center justify-center rounded-md px-3 py-1.5 text-sm font-medium bg-blue-700 hover:bg-blue-800 text-white">
                           Scan with this
                         </Link>

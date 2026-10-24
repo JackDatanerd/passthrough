@@ -1,13 +1,14 @@
 import { useEffect, useState, useRef } from 'react'
-import { useParams, useSearchParams, Link, useNavigate } from 'react-router-dom'
+import { useParams, useSearchParams, useLocation, Link, Navigate, useNavigate } from 'react-router-dom'
 import { buildBadgeEmbeds } from '../lib/badgeEmbed'
 import api, { getErrorMessage } from '../lib/api'
 import { createPoller } from '../lib/poller'
 import { downloadBlob } from '../lib/utils'
 import PaystackPop from '@paystack/inline-js'
 import { useAuth } from '../hooks/useAuth'
-import Navbar from '../components/layout/Navbar'
-import Footer from '../components/layout/Footer'
+import PageShell from '../components/layout/PageShell'
+import ScoreRoad from '../components/scan/ScoreRoad'
+import { cn } from '../lib/utils'
 import ScoreGauge from '../components/scan/ScoreGauge'
 import CategoryScores from '../components/scan/CategoryScores'
 import AtsDetailPanel from '../components/scan/AtsDetailPanel'
@@ -60,7 +61,8 @@ const RESULTS_READY = ['COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_G
 // Polling cadence lives in lib/poller.js (adaptive backoff, pauses in background tabs).
 
 export default function ScanResult() {
-  const { id }        = useParams()
+  const { id, tab }   = useParams()
+  const { search }    = useLocation()
   const [params]      = useSearchParams()
   const navigate      = useNavigate()
   const { user, refreshUser } = useAuth()
@@ -734,11 +736,35 @@ export default function ScanResult() {
     setPdfRegenLoading(false)
   }
 
+  // ── Where the person is in the journey ─────────────────────────────────────────────────────────────
+  // The result is one short page per step, and a step only exists once it is earned: Score and Why as soon as the scan is
+  // scored, Your resume once the fix is paid for (while it is written, and after it lands), Apply once it is delivered. Tabs
+  // only ever appear; nothing earned is hidden again. Each tab has its own address (/scan/:id, /why, /resume, /apply).
+  // Paid and not yet delivered: from the moment payment is confirmed (or still being confirmed) the screen is about the rewrite.
+  const rewriting = !!scan && (['FIX_PURCHASED', 'FIX_GENERATING'].includes(scan.status)
+    || (confirmingPayment && ['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status)))
+  const delivered = !!scan && scan.status === 'FIX_DELIVERED'
+  const stage = !scan || !RESULTS_READY.includes(scan.status) ? null : delivered ? 'delivered' : rewriting ? 'rewriting' : 'scored'
+  const prevStage = useRef(null)
+  // A tab that appeared while the person was elsewhere carries a dot until it is opened.
+  const [freshTab, setFreshTab] = useState(null)
+  useEffect(() => { prevStage.current = null; setFreshTab(null) }, [id])
+  useEffect(() => {
+    if (!stage) return
+    const prev = prevStage.current
+    prevStage.current = stage
+    if (prev == null) return                        // first sight of this scan: the address decides where to land
+    // Payment just went through (or a free credit was spent): the screen moves to the resume being written. Only from the
+    // steps before it, so it never pulls anyone out of the editor they are typing in.
+    if (prev === 'scored' && stage !== 'scored') navigate(`/scan/${id}/resume${search}`)
+    if (prev !== 'delivered' && stage === 'delivered' && tab !== 'apply') setFreshTab('apply')
+  }, [stage])  // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (freshTab && (tab || 'score') === freshTab) setFreshTab(null) }, [tab, freshTab])
+
   if (loading) {
     return (
-      <div className="min-h-screen flex flex-col bg-gray-50">
-        <Navbar />
-        <main className="flex-1 flex items-center justify-center">
+      <PageShell>
+        <div className="flex items-center justify-center py-24">
           <div className="text-center">
             <Spinner size="lg" className="mx-auto mb-4" />
             <p className="text-gray-500 text-sm">Loading scan…</p>
@@ -746,24 +772,21 @@ export default function ScanResult() {
               <p className="text-xs text-amber-600 mt-2">{pollError}</p>
             )}
           </div>
-        </main>
-        <Footer />
-      </div>
+        </div>
+      </PageShell>
     )
   }
 
   if (!scan) {
     return (
-      <div className="min-h-screen flex flex-col bg-gray-50">
-        <Navbar />
-        <main className="flex-1 flex items-center justify-center px-4">
+      <PageShell>
+        <div className="flex items-center justify-center py-24 px-4">
           <div className="text-center">
             <p className="text-gray-600 mb-4">Scan not found or access denied.</p>
-            <Link to="/" className="text-blue-600 hover:underline text-sm">Start a new scan</Link>
+            <Link to="/scan" className="text-blue-600 hover:underline text-sm">Start a new scan</Link>
           </div>
-        </main>
-        <Footer />
-      </div>
+        </div>
+      </PageShell>
     )
   }
 
@@ -780,15 +803,28 @@ export default function ScanResult() {
   const attemptStartedAt = scan.scanStartedAt || scan.createdAt
   const stalled = scanning && attemptStartedAt && (nowTs - Date.parse(attemptStartedAt)) > 3 * 60 * 1000
 
-  // Paid and not yet delivered: from the moment payment is confirmed (or still being confirmed) the screen is about the rewrite.
-  const rewriting = ['FIX_PURCHASED', 'FIX_GENERATING'].includes(scan.status)
-    || (confirmingPayment && ['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status))
-  const delivered = scan.status === 'FIX_DELIVERED'
+  // ── Tabs ─────────────────────────────────────────────────────────────────────────────────────────
+  const resultsReady = RESULTS_READY.includes(scan.status)
+  const purchased = rewriting || delivered
+  const tabs = !resultsReady ? [] : [
+    { key: 'score', label: 'Score' },
+    { key: 'why', label: 'Why' },
+    ...(purchased ? [{ key: 'resume', label: 'Your resume' }] : []),
+    ...(delivered ? [{ key: 'apply', label: 'Apply' }] : []),
+  ]
+  // An address for a step that has not been earned (or that does not exist) lands on the scan itself, token and all.
+  if (tab && !tabs.some(t => t.key === tab)) return <Navigate to={`/scan/${id}${search}`} replace />
+  // Once the fix is paid for, the scan's own address opens on the resume: that is the step that has something to show.
+  if (!tab && purchased) return <Navigate to={`/scan/${id}/resume${search}`} replace />
+  const current = tab || 'score'
+  const tabPath = key => (key === 'score' ? (purchased ? `/scan/${id}/score${search}` : `/scan/${id}${search}`) : `/scan/${id}/${key}${search}`)
+  const isOwner = !!(user && scan.userId && user.id === scan.userId)
+  // The fix can still be bought: the offer shows, and the Why tab ends on the button that leads back to it.
+  const canBuy = !scan.fixPurchased && !rewriting
 
   return (
-    <div className="min-h-screen flex flex-col bg-gray-50">
-      <Navbar />
-      <main className="max-w-3xl mx-auto px-4 py-10 w-full">
+    <PageShell>
+      <div className={cn('mx-auto w-full', current === 'score' && resultsReady ? '' : 'max-w-3xl')}>
         <div className="mb-6">
           <h1 className="text-2xl font-bold text-gray-900">
             {scan.resumeOriginalName || (
@@ -802,7 +838,6 @@ export default function ScanResult() {
           </p>
         </div>
 
-        {/* Scanning state */}
         {scanning && (
           <ScanProgress
             createdAt={attemptStartedAt}
@@ -820,13 +855,12 @@ export default function ScanResult() {
                   failed automatically{scan.userId ? ' and your daily scan will be given back' : ''} — you
                   can also start a new one now.
                 </p>
-                <Link to="/" className="mt-2 inline-block text-sm text-blue-700 underline underline-offset-2">Start a new scan</Link>
+                <Link to="/scan" className="mt-2 inline-block text-sm text-blue-700 underline underline-offset-2">Start a new scan</Link>
               </div>
             )}
           </ScanProgress>
         )}
 
-        {/* Error state */}
         {scan.status === 'ERROR' && (
           <div className="bg-red-50 border border-red-200 rounded-xl p-6 text-center">
             {/* FEATURE GAP CLOSED (Scan/ATS pass): this branch used to say "we
@@ -870,7 +904,7 @@ export default function ScanResult() {
                 <p className="mt-2 text-xs text-red-600">Uses the same resume and job description — nothing to re-enter. A scan that failed on our side is given back, so retrying uses one scan, not two.</p>
               </div>
             )}
-            {!scan.fixPurchased && <Link to={scan.inputMode === 'brain_dump' ? (keptDraft?.manual && !keptDraft?.text?.trim() ? '/?mode=manual' : '/?mode=brainDump') : scan.inputMode === 'saved_profile' ? '/?mode=savedProfile' : '/'} className="mt-3 inline-block text-sm text-blue-600 hover:underline">
+            {!scan.fixPurchased && <Link to={scan.inputMode === 'brain_dump' ? (keptDraft?.manual && !keptDraft?.text?.trim() ? '/scan?mode=manual' : '/scan?mode=brainDump') : scan.inputMode === 'saved_profile' ? '/scan?mode=savedProfile' : '/scan'} className="mt-3 inline-block text-sm text-blue-600 hover:underline">
               {scan.failure?.retryable === false
                 ? (scan.inputMode === 'file' ? 'Upload a different file' : 'Add more detail and try again')
                 : 'Start over with different input'}
@@ -879,69 +913,55 @@ export default function ScanResult() {
         )}
 
         {/* Results */}
-        {RESULTS_READY.includes(scan.status) && (
+        {resultsReady && (
           <div className="flex flex-col gap-6">
-            {/* Between payment and delivery the page is about one thing: the resume being rewritten. The score, the "why"
-                panels, the editor and the buy cards belong to the step before and are hidden until the file lands (they return
-                inside "Your original scan" on the delivered page). */}
-            {rewriting && (
-              <div className="flex flex-col gap-4" data-testid="rewriting-focus">
-                <div>
-                  <h2 className="text-xl font-bold text-gray-900">We're rewriting your resume</h2>
-                  <p className="mt-1 text-sm text-gray-600">
-                    {typeof scan.atsScore === 'number' && <>You started at {scan.atsScore}/100. </>}
-                    We're reworking it for this job and scoring the real file.{!scan.fixRetryCount && ' Your cover letter unlocks as soon as it\'s done.'}
-                  </p>
-                </div>
-                {/* "Already paid" and similar answers arrive as the payment message; the page has moved on to the rewrite, so they read as a note. */}
-                {(payError || payNotice) && (
-                  <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">{payError || payNotice}</p>
-                )}
-                {paymentOutcome && (
-                  <div className={`rounded-xl border p-4 text-sm ${paymentOutcome.tone === 'red' ? 'bg-red-50 border-red-200 text-red-800' : 'bg-amber-50 border-amber-200 text-amber-900'}`} role="status">
-                    <p>{paymentOutcome.text}</p>
-                    <button type="button" onClick={() => setPaymentOutcome(null)} className="mt-2 underline underline-offset-2">Dismiss</button>
+            {/* The steps, in the order they are earned. Links, not tabs: each one is a page of its own with an address. */}
+            <nav aria-label="Your scan" className="flex gap-1 border-b-2 border-gray-200 -mb-2 overflow-x-auto">
+              {tabs.map(t => (
+                <Link key={t.key} to={tabPath(t.key)} aria-current={current === t.key ? 'page' : undefined}
+                  className={cn('px-4 py-2.5 -mb-0.5 text-sm font-bold whitespace-nowrap border-b-[3px] rounded-t-lg flex items-center gap-2 transition-colors',
+                    current === t.key ? 'text-blue-700 border-blue-700' : 'text-gray-500 border-transparent hover:text-gray-900 hover:bg-gray-100')}>
+                  {t.label}
+                  {freshTab === t.key && current !== t.key && <span className="w-2.5 h-2.5 rounded-full bg-amber-500 ring-[3px] ring-amber-100"><span className="sr-only">new</span></span>}
+                </Link>
+              ))}
+            </nav>
+
+            {/* ── SCORE: the number, the three biggest reasons, and the one thing to do next ── */}
+            {current === 'score' && (
+              <section data-testid="tab-score" aria-label="Score" className="flex flex-col gap-6">
+                {delivered && (
+                  <div className="flex flex-wrap items-center gap-3 rounded-xl border border-green-300 bg-green-50 px-4 py-3 text-sm" role="status">
+                    <span aria-hidden="true">✓</span>
+                    <span><b className="text-green-900">Your fixed resume scores {scan.fixAtsScore ?? '—'}.</b> It's ready{scan.verificationUrl ? ', with your Verified link' : ''}.</span>
+                    <Link to={`/scan/${id}/resume${search}`} className="ml-auto text-sm font-semibold text-blue-700 underline underline-offset-2">Open it</Link>
                   </div>
                 )}
-                {confirmingPayment && ['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status) && (
-                  <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex items-center gap-3" role="status">
-                    <Spinner size="sm" />
-                    <p className="text-sm text-blue-900">
-                      Payment received — waiting for the bank to confirm it. This can take a minute or two
-                      (mobile money especially). This page updates by itself; you don't need to pay again.
-                    </p>
+                {!user && (
+                  <div className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                    <span><b>Without an account this result is kept for 24 hours.</b> Create a free account to keep it.</span>
+                    <Link to="/register" className="ml-auto inline-block bg-blue-700 text-white px-3 py-1.5 rounded-md text-sm font-medium hover:bg-blue-800">Create account</Link>
                   </div>
                 )}
-                {['FIX_PURCHASED', 'FIX_GENERATING'].includes(scan.status) && (
-                  <FixProgress tier={scan.fixTier} startedAt={scan.updatedAt} progress={scan.fixProgress} round={scan.fixRetryCount}>
-                    {pollError && (
-                      <p className="text-xs text-amber-600 mt-3">{pollError}</p>
-                    )}
-                  </FixProgress>
-                )}
-              </div>
-            )}
-
-            {!rewriting && !delivered && (
-              <>
-            {/* Score card */}
-            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 sm:p-8">
-              <div className="flex flex-col sm:flex-row items-center gap-8">
-                <ScoreGauge score={scan.atsScore} passed={scan.passed} />
-                <div className="flex-1 w-full">
-                  <h2 className="text-lg font-semibold text-gray-900 mb-4">
-                    {scan.passed ? 'Your resume passed ATS screening' : 'Your resume is failing ATS filters'}
-                  </h2>
-                  <CategoryScores scan={scan} />
-                </div>
-              </div>
-            </div>
-
-            {/* FEATURE (feature gap — Scan/ATS section audit): see
-                AtsDetailPanel.jsx for the full reasoning. Placed after
-                the score card and the offer, and before the resume editor below — explains
-                the number the person just saw before offering to let them
-                act on it. */}
+                <div className="grid gap-6 lg:grid-cols-[1.05fr_.95fr] lg:items-start">
+                  <div className="contents lg:flex lg:flex-col lg:gap-6 lg:min-w-0">
+                    <div className="order-1 bg-white rounded-xl border border-gray-200 shadow-sm p-6 sm:p-8">
+                      <div className="flex flex-col sm:flex-row items-center gap-8">
+                        <ScoreGauge score={scan.atsScore} passed={scan.passed} />
+                        <div className="flex-1 w-full">
+                          <h2 className="text-lg font-semibold text-gray-900">
+                            {scan.passed ? 'Your resume passed ATS screening' : 'Your resume is failing ATS filters'}
+                          </h2>
+                          <ScoreRoad after={scan.atsScore} />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="order-3 flex flex-col gap-6 min-w-0">
+                      <PointsLost scan={scan} />
+                      <p className="-mt-3 text-sm"><Link to={`/scan/${id}/why${search}`} className="font-semibold text-blue-700 underline underline-offset-2">See every reason and the full breakdown →</Link></p>
+                    </div>
+                  </div>
+                  <div className="order-2 flex flex-col gap-4 min-w-0">
             {scan.atsDetail?.scoredWithoutAi && !scan.fixPurchased && (
               <div role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-4 sm:p-5">
                 <p className="text-sm font-semibold text-amber-900">This score is provisional</p>
@@ -954,11 +974,6 @@ export default function ScanResult() {
                 </div>
               </div>
             )}
-            {/* THE OFFER. It comes straight after the score (and the provisional-score notice, which the banner's own
-                copy points back to): the score is the moment a person most wants to act on, so what they can do about it
-                is the next thing they see. The explanation of the number (points lost, the detail panel, the job
-                description) is the "why" and follows below. */}
-            {/* Fix banner — only when not yet purchased */}
             {!scan.fixPurchased && !rewriting && (
               <>
                 {pendingPayment && !payLoading && !confirmingPayment && (
@@ -1018,34 +1033,85 @@ export default function ScanResult() {
                 <FixBanner welcomeOffer={welcomeActive} scan={scan} provisional={!!scan.atsDetail?.scoredWithoutAi} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} referralCode={referralCode} onApplyReferralCode={handleApplyReferralCode} payLoading={payLoading} payingTier={payingTier} onCheckFormatted={handleCheckFormatted} checkingFormatted={checkingFormatted} checkFormattedError={checkFormattedError} />
               </>
             )}
-
-            <PointsLost scan={scan} />
-            <AtsDetailPanel scan={scan} />
-
-            {/* G5: the exact job description this was scored against. */}
-            <JobDescriptionPanel scan={scan} />
-
-            {/* FEATURE GAP CLOSED (Scan/ATS pass): the product's real loop is one resume,
-                many job postings. Signed-in owners can rescan this same resume against
-                another job description without re-uploading or re-typing it. */}
+                    {purchased && (
+                      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+                        <h3 className="font-semibold text-gray-900">{delivered ? "You've got the fix" : 'Your fix is on its way'}</h3>
+                        <p className="mt-1 text-sm text-gray-600">{delivered ? 'Your rewrite, files and Verified link are in the next tabs.' : 'It is being written now. Open Your resume to follow it.'}</p>
+                        <Link to={`/scan/${id}/resume${search}`} className="mt-3 inline-block text-sm font-semibold text-blue-700 underline underline-offset-2">Go to Your resume →</Link>
+                      </div>
+                    )}
+            {paymentOutcome && (
+              <div className={`rounded-xl border p-4 text-sm ${paymentOutcome.tone === 'red' ? 'bg-red-50 border-red-200 text-red-800' : 'bg-amber-50 border-amber-200 text-amber-900'}`} role="status">
+                <p>{paymentOutcome.text}</p>
+                <button type="button" onClick={() => setPaymentOutcome(null)} className="mt-2 underline underline-offset-2">Dismiss</button>
+              </div>
+            )}
             {user && scan.userId && user.id === scan.userId && (
               <p className="text-sm text-gray-600 -mt-2">
                 Applying somewhere else?{' '}
-                <Link to={`/?from=${scan.id}`} className="text-blue-700 underline underline-offset-2 hover:text-blue-800">
+                <Link to={`/scan?from=${scan.id}`} className="text-blue-700 underline underline-offset-2 hover:text-blue-800">
                   Scan this same resume against another job
                 </Link>
               </p>
             )}
+                  </div>
+                </div>
+            {!purchased && user && scan.originalResumeData && (
+              <SaveProfilePrompt key={scan.id} scanId={scan.id}
+                deliveredAvailable={scan.status === 'FIX_DELIVERED' && !!(scan.userEditedResumeData || scan.rewrittenResumeData)} />
+            )}
+            {!scan.userId && anonToken && ['COMPLETE_PASS', 'COMPLETE_FAIL', 'ERROR'].includes(scan.status) && (
+              <div className="text-xs text-gray-500 -mt-2">
+                <button type="button" onClick={() => setConfirmDelete(true)} disabled={deleting}
+                  className="underline underline-offset-2 hover:text-gray-700 disabled:opacity-50">
+                  {deleting ? 'Deleting…' : 'Delete this result now'}
+                </button>
+                {' '}— removes your resume text and score from our servers.
+                <ConfirmDialog
+                  open={confirmDelete}
+                  title="Delete this result?"
+                  message="Your resume text and score are removed and this link stops working."
+                  confirmLabel="Delete"
+                  onConfirm={async () => { await handleDeleteAnon(); setConfirmDelete(false) }}
+                  onCancel={() => setConfirmDelete(false)}
+                />
+              </div>
+            )}
+            {!user && !scan.fixPurchased && (
+              <div className="bg-gray-50 border border-gray-200 rounded-xl p-5 text-sm text-gray-600">
+                <p className="font-medium text-gray-800 mb-1">Save your results</p>
+                <p className="mb-3">
+                  Create a free account to keep your scan history and buy a fix.
+                  {(() => {
+                    // FEATURE GAP CLOSED (Scan/ATS pass): anonymous results are
+                    // deleted after 24h (getScan even returns anonExpiresAt) but
+                    // nothing on this page said so. Show how long is left.
+                    const ms = scan.anonExpiresAt ? Date.parse(scan.anonExpiresAt) - Date.now() : NaN
+                    if (!Number.isFinite(ms) || ms <= 0) return null
+                    const h = Math.floor(ms / 3600000), m = Math.ceil((ms % 3600000) / 60000)
+                    return <> Without one, this result is deleted in about {h >= 1 ? `${h} hour${h === 1 ? '' : 's'}` : `${m} minute${m === 1 ? '' : 's'}`}.</>
+                  })()}
+                </p>
+                <Link to="/register"
+                  className="inline-block bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors">
+                  Create free account →
+                </Link>
+              </div>
+            )}
+              </section>
+            )}
 
-            {/* AUDIT FIX (feature gap — section audit "generate a resume from
-                scratch"): previously nothing on this page ever showed a
-                brain-dump/saved-profile user what was actually extracted
-                from their text, and there was no way to correct it or get a
-                free copy of it — see ResumeDataEditor.jsx for the full
-                reasoning. Scoped to before a fix is purchased: once a fix
-                exists, retryFix's feedback loop is the intended way to
-                iterate, and the backend endpoints this drives
-                (resume-data / download-draft) enforce the same gate. */}
+            {/* ── WHY: everything behind the number ── */}
+            {current === 'why' && (
+              <section data-testid="tab-why" aria-label="Why" className="flex flex-col gap-6">
+                <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
+                  <h2 className="text-lg font-semibold text-gray-900 mb-4">Score by category</h2>
+                  <CategoryScores scan={scan} />
+                </div>
+                        <AtsDetailPanel scan={scan} />
+
+            {/* G5: the exact job description this was scored against. */}
+            <JobDescriptionPanel scan={scan} />
             {(scan.inputMode === 'file' || (['brain_dump', 'saved_profile'].includes(scan.inputMode) && scan.originalResumeData)) &&
               !scan.fixPurchased &&
               ['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status) && (
@@ -1055,20 +1121,57 @@ export default function ScanResult() {
                   onUpdated={updated => setScan(prev => ({ ...prev, ...updated }))}
                 />
             )}
+                {canBuy && (
+                  <div className="sticky bottom-0 -mx-4 px-4 py-3 bg-white/95 backdrop-blur border-t border-gray-200 flex flex-wrap items-center gap-3">
+                    <p className="flex-1 min-w-[10rem] text-sm text-gray-600"><b className="text-gray-900">Fixable issues, and a rewrite aimed at them.</b> You've seen the full breakdown free.</p>
+                    <Link to={tabPath('score')} className="inline-block bg-blue-700 text-white font-bold px-4 py-2.5 rounded-[10px] shadow-[0_3px_0_#1e3a8a] hover:bg-blue-800 transition-colors">See the fix →</Link>
+                  </div>
+                )}
+              </section>
+            )}
 
-            {paymentOutcome && (
-              <div className={`rounded-xl border p-4 text-sm ${paymentOutcome.tone === 'red' ? 'bg-red-50 border-red-200 text-red-800' : 'bg-amber-50 border-amber-200 text-amber-900'}`} role="status">
-                <p>{paymentOutcome.text}</p>
-                <button type="button" onClick={() => setPaymentOutcome(null)} className="mt-2 underline underline-offset-2">Dismiss</button>
+            {/* ── YOUR RESUME: written, scored and delivered ── */}
+            {current === 'resume' && (
+              <section data-testid="tab-resume" aria-label="Your resume" className="flex flex-col gap-6">
+            {rewriting && (
+              <div className="flex flex-col gap-4" data-testid="rewriting-focus">
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900">We're rewriting your resume</h2>
+                  <p className="mt-1 text-sm text-gray-600">
+                    {typeof scan.atsScore === 'number' && <>You started at {scan.atsScore}/100. </>}
+                    We're reworking it for this job and scoring the real file.{!scan.fixRetryCount && ' Your cover letter unlocks as soon as it\'s done.'}
+                  </p>
+                </div>
+                {/* "Already paid" and similar answers arrive as the payment message; the page has moved on to the rewrite, so they read as a note. */}
+                {(payError || payNotice) && (
+                  <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">{payError || payNotice}</p>
+                )}
+                {paymentOutcome && (
+                  <div className={`rounded-xl border p-4 text-sm ${paymentOutcome.tone === 'red' ? 'bg-red-50 border-red-200 text-red-800' : 'bg-amber-50 border-amber-200 text-amber-900'}`} role="status">
+                    <p>{paymentOutcome.text}</p>
+                    <button type="button" onClick={() => setPaymentOutcome(null)} className="mt-2 underline underline-offset-2">Dismiss</button>
+                  </div>
+                )}
+                {confirmingPayment && ['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status) && (
+                  <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex items-center gap-3" role="status">
+                    <Spinner size="sm" />
+                    <p className="text-sm text-blue-900">
+                      Payment received — waiting for the bank to confirm it. This can take a minute or two
+                      (mobile money especially). This page updates by itself; you don't need to pay again.
+                    </p>
+                  </div>
+                )}
+                {['FIX_PURCHASED', 'FIX_GENERATING'].includes(scan.status) && (
+                  <FixProgress tier={scan.fixTier} startedAt={scan.updatedAt} progress={scan.fixProgress} round={scan.fixRetryCount}>
+                    {pollError && (
+                      <p className="text-xs text-amber-600 mt-3">{pollError}</p>
+                    )}
+                  </FixProgress>
+                )}
               </div>
             )}
-
-              </>
-            )}
-
-            {delivered && (
-              <>
-            {/* Delivered */}
+                {delivered && (
+                  <>
             {scan.status === 'FIX_DELIVERED' && (
               <div className={`border rounded-xl p-6 ${scan.fixAtsScore >= ATS_BADGE_THRESHOLD ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200'}`}>
                 <DeliveredSummary scan={scan} />
@@ -1240,7 +1343,6 @@ export default function ScanResult() {
 
               </div>
             )}
-
             {scan.status === 'FIX_DELIVERED' && (
               <DiffView
                 originalResumeData={scan.originalResumeData}
@@ -1249,27 +1351,10 @@ export default function ScanResult() {
                 editedByUser={!!scan.userEditedResumeData && JSON.stringify(scan.userEditedResumeData) === JSON.stringify(scan.rewrittenResumeData)}
               />
             )}
-
-            {/* Diff view — only meaningful once a fix/badge has been delivered */}
-            {/* G3 (round 3): why the DELIVERED file scored what it did. The panel above is the free scan
-                of the original upload and is stale once a fix has landed - without this, a result
-                under the bar gave no hint of what was still missing. */}
             {scan.status === 'FIX_DELIVERED' && !scan.rewriteFailed && scan.fixAtsDetail &&
               typeof scan.fixAtsScore === 'number' && scan.fixAtsScore < ATS_BADGE_THRESHOLD && (
               <AtsDetailPanel detail={scan.fixAtsDetail} title="Why the new score" />
             )}
-
-            {/* The cover letter is the BONUS that comes with the purchase, so it is the next thing under the delivered files
-                rather than something found after the before/after view and the editor. Same gate as before: the signed-in
-                owner of a delivered, unrevoked scan that has a job description to write against (the endpoints enforce it too). */}
-            {scan.status === 'FIX_DELIVERED' && user && scan.userId && user.id === scan.userId &&
-              !(scan.verificationStatus === 'REVOKED' && scan.verificationRevokedReason !== 'OWNER') &&
-              (scan.jobDescriptionText || '').trim().length >= 50 && (
-              <CoverLetterPanel scan={scan} onUpdated={updated => setScan(prev => ({ ...prev, ...updated }))} />
-            )}
-
-            {/* Quantification prompts — renders nothing if the array is empty/null,
-                which is always true for badge-only purchases (no AI rewrite ran) */}
             {scan.status === 'FIX_DELIVERED' && (
               <QuantificationPrompts
                 prompts={scan.quantificationPrompts}
@@ -1281,9 +1366,6 @@ export default function ScanResult() {
                   : null}
               />
             )}
-
-            {/* Owner tools on a delivered resume: edit it (both files rebuilt and re-scored), and a
-                cover letter for the same job. Signed-in owner only — the endpoints enforce it too. */}
             {scan.status === 'FIX_DELIVERED' && user && scan.userId && user.id === scan.userId &&
               !(scan.verificationStatus === 'REVOKED' && scan.verificationRevokedReason !== 'OWNER') && (
               <>
@@ -1293,22 +1375,20 @@ export default function ScanResult() {
                 />
               </>
             )}
-
-            {/* FEATURE GAP CLOSED (Scan/ATS pass): the product's real loop is one resume,
-                many job postings. Signed-in owners can rescan this same resume against
-                another job description without re-uploading or re-typing it. */}
-            {user && scan.userId && user.id === scan.userId && (
-              <p className="text-sm text-gray-600 -mt-2">
-                Applying somewhere else?{' '}
-                <Link to={`/?from=${scan.id}`} className="text-blue-700 underline underline-offset-2 hover:text-blue-800">
-                  Scan this same resume against another job
-                </Link>
-              </p>
+                    {isOwner && (
+                      <p className="text-sm text-gray-600">Your Verified link and cover letter are one tab over.{' '}
+                        <Link to={`/scan/${id}/apply${search}`} className="font-semibold text-blue-700 underline underline-offset-2">Go to Apply →</Link></p>
+                    )}
+                  </>
+                )}
+              </section>
             )}
 
-            {/* Verification link, badge and sharing options: still here, but after the things a new owner came for. */}
+            {/* ── APPLY: the link, the cover letter, the next job ── */}
+            {current === 'apply' && delivered && (
+              <section data-testid="tab-apply" aria-label="Apply" className="flex flex-col gap-6">
             {delivered && scan.verificationUrl && (
-              <details className="rounded-xl border border-green-200 bg-green-50 p-4 sm:p-5" data-testid="sharing-tools">
+              <details open className="rounded-xl border border-green-200 bg-green-50 p-4 sm:p-5" data-testid="sharing-tools">
                 <summary className="cursor-pointer text-sm font-semibold text-green-900">Verification link, badge and sharing</summary>
                 <div className="mt-3">
                 {/* Public document visibility — off by default (see
@@ -1415,106 +1495,28 @@ export default function ScanResult() {
                 </div>
               </details>
             )}
-
-            {/* After delivery the original scan is history: its score and "points lost" are collapsed so the page leads with the new result. */}
-            {delivered && (
-              <details className="rounded-xl border border-gray-200 bg-white p-4 sm:p-5" data-testid="original-scan-details">
-                <summary className="cursor-pointer text-sm font-semibold text-gray-700">Your original scan</summary>
-                <div className="mt-4 flex flex-col gap-6">
-            {/* Score card */}
-            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 sm:p-8">
-              <div className="flex flex-col sm:flex-row items-center gap-8">
-                <ScoreGauge score={scan.atsScore} passed={scan.passed} />
-                <div className="flex-1 w-full">
-                  <h2 className="text-lg font-semibold text-gray-900 mb-4">
-                    {scan.passed ? 'Your resume passed ATS screening' : 'Your resume is failing ATS filters'}
-                  </h2>
-                  <CategoryScores scan={scan} />
-                </div>
-              </div>
-            </div>
-
-            <PointsLost scan={scan} />
-            <AtsDetailPanel scan={scan} />
-
-            {/* G5: the exact job description this was scored against. */}
-            <JobDescriptionPanel scan={scan} />
-
-                </div>
-              </details>
+            {scan.status === 'FIX_DELIVERED' && user && scan.userId && user.id === scan.userId &&
+              !(scan.verificationStatus === 'REVOKED' && scan.verificationRevokedReason !== 'OWNER') &&
+              (scan.jobDescriptionText || '').trim().length >= 50 && (
+              <CoverLetterPanel scan={scan} onUpdated={updated => setScan(prev => ({ ...prev, ...updated }))} />
             )}
-
-              </>
+            {user && scan.userId && user.id === scan.userId && (
+              <p className="text-sm text-gray-600 -mt-2">
+                Applying somewhere else?{' '}
+                <Link to={`/scan?from=${scan.id}`} className="text-blue-700 underline underline-offset-2 hover:text-blue-800">
+                  Scan this same resume against another job
+                </Link>
+              </p>
             )}
-
-            {/* Save profile for reuse — logged-in users only (anonymous visitors
-                have no account to save to), and only if there's structured data
-                to actually save.
-                BUG FIX (Section 6): this used to also require
-                scan.status === 'FIX_DELIVERED', which is a real technical
-                requirement for file-upload scans (structuring only happens
-                during fix generation for that mode) but not for brain-dump
-                or saved-profile-mode scans, where originalResumeData is
-                already populated right after the free scan completes
-                (runAtsScan, scan.controller.js). The backend's own
-                POST /profile/save has no such status check — it only cares
-                that originalResumeData exists — so the old gate was hiding
-                this feature from every free-tier brain-dump/saved-profile
-                user for no reason tied to the data actually being ready.
-                Checking originalResumeData alone is the correct, mode-
-                agnostic signal: it's simply never populated yet for a
-                file-upload scan that hasn't had a fix generated. */}
             {!rewriting && user && scan.originalResumeData && (
               <SaveProfilePrompt key={scan.id} scanId={scan.id}
                 deliveredAvailable={scan.status === 'FIX_DELIVERED' && !!(scan.userEditedResumeData || scan.rewrittenResumeData)} />
             )}
-
-            {/* An anonymous result can hold a typed career history and an e-mail address: whoever holds
-                its link can remove it now instead of waiting for the 24-hour expiry. */}
-            {!scan.userId && anonToken && ['COMPLETE_PASS', 'COMPLETE_FAIL', 'ERROR'].includes(scan.status) && (
-              <div className="text-xs text-gray-500 -mt-2">
-                <button type="button" onClick={() => setConfirmDelete(true)} disabled={deleting}
-                  className="underline underline-offset-2 hover:text-gray-700 disabled:opacity-50">
-                  {deleting ? 'Deleting…' : 'Delete this result now'}
-                </button>
-                {' '}— removes your resume text and score from our servers.
-                <ConfirmDialog
-                  open={confirmDelete}
-                  title="Delete this result?"
-                  message="Your resume text and score are removed and this link stops working."
-                  confirmLabel="Delete"
-                  onConfirm={async () => { await handleDeleteAnon(); setConfirmDelete(false) }}
-                  onCancel={() => setConfirmDelete(false)}
-                />
-              </div>
-            )}
-
-            {/* Register nudge for anon users */}
-            {!user && !scan.fixPurchased && (
-              <div className="bg-gray-50 border border-gray-200 rounded-xl p-5 text-sm text-gray-600">
-                <p className="font-medium text-gray-800 mb-1">Save your results</p>
-                <p className="mb-3">
-                  Create a free account to keep your scan history and buy a fix.
-                  {(() => {
-                    // FEATURE GAP CLOSED (Scan/ATS pass): anonymous results are
-                    // deleted after 24h (getScan even returns anonExpiresAt) but
-                    // nothing on this page said so. Show how long is left.
-                    const ms = scan.anonExpiresAt ? Date.parse(scan.anonExpiresAt) - Date.now() : NaN
-                    if (!Number.isFinite(ms) || ms <= 0) return null
-                    const h = Math.floor(ms / 3600000), m = Math.ceil((ms % 3600000) / 60000)
-                    return <> Without one, this result is deleted in about {h >= 1 ? `${h} hour${h === 1 ? '' : 's'}` : `${m} minute${m === 1 ? '' : 's'}`}.</>
-                  })()}
-                </p>
-                <Link to="/register"
-                  className="inline-block bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors">
-                  Create free account →
-                </Link>
-              </div>
+              </section>
             )}
           </div>
         )}
-      </main>
-      <Footer />
-    </div>
+      </div>
+    </PageShell>
   )
 }

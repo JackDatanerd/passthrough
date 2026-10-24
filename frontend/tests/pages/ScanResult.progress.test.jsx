@@ -38,7 +38,7 @@ function setup(scan, statusReply) {
     return { data: { data: scan } }
   })
   return render(<MemoryRouter initialEntries={['/scan/s1']}><Routes>
-    <Route path="/scan/:id" element={<ScanResult />} />
+    <Route path="/scan/:id" element={<ScanResult />} /><Route path="/scan/:id/:tab" element={<ScanResult />} />
   </Routes></MemoryRouter>)
 }
 beforeEach(() => {

@@ -37,7 +37,7 @@ const delivered = (over = {}) => ({
 })
 function setup(scan) {
   api.get.mockImplementation(async url => url.startsWith('/payments/pending') ? { data: { data: { pending: null } } } : { data: { data: scan } })
-  return render(<MemoryRouter initialEntries={['/scan/s1']}><Routes><Route path="/scan/:id" element={<ScanResult />} /></Routes></MemoryRouter>)
+  return render(<MemoryRouter initialEntries={['/scan/s1']}><Routes><Route path="/scan/:id" element={<ScanResult />} /><Route path="/scan/:id/:tab" element={<ScanResult />} /></Routes></MemoryRouter>)
 }
 beforeEach(() => {
   for (const k of ['get', 'post', 'patch', 'delete']) api[k].mockReset()

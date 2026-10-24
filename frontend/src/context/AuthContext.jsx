@@ -4,6 +4,7 @@ import { hasUnsavedWork } from '../lib/unsavedGuard'
 import { signedOutElsewhereTarget, failureScope } from '../lib/session'
 import { getAnonScanTokens, removeAnonScanToken, clearAnonScanTokens } from '../lib/anonScans'
 import { clearBrainDumpDraft, dropForeignBrainDumpDraft } from '../lib/brainDumpDraft'
+import { clearJdDraft, dropForeignJdDraft } from '../lib/scanJdDraft'
 import { restoreReferralFromAccount } from '../hooks/useReferralCapture'
 import { getToken, setToken, getCachedUser, setCachedUser, storageRemove } from '../lib/storage'
 import { TOKEN_KEY, USER_KEY } from '../lib/session'
@@ -152,6 +153,7 @@ export function AuthProvider({ children }) {
     setToken(token)
     setCachedUser(newUser)
     dropForeignBrainDumpDraft(newUser && newUser.id)
+    dropForeignJdDraft(newUser && newUser.id)
     restoreReferralFromAccount(newUser)
     setUser(newUser)
   }
@@ -229,6 +231,7 @@ export function AuthProvider({ children }) {
     // have login claim those scans into THEIR account. An expired or banned session (api.js) is
     // not a choice to leave, so it keeps the draft; only an explicit sign-out clears it.
     clearBrainDumpDraft()
+    clearJdDraft()
     clearAnonScanTokens()
     setUser(null)
     if (!token) return Promise.resolve()

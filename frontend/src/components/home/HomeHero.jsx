@@ -1,4 +1,5 @@
 import { useContext } from 'react'
+import { Link } from 'react-router-dom'
 import ScanForm from '../scan/ScanForm'
 import { AuthContext } from '../../context/AuthContext'
 import { formatScanCount } from '../../lib/homeFormat'
@@ -59,7 +60,15 @@ export default function HomeHero({ data, badgeThreshold }) {
 
         <div id="scan-form" className="min-w-0 scroll-mt-4 bg-white rounded-xl border border-gray-200 shadow-lg p-4 sm:p-6 flex flex-col lg:self-stretch lg:col-start-2 lg:row-start-1 lg:row-span-2">
           <h2 className="text-base font-semibold text-gray-900 mb-4">Scan your resume — free, about 30 seconds</h2>
-          <ScanForm />
+          {/* Someone signed in does not need the form here: their scan lives in the app, on /scan, with their recent
+              resumes and saved profile. One card, one button. */}
+          {signedIn ? (
+            <div className="flex flex-col gap-3">
+              <p className="text-sm text-gray-600">Pick a resume (or reuse a recent one), add the job, and get your score.</p>
+              <Link to="/scan" className="bg-blue-700 text-white text-center font-bold px-5 py-3 rounded-[10px] shadow-[0_3px_0_#1e3a8a] hover:bg-blue-800 transition-colors">Start a scan</Link>
+              <Link to="/dashboard" className="text-sm text-blue-700 underline text-center">Or see your scans</Link>
+            </div>
+          ) : <ScanForm />}
           {/* mt-auto: when the left column is the taller one the card stretches to meet it, and the ticks sit at the card's foot */}
           <ul className="mt-auto pt-4 flex flex-wrap justify-center gap-x-4 gap-y-1 text-xs text-gray-500">
             {ticks.map(t => <li key={t}><span className="text-green-600 font-bold" aria-hidden="true">✓ </span>{t}</li>)}

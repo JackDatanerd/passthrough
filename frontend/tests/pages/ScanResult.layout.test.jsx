@@ -33,80 +33,108 @@ vi.mock('../../src/components/scan/FixBanner', () => stub('fix-banner'))
 
 const base = { id: 's1', userId: 'u1', atsScore: 52, passed: false, inputMode: 'text', fixPurchased: true, fixTier: 'FIX',
   jobDescriptionText: 'x'.repeat(80), originalResumeData: { name: 'A' }, rewrittenResumeData: { name: 'A' }, updatedAt: new Date().toISOString() }
-const setup = scan => {
+const setup = (scan, path = '/scan/s1') => {
   api.get.mockReset()
   api.get.mockImplementation(async url => {
     if (url.startsWith('/payments/pending')) return { data: { data: { pending: null } } }
     if (url.startsWith('/scan/')) return { data: { data: { ...base, ...scan } } }
     return { data: { data: {} } }
   })
-  return render(<MemoryRouter initialEntries={['/scan/s1']}><Routes><Route path="/scan/:id" element={<ScanResult />} /></Routes></MemoryRouter>)
+  return render(<MemoryRouter initialEntries={[path]}><Routes><Route path="/scan/:id" element={<ScanResult />} /><Route path="/scan/:id/:tab" element={<ScanResult />} /></Routes></MemoryRouter>)
 }
 beforeEach(() => { auth.user = { id: 'u1', emailVerified: true, freeFixCredits: 0 } })
 
+const follows = (a, b) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+const tabNames = () => within(screen.getByRole('navigation', { name: 'Your scan' })).getAllByRole('link').map(a => a.textContent.replace('new', '').trim())
+
 describe('ScanResult — while the fix is being written', () => {
-  it.each(['FIX_PURCHASED', 'FIX_GENERATING'])('%s: shows only the rewrite, with the score, offer and editors out of the way', async status => {
+  it.each(['FIX_PURCHASED', 'FIX_GENERATING'])('%s: opens on Your resume and shows only the rewrite, with the score, offer and editors out of the way', async status => {
     setup({ status })
     expect(await screen.findByTestId('rewriting-focus')).toHaveTextContent(/rewriting your resume/i)
     expect(screen.getByTestId('rewriting-focus')).toHaveTextContent(/started at 52\/100/)
     expect(screen.getByText(/Generating your fixed resume/)).toBeInTheDocument()
+    expect(tabNames()).toEqual(['Score', 'Why', 'Your resume'])
+    expect(screen.getByRole('link', { name: 'Your resume' })).toHaveAttribute('aria-current', 'page')
     for (const id of ['score-gauge', 'ats-detail', 'points-lost', 'jd-panel', 'fix-banner', 'resume-data-editor', 'save-profile', 'diff-view', 'cover-letter'])
       expect(screen.queryByTestId(id), id).toBeNull()
     expect(screen.queryByText(/failing ATS filters/)).toBeNull()
   })
 })
 
-describe('ScanResult — before purchase nothing moved', () => {
-  it('still leads with the score, then the offer, then the explanations', async () => {
-    setup({ status: 'COMPLETE_FAIL', fixPurchased: false, inputMode: 'file' })
+describe('ScanResult — before purchase: Score and Why', () => {
+  const unpaid = { status: 'COMPLETE_FAIL', fixPurchased: false, inputMode: 'file' }
+
+  it('shows two steps only, and Score leads with the number, the offer and the three biggest reasons', async () => {
+    setup(unpaid)
     const gauge = await screen.findByTestId('score-gauge')
-    const order = [gauge, screen.getByTestId('fix-banner'), screen.getByTestId('points-lost'), screen.getByTestId('jd-panel'), screen.getByTestId('resume-data-editor')]
-    for (let i = 1; i < order.length; i++) expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(tabNames()).toEqual(['Score', 'Why'])
+    expect(screen.getByRole('link', { name: 'Score' })).toHaveAttribute('aria-current', 'page')
+    expect(follows(gauge, screen.getByTestId('points-lost'))).toBe(true)
+    expect(screen.getByTestId('fix-banner')).toBeInTheDocument()
+    // The long explanations are the next step, not part of this one.
+    for (const id of ['ats-detail', 'jd-panel', 'resume-data-editor']) expect(screen.queryByTestId(id), id).toBeNull()
     expect(screen.queryByTestId('rewriting-focus')).toBeNull()
+  })
+
+  it('Why holds the explanations and the editor, and ends on the way back to the offer', async () => {
+    setup(unpaid, '/scan/s1/why')
+    expect(await screen.findByTestId('ats-detail')).toBeInTheDocument()
+    const order = [screen.getByTestId('ats-detail'), screen.getByTestId('jd-panel'), screen.getByTestId('resume-data-editor')]
+    for (let i = 1; i < order.length; i++) expect(follows(order[i - 1], order[i])).toBe(true)
+    expect(screen.queryByTestId('fix-banner')).toBeNull()
+    expect(screen.getByRole('link', { name: /See the fix/ })).toHaveAttribute('href', '/scan/s1')
+  })
+
+  it('an address for a step that has not been earned lands on the score', async () => {
+    setup(unpaid, '/scan/s1/apply')
+    expect(await screen.findByTestId('score-gauge')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Score' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.queryByTestId('tab-apply')).toBeNull()
   })
 })
 
-describe('ScanResult — once the fix is delivered', () => {
+describe('ScanResult — once the fix is delivered: four steps', () => {
   const delivered = { status: 'FIX_DELIVERED', fixAtsScore: 88, hasPdf: true, fixRetryCount: 0, verificationUrl: 'https://v.example/abc', verificationStatus: 'ACTIVE', quantificationPrompts: [{ id: 1 }] }
-  const follows = (a, b) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
 
-  it('leads with the new resume, then the cover letter, then the rest', async () => {
+  it('the scan address opens on Your resume, and every earned step is a tab', async () => {
+    setup(delivered)
+    await screen.findByTestId('tab-resume')
+    expect(tabNames()).toEqual(['Score', 'Why', 'Your resume', 'Apply'])
+    expect(screen.getByRole('link', { name: 'Your resume' })).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('Your resume leads with the new resume: summary, downloads, the before and after, the prompts, the editor', async () => {
     setup(delivered)
     const summary = await screen.findByTestId('delivered-summary-stub')
-    const diff = screen.getByTestId('diff-view')
-    const downloads = screen.getByRole('button', { name: /Download \.docx/ })
-    const letter = screen.getByTestId('cover-letter')
-    const quant = screen.getByTestId('quant')
-    const editor = screen.getByTestId('delivered-editor')
-    const sharing = screen.getByTestId('sharing-tools')
-    const original = screen.getByTestId('original-scan-details')
-    const chain = [summary, downloads, diff, letter, quant, editor, sharing, original]
+    const chain = [summary, screen.getByRole('button', { name: /Download \.docx/ }), screen.getByTestId('diff-view'), screen.getByTestId('quant'), screen.getByTestId('delivered-editor')]
     for (let i = 1; i < chain.length; i++) expect(follows(chain[i - 1], chain[i]), `item ${i}`).toBe(true)
+    // What belongs to Apply, and to the scan before the fix, is not here.
+    for (const id of ['cover-letter', 'sharing-tools', 'score-gauge', 'fix-banner', 'resume-data-editor']) expect(screen.queryByTestId(id), id).toBeNull()
   })
 
-  it('collapses the original scan: its gauge and panels live inside "Your original scan", never beside the result', async () => {
-    setup(delivered)
-    const original = await screen.findByTestId('original-scan-details')
-    expect(original.tagName).toBe('DETAILS')
-    expect(original).not.toHaveAttribute('open')
-    for (const id of ['score-gauge', 'points-lost', 'jd-panel']) expect(within(original).getByTestId(id)).toBeInTheDocument()
+  it('Score still tells the original story, and points to the result', async () => {
+    setup(delivered, '/scan/s1/score')
+    expect(await screen.findByTestId('score-gauge')).toBeInTheDocument()
+    expect(screen.getByText(/Your fixed resume scores 88/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Open it' })).toHaveAttribute('href', '/scan/s1/resume')
     expect(screen.queryByTestId('fix-banner')).toBeNull()
-    expect(screen.queryByTestId('resume-data-editor')).toBeNull()
+    expect(screen.getByText(/You've got the fix/)).toBeInTheDocument()
   })
 
-  it('keeps the verification link, badge and sharing options, collapsed, after the cover letter', async () => {
-    setup(delivered)
+  it('Apply holds the cover letter and the verification link, badge and sharing options (open)', async () => {
+    setup(delivered, '/scan/s1/apply')
     const sharing = await screen.findByTestId('sharing-tools')
     expect(sharing.tagName).toBe('DETAILS')
-    expect(sharing).not.toHaveAttribute('open')
+    expect(sharing).toHaveAttribute('open')
     expect(within(sharing).getByLabelText('Allow public .docx download')).toBeInTheDocument()
     expect(within(sharing).getByLabelText('Hide my name on the public page')).toBeInTheDocument()
     expect(within(sharing).getByText('Unpublish verification page')).toBeInTheDocument()
+    expect(screen.getByTestId('cover-letter')).toBeInTheDocument()
   })
 
   it('a Fix-only delivery (no verification link) has no sharing section', async () => {
-    setup({ ...delivered, fixTier: 'FIX_PLAIN', verificationUrl: null })
-    await screen.findByTestId('original-scan-details')
+    setup({ ...delivered, fixTier: 'FIX_PLAIN', verificationUrl: null }, '/scan/s1/apply')
+    await screen.findByTestId('tab-apply')
     expect(screen.queryByTestId('sharing-tools')).toBeNull()
   })
 })

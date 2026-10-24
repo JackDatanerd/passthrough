@@ -134,7 +134,7 @@ describe('Settings — saved profile', () => {
   it('offers a rescan straight into saved-profile mode', async () => {
     renderPage()
     const link = await screen.findByRole('link', { name: 'Scan against a new job' })
-    expect(link).toHaveAttribute('href', '/?mode=savedProfile')
+    expect(link).toHaveAttribute('href', '/scan?mode=savedProfile')
   })
   it('shows when it was edited', async () => {
     wire({ ...PROFILE, editedAt: '2026-09-15T10:00:00Z' })

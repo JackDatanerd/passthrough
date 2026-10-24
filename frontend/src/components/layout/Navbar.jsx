@@ -129,7 +129,7 @@ export default function Navbar() {
           )}
           {/* The page's one job is the scan, so the bar's one button is the scan (it used to be "Get started" -> /register). */}
           <Link
-            to="/#scan-form"
+            to={user ? '/scan' : '/#scan-form'}
             className="bg-blue-700 text-white font-bold px-3 max-[359px]:px-2.5 max-[359px]:text-sm sm:px-4 py-2.5 rounded-[10px] shadow-[0_3px_0_#1e3a8a] hover:bg-blue-800 transition-colors"
           >
             Scan free

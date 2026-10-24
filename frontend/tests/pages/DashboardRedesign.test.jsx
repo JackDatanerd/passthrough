@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import api from '../../src/lib/api'
 import DashboardIndex from '../../src/pages/dashboard/Index'
 import Proof from '../../src/pages/dashboard/Proof'
@@ -137,14 +137,17 @@ describe('stats and the summary', () => {
 })
 
 describe('new scan panel', () => {
-  it('opens the real scan form in place', async () => {
+  it('"New scan" goes to the /scan page instead of opening a second copy of the form here', async () => {
     const user = userEvent.setup()
     wire({ scans: [scan('a')] })
-    renderIndex()
+    render(<MemoryRouter initialEntries={['/dashboard']}><Routes>
+      <Route path="/dashboard" element={<DashboardIndex />} />
+      <Route path="/scan" element={<p>the scan page</p>} />
+    </Routes></MemoryRouter>)
     await screen.findByText('Job a')
     expect(screen.queryByText('scan form')).toBeNull()
     await user.click(screen.getByRole('button', { name: 'New scan' }))
-    expect(await screen.findByText('scan form')).toBeInTheDocument()
+    expect(await screen.findByText('the scan page')).toBeInTheDocument()
   })
 })
 

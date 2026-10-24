@@ -12,8 +12,9 @@ describe('resumeForm.filled', () => {
     expect(filled(undefined)).toBeFalsy()
     expect(filled(12)).toBeFalsy()
   })
-  it('ScanForm imports it rather than calling an undefined global', () => {
-    const src = readFileSync(new URL('../src/components/scan/ScanForm.jsx', import.meta.url), 'utf8')
+  it('the scan form logic imports it rather than calling an undefined global', () => {
+    // The rules moved from ScanForm.jsx into useScanForm.js, which both the card and the /scan page use.
+    const src = readFileSync(new URL('../src/components/scan/useScanForm.js', import.meta.url), 'utf8')
     expect(src).toMatch(/import \{[^}]*\bfilled\b[^}]*\} from '..\/..\/lib\/resumeForm'/)
   })
   it('manualHasContent still works', () => {

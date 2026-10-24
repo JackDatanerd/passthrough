@@ -34,7 +34,7 @@ const JD = 'Senior engineer. '.repeat(10)
 function setup(scan, { path = '/scan/s1' } = {}) {
   api.get.mockImplementation(async url => url.startsWith('/payments/pending') ? { data: { data: { pending: null } } } : { data: { data: scan } })
   return render(<MemoryRouter initialEntries={[path]}><Routes>
-    <Route path="/scan/:id" element={<ScanResult />} /><Route path="/" element={<div>home</div>} />
+    <Route path="/scan/:id" element={<ScanResult />} /><Route path="/scan/:id/:tab" element={<ScanResult />} /><Route path="/" element={<div>home</div>} />
   </Routes></MemoryRouter>)
 }
 beforeEach(() => {

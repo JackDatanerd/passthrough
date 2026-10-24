@@ -1,9 +1,8 @@
-import { Suspense, useEffect, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import api, { getErrorMessage } from '../../lib/api'
 import { useAuth } from '../../hooks/useAuth'
 import { usePricing, fmtPrice } from '../../hooks/usePricing'
-import lazyWithRetry from '../../lib/lazyWithRetry'
 import DashboardLayout from '../../components/layout/DashboardLayout'
 import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
@@ -31,7 +30,6 @@ import { purgeScans, partialDeleteNote } from '../../lib/purgeScans'
 import { CHIPS, STATUS_FILTERS, chipCount, nextSteps, bestTrend, displayScore, isVerified } from '../../lib/scanNext'
 
 // The scan form is the biggest piece of the home page; the dashboard only loads it when someone opens the panel.
-const ScanForm = lazyWithRetry(() => import('../../components/scan/ScanForm'))
 
 const SCANS_PER_PAGE = 20
 // The summary above the list (next step, best score, credentials) looks at the newest scans the API will
@@ -81,8 +79,7 @@ export default function DashboardIndex() {
   const [bulkError, setBulkError] = useState('')
   const [bulkResult, setBulkResult] = useState(null)   // { deleted, remaining }
   const [breakdown, setBreakdown] = useState(null)     // scan whose breakdown is open
-  const [composerOpen, setComposerOpen] = useState(false)
-  const composerRef = useRef(null)
+  const navigate = useNavigate()
 
   // page / search / status / sort live in the URL: refreshing or sharing a link to "page 3, Delivered"
   // keeps the view.
@@ -354,11 +351,9 @@ export default function DashboardIndex() {
     }
   }
 
-  function openComposer() {
-    setComposerOpen(true)
-    // After the panel has rendered, bring it into view (no-op where scrolling is not implemented).
-    setTimeout(() => composerRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }), 0)
-  }
+  // A new scan has a page of its own (/scan, inside this same header): the form used to open in a collapsed panel
+  // here, and was a second home for the same form that the homepage already had.
+  function openComposer() { navigate('/scan') }
 
   const now = Date.now()
   const credits = user?.freeFixCredits || 0
@@ -382,7 +377,7 @@ export default function DashboardIndex() {
             <h1 className="text-xl font-bold text-gray-900">Your scans</h1>
             {total > 0 && <p className="text-sm text-gray-500 mt-0.5">{overview ? `${overview.total} scan${overview.total === 1 ? '' : 's'} in total.` : ''}</p>}
           </div>
-          <Button onClick={openComposer} aria-expanded={composerOpen} aria-controls="new-scan-panel">New scan</Button>
+          <Button onClick={openComposer}>New scan</Button>
         </div>
 
         {/* Webhooks round 14 (G1): the mail provider reported this address as bouncing / a spam complaint. Security mail still goes
@@ -441,20 +436,6 @@ export default function DashboardIndex() {
           <StatsRow best={best} trend={bestTrend(ov)} verifiedCount={ov.filter(isVerified).length}
             quota={quota} credits={credits} partial={partialOverview} />
         )}
-
-        {/* New scan: the home page's own form, opened in place. It sends you to the result when it is done. */}
-        <section ref={composerRef} id="new-scan-panel" aria-label="Check a new job" className="rounded-xl border border-gray-200 bg-white">
-          <button type="button" aria-expanded={composerOpen} onClick={() => setComposerOpen(o => !o)}
-            className="w-full flex items-center justify-between gap-3 px-5 py-3 text-left font-medium text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 rounded-xl">
-            <span>Check a new job</span>
-            {q && <span className="text-xs font-normal text-gray-500">{q.exhausted ? 'Free scans used up for today' : `${Math.max(0, quota.remaining)} of ${quota.limit} free scans left`}</span>}
-          </button>
-          {composerOpen && (
-            <div className="px-5 pb-5">
-              <Suspense fallback={<div className="flex justify-center py-6"><Spinner /></div>}><ScanForm /></Suspense>
-            </div>
-          )}
-        </section>
 
         {/* Chips, search and sort. Hidden entirely for a person with no scans and no filter. */}
         {(total > 0 || hasFilters) && (

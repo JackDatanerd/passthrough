@@ -12,7 +12,8 @@ const ROUTES = [
   [/^\/terms/, 'Terms of Service'],
   [/^\/privacy/, 'Privacy Policy'],
   [/^\/payment\/success/, 'Payment'],
-  [/^\/scan\//, 'Your scan'],
+  [/^\/scan\/./, 'Your scan'],
+  [/^\/scan\/?$/, 'New scan'],
   [/^\/v\//, 'Resume verification'],   // neutral: Verify.jsx names the real state once it has loaded (a page can be unverified, revoked, removed…)
   [/^\/check/, 'Check a resume'],
   [/^\/dashboard\/settings/, 'Settings'],

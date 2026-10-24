@@ -41,7 +41,7 @@ function setupApi({ pending = null, scan = SCAN } = {}) {
   })
 }
 const renderPage = () => render(
-  <MemoryRouter initialEntries={['/scan/s1']}><Routes><Route path="/scan/:id" element={<ScanResult />} /></Routes></MemoryRouter>)
+  <MemoryRouter initialEntries={['/scan/s1']}><Routes><Route path="/scan/:id" element={<ScanResult />} /><Route path="/scan/:id/:tab" element={<ScanResult />} /></Routes></MemoryRouter>)
 
 beforeEach(() => {
   api.get.mockReset(); api.post.mockReset(); auth.refreshUser.mockReset()
@@ -131,7 +131,9 @@ describe('ScanResult — open checkout notice (G3) and already-paid (B2)', () =>
     fireEvent.click(await screen.findByText('Cancel that payment'))
     // The message moves into the focused "we're rewriting" view once the page starts waiting for delivery, so wait for that settled state.
     await waitFor(() => expect(screen.getByText(/actually went through/)).toBeInTheDocument())
-    expect(screen.getByTestId('rewriting-focus')).toBeInTheDocument()
+    // The screen then moves itself to Your resume, where the rewrite is followed.
+    expect(await screen.findByTestId('rewriting-focus')).toBeInTheDocument()
+    expect(screen.getByText(/actually went through/)).toBeInTheDocument()
     expect(screen.queryByText(/payment in progress/i)).toBeNull()
   })
 
@@ -141,7 +143,9 @@ describe('ScanResult — open checkout notice (G3) and already-paid (B2)', () =>
     renderPage()
     fireEvent.click(await screen.findByText('pay-fix'))
     await waitFor(() => expect(screen.getByText(/actually went through/)).toBeInTheDocument())
-    expect(screen.getByTestId('rewriting-focus')).toBeInTheDocument()
+    // The screen then moves itself to Your resume, where the rewrite is followed and the message is kept as a note.
+    expect(await screen.findByTestId('rewriting-focus')).toBeInTheDocument()
+    expect(screen.getByText(/actually went through/)).toBeInTheDocument()
     expect(screen.queryByText('Cancel that payment and choose again')).toBeNull()
   })
 })

@@ -31,6 +31,7 @@ const ConfirmEmailChange = lazyWithRetry(() => import('./pages/ConfirmEmailChang
 const EmployerLeadAction = lazyWithRetry(() => import('./pages/EmployerLeadAction'))
 const EmployerLeadRejoin = lazyWithRetry(() => import('./pages/EmployerLeadRejoin'))
 const EmployerLeadPreferences = lazyWithRetry(() => import('./pages/EmployerLeadPreferences'))
+const Scan           = lazyWithRetry(() => import('./pages/Scan'))
 const ScanResult     = lazyWithRetry(() => import('./pages/ScanResult'))
 const Verify         = lazyWithRetry(() => import('./pages/Verify'))
 const VerifyLookup   = lazyWithRetry(() => import('./pages/VerifyLookup'))
@@ -73,6 +74,17 @@ const AdminHotCategories = lazyWithRetry(() => import('./pages/admin/AdminHotCat
 function loginRedirect(location) {
   const next = encodeURIComponent(location.pathname + location.search)
   return <Navigate to={`/login?next=${next}`} replace />
+}
+
+// The scan form used to live on the homepage, so links such as /?from=<scanId>, /?mode=manual and
+// /?mode=savedProfile&profile=<id> were how a person reached it. It has a page of its own now; the old links (in emails,
+// bookmarks and earlier results pages) land there with their query intact. A bare / is still the homepage.
+const SCAN_PARAMS = ['from', 'mode', 'profile']
+export function HomeRoute() {
+  const { search } = useLocation()
+  const params = new URLSearchParams(search)
+  if (SCAN_PARAMS.some(k => params.has(k))) return <Navigate to={`/scan${search}`} replace />
+  return <Home />
 }
 
 // ProtectedRoute — redirects to /login if no token
@@ -124,8 +136,10 @@ function RoutedApp() {
       }>
         <Routes>
           {/* Public routes */}
-          <Route path="/"                element={<Home />} />
+          <Route path="/"                element={<HomeRoute />} />
+          <Route path="/scan"            element={<Scan />} />
           <Route path="/scan/:id"        element={<ScanResult />} />
+          <Route path="/scan/:id/:tab"   element={<ScanResult />} />
           <Route path="/v/:code"         element={<Verify />} />
           <Route path="/check"           element={<VerifyLookup />} />
           <Route path="/login"           element={<Login />} />
