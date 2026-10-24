@@ -152,7 +152,7 @@ dt,dd{margin:0;padding:11px 0;border-top:1px solid var(--line)}dd{font:400 22px 
       <h3>Once it’s sent</h3>
       <ol class="track">
         <li class="d"><span>Sent to experts<br><span class="muted small">Today, 09:12</span></span></li>
-        <li class="d"><span>Claimed by Grace M., Trusted<br><span class="muted small">Today, 09:40</span></span></li>
+        <li class="d"><span>Claimed by Grace E., Trusted<br><span class="muted small">Today, 09:40</span></span></li>
         <li><span>In progress<br><span class="muted small">Due in 6 days</span></span></li>
         <li><span>Delivered with your new score</span></li>
       </ol>
@@ -186,8 +186,8 @@ function drawWork(){
   if(!mine){$("#workBody").innerHTML='<div class="empty"><h2>Nothing claimed yet.</h2><p class="muted" style="margin-bottom:18px">Pick a brief from Open jobs. Your seven-day clock starts when you claim it.</p><button class="btn p" data-go="board">See open jobs</button></div>';return}
   var C=2*Math.PI*84;
   $("#workBody").innerHTML='<div class="work"><div class="ring"><svg width="190" height="190" viewBox="0 0 190 190" aria-hidden="true"><circle cx="95" cy="95" r="84" fill="none" stroke="var(--line)" stroke-width="8"/><circle cx="95" cy="95" r="84" fill="none" stroke="var(--brass)" stroke-width="8" stroke-linecap="round" stroke-dasharray="'+C+'" stroke-dashoffset="'+(C*.02)+'"/></svg><div><strong>6 d 23 h</strong><span>until it’s due</span></div></div>'+
-  '<div class="panel"><h2>'+mine.t+'</h2><p class="muted small">For Amina. '+mine.w+'. Starting score '+mine.b+'.</p><div style="margin-top:14px">'+
-  ["Open the resume in the editor","Re-score reaches 80 or higher","Write the cover letter","Leave a short note for Amina"].map(function(x,i){return'<label class="check"><input type="checkbox" data-c="'+i+'"><span>'+x+'</span></label>'}).join("")+'</div>'+
+  '<div class="panel"><h2>'+mine.t+'</h2><p class="muted small">For Hannah. '+mine.w+'. Starting score '+mine.b+'.</p><div style="margin-top:14px">'+
+  ["Open the resume in the editor","Re-score reaches 80 or higher","Write the cover letter","Leave a short note for Hannah"].map(function(x,i){return'<label class="check"><input type="checkbox" data-c="'+i+'"><span>'+x+'</span></label>'}).join("")+'</div>'+
   '<div class="row"><button class="btn p" id="sub" disabled>Submit for review</button><button class="btn">Open editor</button><button class="btn g" data-un="1">Unclaim</button></div>'+
   '<p class="lock" style="margin-top:12px">Unclaiming is free for 24 hours. After that it counts toward your grade.</p></div></div>'}
 document.addEventListener("click",function(e){
@@ -196,9 +196,9 @@ document.addEventListener("click",function(e){
   if(d.go)tab(d.go);
   if(d.claim){confirming=+d.claim;drawList()}
   if(d.no){confirming=null;drawList()}
-  if(d.ok){if(mine){toast("Finish or unclaim your current job first.");return}var i=open.findIndex(function(j){return j.id==d.ok});mine=open.splice(i,1)[0];confirming=null;counts();drawList();drawWork();tab("work");toast("Claimed. Amina’s details are now unlocked.")}
+  if(d.ok){if(mine){toast("Finish or unclaim your current job first.");return}var i=open.findIndex(function(j){return j.id==d.ok});mine=open.splice(i,1)[0];confirming=null;counts();drawList();drawWork();tab("work");toast("Claimed. Hannah’s details are now unlocked.")}
   if(d.un){open.unshift(mine);mine=null;counts();drawList();drawWork();tab("board");toast("Unclaimed. The brief is back on the board.")}
-  if(t.id==="sub"&&!t.disabled){mine=null;counts();drawWork();tab("standing");toast("Submitted. Amina is notified and your $35 is queued.")}
+  if(t.id==="sub"&&!t.disabled){mine=null;counts();drawWork();tab("standing");toast("Submitted. Hannah is notified and your $35 is queued.")}
   if(t.id==="avail"){var on=t.getAttribute("aria-pressed")!=="true";t.setAttribute("aria-pressed",on);$("#availT").textContent=on?"Taking new jobs":"Paused"}
 });
 document.addEventListener("change",function(e){if(e.target.dataset.c!==undefined){var all=[].every.call(document.querySelectorAll("[data-c]"),function(x){return x.checked});$("#sub").disabled=!all}});

@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { createFakeSupabase } from './helpers/fakeSupabase.cjs'
 import { loadWithStubs } from './helpers/loadWithStubs.cjs'
 import fieldCrypto from '../src/lib/fieldCrypto.js'
@@ -30,6 +30,19 @@ describe('fieldCrypto', () => {
   it('reads a legacy plain-text row as it is, and nothing as nothing', async () => {
     expect(await fieldCrypto.openTaxId({ TAX_ID_ENCRYPTION_KEY: KEY }, 'A123456789B')).toBe('A123456789B')
     expect(await fieldCrypto.openTaxId({ TAX_ID_ENCRYPTION_KEY: KEY }, null)).toBe('')
+  })
+  it('a sealed value in a format this version cannot read is never shown as if it were a tax ID', async () => {
+    expect(await fieldCrypto.openTaxId({ TAX_ID_ENCRYPTION_KEY: KEY }, 'enc:v2:abc:def')).toBe('')
+    expect(fieldCrypto.isSealed('enc:v2:abc:def')).toBe(true)
+    expect(fieldCrypto.isSealed('A123456789B')).toBe(false)
+  })
+  it('works where Web Crypto is not a global (Node 18, for the re-seal script)', async () => {
+    vi.stubGlobal('crypto', undefined)
+    try {
+      const sealed = await fieldCrypto.sealTaxId({ TAX_ID_ENCRYPTION_KEY: OTHER_KEY }, 'GB-123456')
+      expect(sealed).toMatch(/^enc:v1:/)
+      expect(await fieldCrypto.openTaxId({ TAX_ID_ENCRYPTION_KEY: OTHER_KEY }, sealed)).toBe('GB-123456')
+    } finally { vi.unstubAllGlobals() }
   })
   it('a sealed value fits the widened database check (3 to 400 characters), a 40-character ID included', async () => {
     const sealed = await fieldCrypto.sealTaxId({ TAX_ID_ENCRYPTION_KEY: KEY }, 'x'.repeat(40))

@@ -9,6 +9,12 @@
 // this existed: it is still read (so nothing breaks the moment this deploys) and is sealed by scripts/encrypt-tax-ids.cjs.
 // With no usable key a tax ID is REFUSED on write rather than stored in clear: failing closed is the point.
 const PREFIX = 'enc:v1:'
+// Anything starting "enc:" is a sealed value of SOME version. Only v1 is readable here; a version this code doesn't know is never shown as if it
+// were a plain tax ID (a future format must fail closed, not leak its ciphertext as text).
+const SEALED_MARK = 'enc:'
+
+// Web Crypto is a global in Workers and in Node 20+; Node 18 (the re-seal script) has it only as node:crypto's webcrypto.
+const webcrypto = () => globalThis.crypto || require('node:crypto').webcrypto
 
 const toB64 = bytes => { let s = ''; for (const b of bytes) s += String.fromCharCode(b); return btoa(s) }
 const fromB64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0))
@@ -21,20 +27,21 @@ async function keyFor(env) {
   let bytes
   try { bytes = fromB64(raw) } catch { return null }
   if (bytes.length !== 32) return null
-  const key = await crypto.subtle.importKey('raw', bytes, 'AES-GCM', false, ['encrypt', 'decrypt'])
+  const key = await webcrypto().subtle.importKey('raw', bytes, 'AES-GCM', false, ['encrypt', 'decrypt'])
   cached = { raw, key }
   return key
 }
 
 const hasKey = async env => !!(await keyFor(env))
-const isSealed = v => typeof v === 'string' && v.startsWith(PREFIX)
+const isSealed = v => typeof v === 'string' && v.startsWith(SEALED_MARK)
 
 // -> the sealed string, or null when there is no usable key (the caller refuses the write).
 async function sealTaxId(env, plain) {
   const key = await keyFor(env)
   if (!key) return null
-  const iv = crypto.getRandomValues(new Uint8Array(12))
-  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(String(plain))))
+  const wc = webcrypto()
+  const iv = wc.getRandomValues(new Uint8Array(12))
+  const ct = new Uint8Array(await wc.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(String(plain))))
   return `${PREFIX}${toB64(iv)}:${toB64(ct)}`
 }
 
@@ -42,11 +49,12 @@ async function sealTaxId(env, plain) {
 async function openTaxId(env, stored) {
   if (stored == null || stored === '') return ''
   if (!isSealed(stored)) return String(stored)              // legacy plain-text row
+  if (!stored.startsWith(PREFIX)) { console.error('tax id is sealed in a format this version cannot read'); return '' }
   const key = await keyFor(env)
   if (!key) { console.error('tax id is sealed but TAX_ID_ENCRYPTION_KEY is missing or invalid'); return '' }
   try {
     const [iv, ct] = stored.slice(PREFIX.length).split(':')
-    return new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64(iv) }, key, fromB64(ct)))
+    return new TextDecoder().decode(await webcrypto().subtle.decrypt({ name: 'AES-GCM', iv: fromB64(iv) }, key, fromB64(ct)))
   } catch {
     console.error('tax id could not be decrypted (wrong key or damaged value)')
     return ''
