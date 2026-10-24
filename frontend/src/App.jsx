@@ -1,5 +1,5 @@
 import { Suspense, useState } from 'react'
-import { createBrowserRouter, RouterProvider, Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { createBrowserRouter, RouterProvider, Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
 import { useAuth } from './hooks/useAuth'
 import { getToken } from './lib/storage'
@@ -87,6 +87,13 @@ export function HomeRoute() {
   return <Home />
 }
 
+// One result per mount: going from /scan/A to /scan/B (back, forward, a link) must not leave A's score, offer and payment state
+// on screen under B's address, where a buy button would pay for B on A's quote.
+function ScanResultRoute() {
+  const { id } = useParams()
+  return <ScanResult key={id} />
+}
+
 // ProtectedRoute — redirects to /login if no token
 // Reads localStorage directly — no hook needed, avoids dead import (Patch 3)
 function ProtectedRoute({ children }) {
@@ -138,8 +145,8 @@ function RoutedApp() {
           {/* Public routes */}
           <Route path="/"                element={<HomeRoute />} />
           <Route path="/scan"            element={<Scan />} />
-          <Route path="/scan/:id"        element={<ScanResult />} />
-          <Route path="/scan/:id/:tab"   element={<ScanResult />} />
+          <Route path="/scan/:id"        element={<ScanResultRoute />} />
+          <Route path="/scan/:id/:tab"   element={<ScanResultRoute />} />
           <Route path="/v/:code"         element={<Verify />} />
           <Route path="/check"           element={<VerifyLookup />} />
           <Route path="/login"           element={<Login />} />

@@ -36,7 +36,7 @@ describe('DashboardLayout tabs', () => {
   it('renders all the dashboard tabs, in order, and the page content', () => {
     renderAt('/dashboard')
     const order = [...screen.getByRole('navigation', { name: 'Dashboard' }).querySelectorAll('a')].map(a => a.textContent)
-    expect(order).toEqual(['Scan', 'Scans', 'Proof', 'My Story', 'Payments', 'Settings'])
+    expect(order).toEqual(['Scans', 'Proof', 'My Story', 'Payments', 'Settings'])
     expect(screen.getByText('Page content')).toBeInTheDocument()
   })
 
@@ -76,7 +76,7 @@ describe('DashboardLayout header', () => {
   it('signs out and goes to the homepage', async () => {
     const logout = vi.fn()
     renderAt('/dashboard', { user: { id: 'u1', role: 'USER' }, logout })
-    await userEvent.click(screen.getByRole('button', { name: 'Sign out' }))
+    await userEvent.click(screen.getAllByRole('button', { name: 'Sign out' })[0])
     expect(logout).toHaveBeenCalled()
   })
 

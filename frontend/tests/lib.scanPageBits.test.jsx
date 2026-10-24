@@ -84,11 +84,12 @@ describe('shells', () => {
     at('/scan', <PageShell><p>body</p></PageShell>)
     expect(screen.getByRole('link', { name: 'Sign in' })).toBeInTheDocument()
   })
-  it('PageShell: a signed-in person gets the app tabs, Scan before Scans', () => {
+  it('PageShell: a signed-in person gets the app tabs and a New scan button, lit on /scan', () => {
     auth.user = { id: 'u1', name: 'Ada', email: 'a@b.co' }
     at('/scan', <PageShell><p>body</p></PageShell>)
     expect(screen.queryByRole('link', { name: 'Sign in' })).toBeNull()
-    const scan = screen.getAllByRole('link', { name: 'Scan' })[0]
+    expect(screen.queryByRole('link', { name: 'Scan' })).toBeNull()      // there is no Scan tab: the verb is the button
+    const scan = screen.getByRole('link', { name: /New scan/ })
     expect(scan).toHaveAttribute('href', '/scan')
     expect(scan).toHaveAttribute('aria-current', 'page')
   })
@@ -97,6 +98,6 @@ describe('shells', () => {
     auth.authLoading = true
     at('/scan', <PageShell><p>body</p></PageShell>)
     expect(screen.queryByRole('link', { name: 'Sign in' })).toBeNull()
-    expect(screen.getAllByRole('link', { name: 'Scan' }).length).toBeGreaterThan(0)
+    expect(screen.getByRole('link', { name: /New scan/ })).toBeInTheDocument()
   })
 })

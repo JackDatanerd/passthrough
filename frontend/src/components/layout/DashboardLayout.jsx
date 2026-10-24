@@ -14,8 +14,6 @@ import { consumeFlash, peekFlash, flashMessage } from '../../lib/flash'
 // (Stories, Hot categories, Pricing, For employers) belong to the public site, so they are not repeated here.
 // `badge` marks the tab that carries the "waiting for you" count.
 const tabs = [
-  // The front door: a real page of its own, so a signed-in person never lands in the marketing site to scan.
-  { label: 'Scan',     to: '/scan' },
   // "Scans" is the list; an open result (/scan/:id) belongs to it, so it stays lit while one is read.
   { label: 'Scans',    to: '/dashboard', badge: true },
   // Verified links in one place: the credential is the product, so it gets its own tab.
@@ -34,13 +32,14 @@ const tabs = [
 function isActive(pathname, to) {
   const path = (pathname.replace(/\/+$/, '') || '/').toLowerCase()   // the router matches case-insensitively, so must this
   if (to === '/dashboard' && /^\/scan\/[^/]/.test(path)) return true
-  return path === to || (to !== '/dashboard' && to !== '/scan' && path.startsWith(`${to}/`))
+  return path === to || (to !== '/dashboard' && path.startsWith(`${to}/`))
 }
 
 export default function DashboardLayout({ children }) {
   const { pathname } = useLocation()
   const { user } = useAuth()
   const handleLogout = useSignOut()
+  const onNewScan = /^\/scan\/?$/i.test(pathname)
   const waiting = useNeedsDecisionCount(user?.id)
   // A one-shot notice left by a redirect (a non-admin bounced off /admin): read on first render, cleared
   // by the effect below so it shows once (read-then-clear is split because a render-phase consume is not
@@ -82,13 +81,20 @@ export default function DashboardLayout({ children }) {
                 </Link>
               )
             })}
+            {/* A phone has no room for Sign out beside the logo and New scan, so it sits at the end of the tab row. */}
+            <button type="button" onClick={handleLogout} className="sm:hidden px-3 py-1.5 rounded-md text-sm font-semibold text-gray-600 hover:bg-gray-100 whitespace-nowrap shrink-0">Sign out</button>
           </nav>
           <div className="order-2 sm:order-3 ml-auto flex items-center gap-4 text-sm">
             {/* The admin page had no link anywhere — admins had to type the URL. */}
             {user?.role === 'ADMIN' && (
               <Link to="/admin" className="text-gray-600 hover:text-gray-900 transition-colors">Admin</Link>
             )}
-            <button type="button" onClick={handleLogout} className="py-4 text-gray-600 hover:text-gray-900 transition-colors">
+            {/* The one verb of the app, on every tab: lit while the person is on the scan page itself. */}
+            <Link to="/scan" aria-current={onNewScan ? 'page' : undefined}
+              className={cn('inline-flex items-center gap-1.5 font-bold px-3.5 py-2 rounded-[10px] text-white bg-blue-700 hover:bg-blue-800 shadow-[0_3px_0_#1e3a8a] active:translate-y-0.5 active:shadow-[0_1px_0_#1e3a8a] transition-colors whitespace-nowrap', onNewScan && 'ring-2 ring-offset-2 ring-blue-300')}>
+              <span aria-hidden="true">＋</span> New scan
+            </Link>
+            <button type="button" onClick={handleLogout} className="hidden sm:block py-4 text-gray-600 hover:text-gray-900 transition-colors">
               Sign out
             </button>
           </div>

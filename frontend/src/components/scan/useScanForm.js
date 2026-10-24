@@ -7,6 +7,7 @@ import { addAnonScanToken } from '../../lib/anonScans'
 import { isCancelError } from '../../lib/errors'
 import { loadBrainDumpDraft, saveBrainDumpDraft, markDraftSent } from '../../lib/brainDumpDraft'
 import { loadJdDraft, saveJdDraft, clearJdDraft } from '../../lib/scanJdDraft'
+import { classifyJobLink } from '../../lib/scanJobLink'
 import { manualHasContent, filled, EMPTY_MANUAL } from '../../lib/resumeForm'
 
 // Everything a scan form knows and does, with no opinion about how it looks. Two faces use it: the compact card on
@@ -223,9 +224,12 @@ export default function useScanForm({ loadRecent = false } = {}) {
   else if (needsContact && !contactName.trim()) resumeIssue = 'Please enter your name.'
   else if (needsContact && !EMAIL_RE.test(contactEmail.trim())) resumeIssue = 'Please enter a valid email address.'
 
+  const jobLink = useUrl ? classifyJobLink(jobUrl) : 'empty'
   let jobIssue = null
   if (!useUrl && jdLength(jdText) < MIN_JD_CHARS) jobIssue = `Job description too short (min ${MIN_JD_CHARS} characters).`
   else if (useUrl && !jobUrl.trim()) jobIssue = 'Please enter a job posting URL.'
+  else if (useUrl && jobLink === 'bad') jobIssue = 'That does not look like a web address. Paste the full link, or paste the posting text instead.'
+  else if (useUrl && jobLink === 'blocked') jobIssue = 'LinkedIn and similar sites cannot be read automatically. Paste the posting text instead.'
 
   // The free allowance is a gate, not advice: with none left the button says so instead of letting the person meet a 429.
   // A stale page can still be showing "0 left" after the clock has passed the reset, so the reset time is honoured.
@@ -268,7 +272,7 @@ export default function useScanForm({ loadRecent = false } = {}) {
       if (paperSize) formData.append('paperSize', paperSize)
       else if (entryMode === 'rescan' && rescanSource?.paperSize) formData.append('paperSize', 'auto')
       if (useUrl && jobUrl.trim())
-        formData.append('jobDescriptionUrl', jobUrl.trim())
+        formData.append('jobDescriptionUrl', /^[a-z][a-z0-9+.-]*:/i.test(jobUrl.trim()) ? jobUrl.trim() : `https://${jobUrl.trim()}`)
       else
         formData.append('jobDescriptionText', jdText)
 
@@ -328,7 +332,7 @@ export default function useScanForm({ loadRecent = false } = {}) {
     loading, uploadPct, cancelUpload: () => uploadAbort.current?.abort(),
     error, setError,
     quota, quotaText, quotaExhausted,
-    resumeIssue, jobIssue, needsContact,
+    resumeIssue, jobIssue, jobLink, needsContact,
     submitLabel, handleSubmit,
   }
 }

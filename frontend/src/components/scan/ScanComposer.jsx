@@ -1,4 +1,6 @@
 import { useRef } from 'react'
+import { usePricing } from '../../hooks/usePricing'
+import { ANON_SCANS_PER_HOUR, FREE_SCANS_PER_DAY } from '../../lib/scoreThresholds'
 import { Link } from 'react-router-dom'
 import Button from '../ui/Button'
 import Input from '../ui/Input'
@@ -30,12 +32,12 @@ const ICONS = {
   form: 'M5 5h14M5 12h14M5 19h9',
 }
 
-function Tile({ id, checked, onSelect, title, hint }) {
+function Tile({ id, checked, onSelect, title, hint, disabled = false }) {
   return (
     <button
-      type="button" role="radio" aria-checked={checked} data-tile={id} onClick={() => onSelect(id)}
+      type="button" role="radio" aria-checked={checked} data-tile={id} tabIndex={checked ? 0 : -1} disabled={disabled} onClick={() => onSelect(id)}
       className={cn(
-        'flex flex-col gap-0.5 text-left p-3 rounded-xl border-[1.5px] bg-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+        'flex flex-col gap-0.5 text-left p-3 rounded-xl border-[1.5px] bg-white transition-colors disabled:opacity-60 disabled:cursor-default focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
         checked ? 'border-blue-700 bg-blue-50 ring-[3px] ring-blue-100' : 'border-gray-200 hover:border-gray-300',
       )}
     >
@@ -80,6 +82,10 @@ export default function ScanComposer() {
     reusable.unshift({ id: rescanSource.id, label: rescanSource.label, hasImproved: rescanSource.hasImproved, createdAt: null, score: null, jobTitle: null })
   }
   const canReuse = !!user && reusable.length > 0
+  const reuseLoading = !!user && recent === null && !canReuse
+  const { pricing } = usePricing('')
+  const anonPerHour = pricing?.anonScansPerHour ?? ANON_SCANS_PER_HOUR
+  const freePerDay = pricing?.freeScansPerDay ?? FREE_SCANS_PER_DAY
 
   function selectTile(id) {
     if (id === 'upload') f.switchEntryMode('upload')
@@ -90,6 +96,19 @@ export default function ScanComposer() {
       if (!rescanSource && reusable[0]) f.pickRecent(reusable[0])
       else f.switchEntryMode('rescan')
     }
+  }
+
+  // A radio group moves with the arrow keys (one stop in the Tab order, the chosen tile), like every other radio group.
+  function onTileKeys(e) {
+    const dir = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key]
+    if (!dir) return
+    const tiles = [...e.currentTarget.querySelectorAll('[role=radio]:not(:disabled)')]
+    const at = tiles.indexOf(document.activeElement)
+    if (at < 0) return
+    e.preventDefault()
+    const next = tiles[(at + dir + tiles.length) % tiles.length]
+    next.focus()
+    next.click()
   }
 
   const resumeReady = !f.resumeIssue
@@ -105,14 +124,16 @@ export default function ScanComposer() {
       : entryMode === 'rescan' ? rescanSource?.label
         : entryMode === 'savedProfile' ? 'Your saved profile'
           : entryMode === 'brainDump' ? `${formatNumber(f.brainDumpText.trim().length)} characters` : 'Filled in by you'
-  const jobSummary = !jobReady ? 'Not added yet' : f.useUrl ? 'Link added' : `${formatNumber(f.jdText.length)} characters pasted`
+  const jobSummary = !jobReady ? 'Not added yet' : f.useUrl ? 'Link added' : `${formatNumber(jdLength(f.jdText))} characters pasted`
 
   function focusFirstGap() {
     const target = !resumeReady ? resumeRef.current : jobRef.current
     if (!target) return
     target.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
-    // The first control inside the half that is missing something; the section itself when it holds none.
-    const control = target.querySelector('textarea, input:not([type=file]):not([type=radio]), select, [role=button], button[role=radio][aria-checked=true]')
+    // The first control inside the half that is missing something, never one of the source tiles (they come first in the
+    // page and are not what is missing); the section itself when it holds none.
+    const control = [...target.querySelectorAll('textarea, input:not([type=file]):not([type=radio]), select, [role=button], input[type=radio]:checked')]
+      .find(el => !el.closest('[data-tiles]'))
     ;(control || target).focus?.()
   }
 
@@ -143,20 +164,44 @@ export default function ScanComposer() {
           : <span className="text-[13px] font-semibold px-3 py-1.5 rounded-full bg-blue-100 text-blue-800">No account needed</span>}
       </div>
 
+      {!user && (
+        <p data-testid="anon-note" className="mb-4 text-xs text-gray-600 bg-white border border-gray-200 rounded-lg px-3 py-2">
+          <b className="text-gray-800">Without an account:</b> {anonPerHour} free scan{anonPerHour === 1 ? '' : 's'} an hour, result kept for 24 hours.{' '}
+          <Link to="/register?next=%2Fscan" className="text-blue-700 underline underline-offset-2">Create a free account</Link> for {freePerDay} a day, saved for good.
+        </p>
+      )}
+
       <Form onSubmit={onAction} className="grid gap-5 lg:grid-cols-[1fr_320px] lg:items-start">
         <div className="min-w-0">
           <Step n={1} done={resumeReady} innerRef={resumeRef}>
             <h2 className="font-display text-lg font-extrabold text-ink">Your resume</h2>
             <p className="text-xs text-gray-500">Start with what you have. Every route ends in the same scan.</p>
-            <div role="radiogroup" aria-label="How do you want to give us your resume?" className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-2.5 my-3">
+            <div role="radiogroup" data-tiles aria-label="How do you want to give us your resume?" onKeyDown={onTileKeys} className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-2.5 my-3">
               <Tile id="upload" checked={tileOf(entryMode) === 'upload'} onSelect={selectTile} title="Upload it" hint="PDF or DOCX, up to 5 MB" />
+              {reuseLoading && (
+                <div aria-hidden="true" data-testid="reuse-loading" className="flex flex-col gap-0.5 p-3 rounded-xl border-[1.5px] border-gray-200 bg-white opacity-60">
+                  <span className="w-[22px] h-[22px] mb-1 rounded-full bg-gray-200" />
+                  <span className="text-sm font-semibold text-gray-900">Reuse a recent one</span>
+                  <span className="text-[12.5px] leading-snug text-gray-500">Loading your resumes…</span>
+                </div>
+              )}
               {canReuse && <Tile id="reuse" checked={tileOf(entryMode) === 'reuse'} onSelect={selectTile} title="Reuse a recent one" hint="Same resume, new job" />}
               {user && f.hasSavedProfile && <Tile id="saved" checked={tileOf(entryMode) === 'saved'} onSelect={selectTile} title="Saved profile" hint={f.extraProfiles.length ? `Main profile and ${f.extraProfiles.length} other${f.extraProfiles.length === 1 ? '' : 's'}` : 'Your saved background'} />}
               <Tile id="write" checked={tileOf(entryMode) === 'write'} onSelect={selectTile} title="Start from scratch" hint="Describe your background" />
               <Tile id="form" checked={tileOf(entryMode) === 'form'} onSelect={selectTile} title="Fill it in myself" hint="Nothing rewritten before scoring" />
             </div>
 
-            {entryMode === 'upload' && <FileUpload value={f.file} onFile={f.setFile} />}
+            {entryMode === 'upload' && (
+              <div>
+                <FileUpload value={f.file} onFile={f.setFile} />
+                {!user && (
+                  <div className="mt-3">
+                    <Input type="email" label="Email me the result link (optional)" placeholder="you@example.com" value={f.uploadEmail} onChange={e => f.setUploadEmail(e.target.value)} />
+                    <p className="mt-1 text-xs text-gray-500">Without an account your result is only reachable from this browser. We use the address for that link and nothing else.</p>
+                  </div>
+                )}
+              </div>
+            )}
 
             {entryMode === 'rescan' && (
               <div>
@@ -241,21 +286,30 @@ export default function ScanComposer() {
             </div>
             {f.useUrl ? (
               <div>
-                <Input label="Link to the employer’s own posting" placeholder="https://jobs.example.com/product-manager-123" value={f.jobUrl} onChange={e => f.setJobUrl(e.target.value)} />
-                <p className="mt-1 text-xs text-gray-500">LinkedIn links can’t be read automatically — paste the text instead. A very long posting is trimmed to its role and requirements; your result shows the text that was scored.</p>
+                <Input label="Link to the employer’s own posting" placeholder="https://jobs.example.com/product-manager-123" value={f.jobUrl} onChange={e => f.setJobUrl(e.target.value)}
+                  inputMode="url" autoComplete="off" aria-invalid={f.jobLink === 'bad' || f.jobLink === 'blocked' ? true : undefined} />
+                {f.jobLink === 'blocked' && (
+                  <p role="alert" data-testid="link-blocked" className="mt-2 text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                    <b>LinkedIn and similar sites can’t be read automatically.</b> Copy the posting text instead.{' '}
+                    <button type="button" onClick={() => f.setUseUrl(false)} className="font-semibold underline underline-offset-2">Switch to paste</button>
+                  </p>
+                )}
+                {f.jobLink === 'bad' && <p role="alert" data-testid="link-bad" className="mt-2 text-xs text-red-700">That doesn’t look like a web address.</p>}
+                {f.jobLink === 'ok' && <p data-testid="link-ok" className="mt-2 text-xs text-green-800">Looks good. We’ll read the page when you scan. If it can’t be read, you come straight back here with everything you entered.</p>}
+                <p className="mt-1 text-xs text-gray-500">Best results: the employer’s own posting, not a job-board repost. A very long posting is trimmed to its role and requirements; your result shows the text that was scored.</p>
               </div>
             ) : (
               <div>
                 <Textarea aria-label="Job description" placeholder="Paste the full job description here…" value={f.jdText} onChange={e => f.setJdText(e.target.value)} rows={7} />
                 <div className="mt-1 flex items-start justify-between gap-3">
-                  <p className={cn('text-xs', f.jdText.length > MAX_JD_CHARS ? 'text-amber-700' : 'text-gray-500')}>
-                    {f.jdText.length > MAX_JD_CHARS
+                  <p className={cn('text-xs', jdCount > MAX_JD_CHARS ? 'text-amber-700' : 'text-gray-500')}>
+                    {jdCount > MAX_JD_CHARS
                       ? `Longer than ${formatNumber(MAX_JD_CHARS)} characters — we'll trim the company intro, benefits and legal text first and keep the role and requirements. Your result shows what was scored.`
                       : 'Include the requirements and responsibilities.'}
                   </p>
                   <span className="shrink-0 text-xs tabular-nums flex items-center gap-1.5">
                     <span className={cn('font-bold px-2 py-0.5 rounded-full', jdOk ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800')}>{jdOk ? 'Enough to score' : 'Too short'}</span>
-                    <span className={cn(f.jdText.length > MAX_JD_CHARS ? 'text-amber-700 font-medium' : 'text-gray-400')}>{formatNumber(f.jdText.length)} / {formatNumber(MAX_JD_CHARS)}</span>
+                    <span className={cn(jdCount > MAX_JD_CHARS ? 'text-amber-700 font-medium' : 'text-gray-400')}>{formatNumber(jdCount)} / {formatNumber(MAX_JD_CHARS)}</span>
                   </span>
                 </div>
               </div>
@@ -264,12 +318,6 @@ export default function ScanComposer() {
               <summary className="cursor-pointer text-sm font-semibold text-gray-800">Options</summary>
               <div className="mt-3 grid gap-3">
                 <PaperSizeSelect value={f.paperSize} onChange={f.setPaperSize} disabled={f.loading} />
-                {!user && entryMode === 'upload' && (
-                  <div>
-                    <Input type="email" label="Email me the result link (optional)" placeholder="you@example.com" value={f.uploadEmail} onChange={e => f.setUploadEmail(e.target.value)} />
-                    <p className="mt-1 text-xs text-gray-500">Without an account your result is only reachable from this browser. We use the address for that link and nothing else.</p>
-                  </div>
-                )}
               </div>
             </details>
           </Step>

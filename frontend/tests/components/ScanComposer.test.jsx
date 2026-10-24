@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, within, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import api from '../../src/lib/api'
@@ -17,7 +17,7 @@ vi.mock('../../src/lib/api', () => ({
 }))
 // A FileUpload stand-in: one button that "chooses" a resume.
 vi.mock('../../src/components/ui/FileUpload', () => ({
-  default: ({ onFile }) => <button type="button" onClick={() => onFile(new File(['%PDF-1.4 resume'], 'cv.pdf', { type: 'application/pdf' }))}>pick-file</button>,
+  default: ({ onFile }) => <button type="button" role="button" onClick={() => onFile(new File(['%PDF-1.4 resume'], 'cv.pdf', { type: 'application/pdf' }))}>pick-file</button>,
 }))
 
 const JD = 'Senior backend engineer. Node.js, TypeScript, PostgreSQL, Docker. '.repeat(3)
@@ -103,7 +103,7 @@ describe('/scan — the button is never silently off', () => {
     expect(reasonLine()).toHaveTextContent('Please upload your resume.')
     await user.click(goButton())
     expect(api.post).not.toHaveBeenCalled()
-    expect(document.activeElement).toBe(tile(/^Upload it/))          // the resume half is where the gap is
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'pick-file' }))   // the resume half's own control, not the tile that was already chosen
 
     await user.click(screen.getByRole('button', { name: 'pick-file' }))
     expect(reasonLine()).toHaveTextContent('Job description too short (min 50 characters).')
@@ -345,5 +345,72 @@ describe('the compact card (homepage) shares the same rules', () => {
     await user.click(screen.getByRole('button', { name: /scan/i }))
     expect(await screen.findByText('Job description too short (min 50 characters).')).toBeInTheDocument()
     expect(api.post).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('/scan — what is said before the button is pressed', () => {
+  it('treats a job link as it is typed: LinkedIn blocked with a way out, junk flagged, a good one welcomed', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByRole('button', { name: 'Job link' }))
+    const box = screen.getByLabelText(/Link to the employer/)
+    await user.type(box, 'https://www.linkedin.com/jobs/view/123')
+    expect(screen.getByTestId('link-blocked')).toBeInTheDocument()
+    await user.click(within(screen.getByTestId('link-blocked')).getByRole('button', { name: 'Switch to paste' }))
+    expect(jdBox()).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Job link' }))
+    await user.clear(screen.getByLabelText(/Link to the employer/))
+    await user.type(screen.getByLabelText(/Link to the employer/), 'not a link')
+    expect(screen.getByTestId('link-bad')).toBeInTheDocument()
+    await user.clear(screen.getByLabelText(/Link to the employer/))
+    await user.type(screen.getByLabelText(/Link to the employer/), 'https://jobs.example.com/pm-123')
+    expect(screen.getByTestId('link-ok')).toBeInTheDocument()
+    expect(screen.queryByTestId('link-blocked')).toBeNull()
+  })
+
+  it('a visitor is told the hourly limit and the 24 hours before pressing anything; a signed-in person is not', async () => {
+    renderPage()
+    expect(screen.getByTestId('anon-note')).toHaveTextContent(/free scan.* an hour.*24 hours/)
+  })
+  it('the email box for a result link is on the page for a visitor who uploads, not behind Options', async () => {
+    renderPage()
+    expect(screen.getByLabelText(/Email me the result link/)).toBeInTheDocument()
+  })
+
+  it('pressing the button with a short pasted description lands on the box, not on the tile', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByRole('radio', { name: /^Start from scratch/ }))
+    await user.click(goButton())
+    expect(document.activeElement.tagName).toBe('TEXTAREA')
+  })
+
+  it('the source tiles move with the arrow keys, one stop in the Tab order', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    const up = tile(/^Upload it/)
+    expect(up).toHaveAttribute('tabindex', '0')
+    expect(tile(/^Start from scratch/)).toHaveAttribute('tabindex', '-1')
+    up.focus()
+    await user.keyboard('{ArrowRight}')
+    expect(tile(/^Start from scratch/)).toHaveAttribute('aria-checked', 'true')
+    expect(document.activeElement).toBe(tile(/^Start from scratch/))
+    await user.keyboard('{ArrowLeft}')
+    expect(tile(/^Upload it/)).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('a signed-in person sees a placeholder, not a tile that pops in, while earlier scans load', async () => {
+    auth.user = { id: 'u1' }
+    let release
+    wire({ history: [{ id: SRC, status: 'COMPLETE_FAIL', atsScore: 62, resumeOriginalName: 'cv.pdf', inputMode: 'file', createdAt: '2026-10-19T10:00:00Z' }] })
+    const real = api.get.getMockImplementation()
+    api.get.mockImplementation(async (url, ...a) => { if (url === '/scan/history') await new Promise(r => { release = r }); return real(url, ...a) })
+    renderPage()
+    expect(await screen.findByTestId('reuse-loading')).toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: /Reuse a recent one/ })).toBeNull()
+    await act(async () => { release?.() })
+    expect(await screen.findByRole('radio', { name: /Reuse a recent one/ })).toBeInTheDocument()
+    expect(screen.queryByTestId('reuse-loading')).toBeNull()
   })
 })

@@ -29,8 +29,6 @@ import { isAlreadyVerified } from '../../lib/resendVerification'
 import { purgeScans, partialDeleteNote } from '../../lib/purgeScans'
 import { CHIPS, STATUS_FILTERS, chipCount, nextSteps, bestTrend, displayScore, isVerified } from '../../lib/scanNext'
 
-// The scan form is the biggest piece of the home page; the dashboard only loads it when someone opens the panel.
-
 const SCANS_PER_PAGE = 20
 // The summary above the list (next step, best score, credentials) looks at the newest scans the API will
 // return in one go, independent of the page / filters below it.
