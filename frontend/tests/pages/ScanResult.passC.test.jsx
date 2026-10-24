@@ -15,7 +15,7 @@ vi.mock('../../src/lib/api', () => ({
 vi.mock('@paystack/inline-js', () => ({ default: class { resumeTransaction() {} } }))
 vi.mock('../../src/components/layout/Navbar', () => ({ default: () => null }))
 vi.mock('../../src/components/layout/Footer', () => ({ default: () => null }))
-vi.mock('../../src/components/scan/ScoreGauge', () => ({ default: () => null }))
+vi.mock('../../src/components/scan/ScoreSummary', () => ({ default: () => null }))
 vi.mock('../../src/components/scan/CategoryScores', () => ({ default: () => null }))
 vi.mock('../../src/components/scan/AtsDetailPanel', () => ({ default: () => null }))
 vi.mock('../../src/components/scan/DiffView', () => ({ default: () => null }))

@@ -55,7 +55,7 @@ export default function DeliveredResumeEditor({ scan, onSaved }) {
   }
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6" data-testid="delivered-editor">
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-[0_1px_2px_rgba(10,21,48,.04)] p-[18px]" data-testid="delivered-editor">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h3 className="font-semibold text-gray-900">Edit your delivered resume</h3>

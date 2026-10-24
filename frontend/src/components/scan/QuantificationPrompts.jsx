@@ -90,7 +90,7 @@ export default function QuantificationPrompts({ prompts, scan = null, onSaved = 
   const canEdit = !!(scan && onSaved && scan.rewrittenResumeData)
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-[0_1px_2px_rgba(10,21,48,.04)] p-[18px]">
       <p className="text-sm font-semibold text-gray-900 mb-1">Strengthen these lines</p>
       <p className="text-xs text-gray-500 mb-4">
         These bullets could be more persuasive with a specific number — we won't invent one,

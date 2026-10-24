@@ -1,7 +1,7 @@
 import Button from '../ui/Button'
 import PromoCountdown from '../ui/PromoCountdown'
 import { usePricing, fmtPrice } from '../../hooks/usePricing'
-import { ATS_BADGE_THRESHOLD, ATS_PASS_THRESHOLD, MAX_FIX_RETRIES } from '../../lib/scoreThresholds'
+import { ATS_BADGE_THRESHOLD, MAX_FIX_RETRIES } from '../../lib/scoreThresholds'
 import { ReferralCodeEntry, PricingFailedNotice } from '../ui/ReferralCodeEntry'
 import NewTag from '../ui/NewTag'
 import { formatMonthDay } from '../../lib/utils'
@@ -20,49 +20,16 @@ const HARDSHIP_CODE = (import.meta.env.VITE_HARDSHIP_CODE || '').trim().toUpperC
 // PriceTag — byTier() always returns a usable value (falls back to the correct standard price
 // internally if /api/pricing hasn't loaded or failed), so this only decides whether to show the
 // crossed-out anchor. Currency is threaded through: this is the literal checkout button.
-function PriceTag({ tier, byTier, currency }) {
+function PriceTag({ tier, byTier, currency, struckAfter = false }) {
   const live = byTier(tier)
   const onPromo = live.amount !== live.originalAmount
+  const struck = onPromo && <s className={struckAfter ? 'ml-1.5 text-base font-semibold text-gray-500' : 'opacity-60 mr-1'}>{fmtPrice(live.originalAmount, currency)}</s>
   return (
     <>
-      {onPromo && <s className="opacity-60 mr-1">{fmtPrice(live.originalAmount, currency)}</s>}
+      {!struckAfter && struck}
       {fmtPrice(live.amount, currency)}
+      {struckAfter && struck}
     </>
-  )
-}
-
-// One option on the offer. `featured` raises the card and adds the "best for most people" flag;
-// `children` is the checkout button(s), so each tier keeps its own label, loading and disabled state.
-function OfferCard({ title, price, note, points, featured = false, flag = 'Best for most people', nudge = '', assurance = '', children }) {
-  return (
-    <div
-      // The recommended card leads when the cards stack on a phone (it used to come second there); from `sm` up the
-      // columns keep their price order.
-      className={`relative flex flex-col rounded-xl bg-white p-5 ${
-        featured ? 'order-first sm:order-none border-2 border-blue-700 shadow-md sm:-translate-y-1' : 'border border-gray-200'
-      }`}
-    >
-      {featured && (
-        <span className="absolute -top-3 left-4 rounded-full bg-blue-700 px-3 py-0.5 text-xs font-semibold text-white">
-          {flag}
-        </span>
-      )}
-      <h3 className="text-base font-semibold text-gray-900">{title}</h3>
-      <p className="mt-1 text-3xl font-bold tracking-tight text-gray-900">{price}</p>
-      {note && <p className="text-xs text-gray-500">{note}</p>}
-      <ul className="mt-3 mb-4 flex-1 space-y-1.5 text-sm text-gray-600">
-        {points.map(([ok, text, isNew]) => (
-          <li key={text} className="flex gap-2">
-            <span aria-hidden="true" className={ok ? 'text-green-600 font-bold' : 'text-gray-400'}>{ok ? '✓' : '–'}</span>
-            <span>{isNew && <><NewTag />{' '}</>}{text}</span>
-          </li>
-        ))}
-      </ul>
-      {nudge && <p className="mb-2 text-sm font-medium text-blue-700">{nudge}</p>}
-      <div className="flex flex-col gap-2">{children}</div>
-      {/* The risk-reversal sits against the button it answers, not only in the paragraph under the cards. */}
-      {assurance && <p className="mt-2 text-xs text-gray-600" data-testid="offer-assurance">{assurance}</p>}
-    </div>
   )
 }
 
@@ -77,7 +44,9 @@ export default function FixBanner({
   // paid for (payingTier) gets the spinner via Button's own `loading` prop.
   payLoading = false, payingTier = null,
   // Builds + scores the ATS-formatted file a purchase would deliver (POST /structure).
-  onCheckFormatted = null, checkingFormatted = false, checkFormattedError = ''
+  onCheckFormatted = null, checkingFormatted = false, checkFormattedError = '',
+  // Anything the page needs to say inside the offer itself (a visitor is told an account comes first), rendered at its foot.
+  children = null,
 }) {
   const { byTier, pricing, pricingFailed, refresh: refreshPricing, clockOffsetMs } = usePricing(referralCode || welcomeOffer?.code || '', { scanId: scan?.id })
   // Quote of the hardship code, used only to measure the real discount. With no code configured this is
@@ -103,12 +72,6 @@ export default function FixBanner({
   const formattedKnown = !isFile || formatted != null
   const badgeSafe = !isFile || (formatted != null && formatted >= ATS_BADGE_THRESHOLD)
   const formattedLow = isFile && formatted != null && formatted < ATS_BADGE_THRESHOLD
-
-  // The "$X more" nudge uses live prices, so it is true during a promo, a referral discount or neither.
-  const stepUp = byTier('FIX').amount - byTier('FIX_PLAIN').amount
-  // The cover letter is the newest thing a purchase includes, so every card names it, with that tier's allowance.
-  const letter = tier => [true, coverLetterText(pricing, tier), true]
-  const nudge = stepUp > 0 ? `Only ${fmtPrice(stepUp, currency)} more than the plain fix` : ''
 
   const normalizedCode = (referralCode || '').trim().toUpperCase()
   const hardshipApplied = !!HARDSHIP_CODE && normalizedCode === HARDSHIP_CODE
@@ -140,25 +103,6 @@ export default function FixBanner({
 
   // The reference point only makes sense in dollars.
   const showWriterCompare = (currency || 'USD') === 'USD'
-  const compare = showWriterCompare && (
-    <div className="grid gap-3 py-3 sm:grid-cols-3" data-testid="writer-compare">
-      <div className="rounded-lg border border-gray-200 bg-white p-3 text-sm text-gray-600">
-        <span className="text-xs text-gray-500">Hire a resume writer</span>
-        <b className="block text-2xl text-gray-900">{fmtPrice(WRITER_TYPICAL_CENTS, currency)}+</b>
-        Usually days of back-and-forth.
-      </div>
-      <div className="rounded-lg border border-gray-200 bg-white p-3 text-sm text-gray-600">
-        <span className="text-xs text-gray-500">Change nothing</span>
-        <b className="block text-2xl text-gray-900">{fmtPrice(0, currency)}</b>
-        Same filter, same silence on your next applications.
-      </div>
-      <div className="rounded-lg border-2 border-blue-700 bg-white p-3 text-sm text-gray-600">
-        <span className="text-xs text-gray-500">Full fix + Verified</span>
-        <b className="block text-2xl text-gray-900"><PriceTag tier="FIX" byTier={byTier} currency={currency} /></b>
-        Rewritten and delivered on this page.
-      </div>
-    </div>
-  )
 
   const showCountdown = pricing?.promoActive && pricing.promoEndsAt
   // Said only once the quote confirms the discount is real for THIS buyer (the code can be spent, expired or refused by the time the
@@ -166,108 +110,74 @@ export default function FixBanner({
   const fixQuote = byTier('FIX')
   const welcomeApplied = !!welcomeOffer && !referralCode && !!fixQuote?.referralApplied && !!fixQuote?.discountApplied
   const welcomeLine = welcomeApplied ? (
-    <p role="status" className="mb-3 text-sm font-medium text-emerald-700" data-testid="welcome-applied">
-      ✓ Welcome price applied: {welcomeOffer.percentOff}% off the Full fix + Verified, {fmtPrice(fixQuote.amount, currency)} instead of {fmtPrice(welcomeOffer.listAmountCents, currency)}.{' '}
+    <p role="status" className="mt-3 text-sm font-medium text-emerald-700" data-testid="welcome-applied">
+      Welcome price applied: {welcomeOffer.percentOff}% off the Full fix + Verified, {fmtPrice(fixQuote.amount, currency)} instead of {fmtPrice(welcomeOffer.listAmountCents, currency)}.{' '}
       <span className="font-normal text-emerald-700/80">
-        Yours alone, and it works once, until {formatMonthDay(welcomeOffer.expiresAt) ?? '—'}.
+        Yours alone, and it works once, until {formatMonthDay(welcomeOffer.expiresAt) ?? ''}.
       </span>
     </p>
   ) : null
-  const shared = (
-    <>
-      {showCountdown && (
-        <PromoCountdown endsAt={pricing.promoEndsAt} clockOffsetMs={clockOffsetMs} label={pricing.promoLabel} onExpire={refreshPricing} className="mb-3" />
-      )}
-      {hasCredit && (
-        <p className="text-sm text-green-700 mt-1 mb-3 font-medium">
-          You have {freeFixCredits} free fix credit{freeFixCredits > 1 ? 's' : ''} — use one below at no charge.
-        </p>
-      )}
-      {pricingFailed && <PricingFailedNotice referralCode={referralCode} onRetry={refreshPricing} />}
-      {welcomeLine}
-      <ReferralCodeEntry referralCode={referralCode} pricing={pricing} onApply={onApplyReferralCode} disabled={payLoading} collapsible />
-    </>
-  )
+
+  // Short form of the guarantee, as the last bullet of what the purchase includes.
+  const retriesLine = `${MAX_FIX_RETRIES} free retries. Still short? You get a free fix credit.`
+  const includes = [
+    [false, 'AI rewrite using only your real experience'],
+    [false, 'ATS-ready .docx and PDF'],
+    [false, 'Passthrough Verified link & badge'],
+    [true, coverLetterText(pricing, 'FIX')],
+    [false, retriesLine],
+  ]
 
   const guarantee = (
-    <p className="mt-4 border-t border-gray-200 pt-3 text-sm text-gray-600" data-testid="fix-guarantee">
+    <p className="mt-2 text-xs text-gray-600" data-testid="fix-guarantee">
       <span className="font-semibold text-gray-800">If the fixed version still falls short, you don't pay again.</span>{' '}
       Every fix includes {MAX_FIX_RETRIES} free retries. If it still misses, you get a free fix credit. This is a credit, not a refund.
     </p>
   )
 
-  // Short form of the guarantee below, shown on the two cards that include a rewrite (the credential-only card has none).
-  const assurance = `${MAX_FIX_RETRIES} free retries. Still short? You get a free fix credit.`
+  // A second way to buy, as a quiet line under the main button: "Just the rewrite, no Verified?  Fix only $29".
+  const Alt = ({ lead, tier, label, testid }) => (
+    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[13px] text-gray-600" data-testid={testid}>
+      <span>{lead}</span>
+      <button type="button" onClick={() => onPay(tier)} disabled={payLoading}
+        className="font-bold text-blue-700 underline underline-offset-2 hover:text-blue-800 disabled:opacity-60">
+        {label} {'\u00b7'} <PriceTag tier={tier} byTier={byTier} currency={currency} struckAfter />
+      </button>
+    </div>
+  )
 
-  // <80: the plain rewrite, or the full fix with the Verified credential. The credential-only option
-  // is not offered here — it needs a score of at least ATS_BADGE_THRESHOLD.
-  if (!badgeEligible) {
-    return (
-      <section className="rounded-xl border border-blue-200 bg-blue-50 p-5 sm:p-6">
-        <p className="text-lg font-semibold text-blue-900">
-          {provisional
-            ? 'Your score is provisional'
-            : (scan.passed ?? score >= ATS_PASS_THRESHOLD) === false
-            ? 'Your resume is being rejected by ATS filters'
-            : 'Boost your score and unlock Verified status'}
-        </p>
-        <p className="mt-1 mb-3 text-sm text-blue-800">
-          {provisional && <>The AI half of the check was unavailable, so this number may read lower than it should. Re-check it above before choosing. </>}
-          {!provisional && gap > 0 && <>You are {gap} point{gap === 1 ? '' : 's'} short of the {ATS_BADGE_THRESHOLD} a resume needs to earn the Verified credential. </>}
-          A fix rewrites your own experience in the words the job post and the software look for.
-        </p>
-        {compare}
-        {shared}
-        <div className="grid gap-4 pt-2 sm:grid-cols-2">
-          <OfferCard
-            title="Fix only"
-            price={<PriceTag tier="FIX_PLAIN" byTier={byTier} currency={currency} />}
-            points={[[true, 'AI rewrite using your real experience'], [true, 'ATS-optimised .docx and PDF'], letter('FIX_PLAIN'), [false, 'No Verified credential']]}
-            assurance={assurance}
-          >
-            <Button onClick={() => onPay('FIX_PLAIN')} variant="secondary" disabled={payLoading} loading={payingTier === 'FIX_PLAIN'}>
-              Fix My Resume — <PriceTag tier="FIX_PLAIN" byTier={byTier} currency={currency} />
-            </Button>
-          </OfferCard>
-          <OfferCard
-            featured
-            title="Full fix + Verified"
-            price={<PriceTag tier="FIX" byTier={byTier} currency={currency} />}
-            points={[[true, 'Everything in Fix only'], letter('FIX'), [true, 'Passthrough Verified credential employers can check'], [true, 'Shareable link and badge']]}
-            nudge={nudge}
-            assurance={assurance}
-          >
-            {hasCredit && (
-              <Button onClick={onRedeemCredit} variant="secondary" disabled={payLoading} loading={payLoading && !payingTier}>
-                Use Free Credit
-              </Button>
-            )}
-            <Button onClick={() => onPay('FIX')} disabled={payLoading} loading={payingTier === 'FIX'}>
-              Fix + Verified Credential — <PriceTag tier="FIX" byTier={byTier} currency={currency} />
-            </Button>
-          </OfferCard>
-        </div>
-        {guarantee}
-        {hardshipLine}
-      </section>
-    )
-  }
-
-  // 80+: the credential is the natural next step; a rewrite is optional, not the headline.
+  const eligible = badgeEligible
   return (
-    <section className="rounded-xl border border-green-200 bg-green-50 p-5 sm:p-6">
-      <p className="mb-1 text-lg font-semibold text-green-900">
-        ✓ Your resume passed ATS — you're Verified-eligible
-      </p>
-      <p className="mb-3 text-sm text-green-800">
-        You may not need a rewrite. The credential lets an employer check your score and confirm the file hasn't been changed.
-        A rewrite is optional.
-      </p>
-      {isFile && !formattedKnown && (
-        <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2" data-testid="formatted-check">
+    <section data-testid="offer-card" className="rounded-2xl border-2 border-blue-700 bg-gradient-to-b from-white to-blue-50 p-[18px] shadow-[0_1px_2px_rgba(10,21,48,.04)]">
+      {showCountdown ? (
+        <PromoCountdown endsAt={pricing.promoEndsAt} clockOffsetMs={clockOffsetMs} label={pricing.promoLabel} onExpire={refreshPricing} className="mb-2" />
+      ) : (
+        <span className="mb-2 inline-block rounded-full bg-[#FFE27A] px-2.5 py-0.5 text-[11px] font-extrabold text-[#5C4600]">{eligible ? 'Most complete' : 'Best for most people'}</span>
+      )}
+      <h3 className="font-display text-lg font-extrabold tracking-[-0.02em] text-ink">Fix &amp; verify my resume</h3>
+      <div className="mt-2 font-display text-[34px] font-extrabold leading-none text-ink" data-testid="offer-price">
+        <PriceTag tier="FIX" byTier={byTier} currency={currency} struckAfter />
+      </div>
+
+      {provisional && (
+        <p role="status" className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-900" data-testid="provisional-note">
+          Your score is provisional. The AI half of the check was unavailable, so this number may read lower than it should. Re-check it before choosing.
+        </p>
+      )}
+      {eligible && (
+        <p className="mt-3 text-[13px] text-gray-700">
+          <b className="text-green-800">Your resume passed ATS and is Verified-eligible.</b> You may not need a rewrite. The credential lets an employer check your score and confirm the file hasn't been changed. A rewrite is optional.
+        </p>
+      )}
+      {!eligible && !provisional && gap > 0 && (
+        <p className="mt-3 text-[13px] text-gray-700">You are {gap} point{gap === 1 ? '' : 's'} short of the {ATS_BADGE_THRESHOLD} a resume needs to earn the Verified credential. A fix rewrites your own experience in the words the job post and the software look for.</p>
+      )}
+
+      {eligible && isFile && !formattedKnown && (
+        <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2" data-testid="formatted-check">
           <p className="text-sm text-amber-900">
             The credential is issued on the ATS-formatted version we build from your file, which can score
-            differently from the file you uploaded. Check it first — it takes a few seconds.
+            differently from the file you uploaded. Check it first. It takes a few seconds.
           </p>
           {onCheckFormatted && (
             <Button onClick={onCheckFormatted} variant="secondary" className="mt-2" loading={checkingFormatted} disabled={checkingFormatted || payLoading}>
@@ -277,64 +187,56 @@ export default function FixBanner({
           {checkFormattedError && <p role="alert" className="mt-2 text-sm text-red-700">{checkFormattedError}</p>}
         </div>
       )}
-      {formattedLow && (
-        <p className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="formatted-low">
-          The ATS-formatted file we'd deliver scores {formatted} — under the {ATS_BADGE_THRESHOLD} the credential needs — so a
+      {eligible && formattedLow && (
+        <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="formatted-low">
+          The ATS-formatted file we'd deliver scores {formatted}, under the {ATS_BADGE_THRESHOLD} the credential needs, so a
           Credential-only purchase would not come out verified. A Fix rewrites it to clear the bar.
         </p>
       )}
-      {isFile && formatted != null && !formattedLow && (
-        <p className="mb-3 text-sm text-green-800" data-testid="formatted-ok">
-          The ATS-formatted file we'd deliver scores {formatted} — credential-ready.
+      {eligible && isFile && formatted != null && !formattedLow && (
+        <p className="mt-3 text-sm text-green-800" data-testid="formatted-ok">
+          The ATS-formatted file we'd deliver scores {formatted}, credential-ready.
         </p>
       )}
-      {shared}
-      <div className={`grid gap-4 pt-2 ${badgeSafe ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
-        {badgeSafe && (
-          <OfferCard
-            title="Verified credential"
-            price={<PriceTag tier="BADGE" byTier={byTier} currency={currency} />}
-            points={[[true, 'Verified link and badge'], [true, 'Employers see your score and an unchanged-file check'], letter('BADGE'), [false, 'No rewrite']]}
-          >
-            <Button onClick={() => onPay('BADGE')} disabled={payLoading} loading={payingTier === 'BADGE'}>
-              Verified Credential only — <PriceTag tier="BADGE" byTier={byTier} currency={currency} />
-            </Button>
-          </OfferCard>
-        )}
-        <OfferCard
-          title="Fix only"
-          price={<PriceTag tier="FIX_PLAIN" byTier={byTier} currency={currency} />}
-          points={[[true, 'AI rewrite using your real experience'], [true, 'ATS-optimised .docx and PDF'], letter('FIX_PLAIN'), [false, 'No Verified credential']]}
-          assurance={assurance}
-        >
-          <Button onClick={() => onPay('FIX_PLAIN')} variant="secondary" disabled={payLoading} loading={payingTier === 'FIX_PLAIN'}>
-            Fix My Resume, No Credential — <PriceTag tier="FIX_PLAIN" byTier={byTier} currency={currency} />
+
+      <ul className="my-3 grid gap-1.5 text-[13.5px] text-gray-700">
+        {includes.map(([isNew, text]) => (
+          <li key={text} className="flex gap-1.5"><span aria-hidden="true" className="font-extrabold text-green-700">{'\u2713'}</span><span>{isNew && <><NewTag />{' '}</>}{text}</span></li>
+        ))}
+      </ul>
+
+      {pricingFailed && <PricingFailedNotice referralCode={referralCode} onRetry={refreshPricing} />}
+      {hasCredit && (
+        <>
+          <p className="mb-2 text-sm font-medium text-green-700">You have {freeFixCredits} free fix credit{freeFixCredits > 1 ? 's' : ''}. Use one at no charge.</p>
+          <Button onClick={onRedeemCredit} variant="secondary" className="mb-2 w-full" disabled={payLoading} loading={payLoading && !payingTier}>
+            Use my free fix credit
           </Button>
-        </OfferCard>
-        {/* The most complete option is the recommended one at every score. The flag says "Most complete", not
-            "Best for most people": a resume that already passes may genuinely not need the rewrite, and the heading
-            above says so. */}
-        <OfferCard
-          featured
-          flag="Most complete"
-          title="Full fix + Verified"
-          price={<PriceTag tier="FIX" byTier={byTier} currency={currency} />}
-          points={[[true, 'Everything in Fix only'], letter('FIX'), [true, 'Passthrough Verified credential'], [true, 'Verified link and badge']]}
-          nudge={nudge}
-          assurance={assurance}
-        >
-          {hasCredit && (
-            <Button onClick={onRedeemCredit} variant="secondary" disabled={payLoading} loading={payLoading && !payingTier}>
-              Full AI Fix — Free Credit
-            </Button>
-          )}
-          <Button onClick={() => onPay('FIX')} disabled={payLoading} loading={payingTier === 'FIX'}>
-            Full AI Fix + Credential — <PriceTag tier="FIX" byTier={byTier} currency={currency} />
-          </Button>
-        </OfferCard>
-      </div>
+        </>
+      )}
+      <Button onClick={() => onPay('FIX')} size="lg" className="w-full shadow-[0_3px_0_#1e3a8a] active:translate-y-0.5 active:shadow-[0_1px_0_#1e3a8a]" disabled={payLoading} loading={payingTier === 'FIX'}>
+        Fix &amp; verify my resume <span aria-hidden="true">{'\u2192'}</span>
+      </Button>
+      <p className="mt-2 text-center text-xs text-gray-500">You've seen the full breakdown free. Pay only for the fix.</p>
+
+      <Alt lead="Just the rewrite, no Verified?" tier="FIX_PLAIN" label="Fix only" testid="alt-plain" />
+      {eligible && badgeSafe && <Alt lead="Just the credential, no rewrite?" tier="BADGE" label="Verified only" testid="alt-badge" />}
+
+      {showWriterCompare && (
+        <div className="mt-3 flex flex-wrap gap-x-3.5 gap-y-1 border-t border-gray-200 pt-2.5 text-xs text-gray-500" data-testid="writer-compare" aria-label="How it compares">
+          <span><b className="text-ink">{fmtPrice(WRITER_TYPICAL_CENTS, currency)}+</b> resume writer, days</span>
+          <span><b className="text-ink">{fmtPrice(0, currency)}</b> change nothing</span>
+        </div>
+      )}
+
+      <p className="mt-2.5 rounded-[10px] border border-dashed border-blue-200 bg-white px-2.5 py-2 text-[12.5px] text-gray-600">
+        After you pay, <b>Your resume</b> and <b>Apply</b> tabs open here. Nothing to find.
+      </p>
       {guarantee}
+      {welcomeLine}
+      <ReferralCodeEntry referralCode={referralCode} pricing={pricing} onApply={onApplyReferralCode} disabled={payLoading} collapsible />
       {hardshipLine}
+      {children}
     </section>
   )
 }

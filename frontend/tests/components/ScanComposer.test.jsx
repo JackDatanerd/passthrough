@@ -62,7 +62,7 @@ describe('/scan — what a visitor and a signed-in person are offered', () => {
   it('a visitor gets three ways in, and the "no account" pill', () => {
     renderPage()
     expect(screen.getAllByRole('radio').map(r => r.textContent.split(/(?=[A-Z][a-z])/)[0])).toHaveLength(3)
-    expect(tile(/^Upload it/)).toBeInTheDocument()
+    expect(tile(/^Upload a file/)).toBeInTheDocument()
     expect(tile(/^Start from scratch/)).toBeInTheDocument()
     expect(tile(/^Fill it in myself/)).toBeInTheDocument()
     expect(screen.queryByRole('radio', { name: /Reuse a recent one/ })).toBeNull()
@@ -72,7 +72,7 @@ describe('/scan — what a visitor and a signed-in person are offered', () => {
   it('a signed-in person is not told "no account needed", and sees the allowance with its reset time', async () => {
     auth.user = { id: 'u1', name: 'Ada', email: 'ada@example.com' }
     renderPage()
-    expect(await screen.findByText(/3 of 3 free scans left today/)).toBeInTheDocument()
+    expect(await screen.findByText(/3 of 3 free scans left/)).toBeInTheDocument()
     expect(screen.queryByText('No account needed')).toBeNull()
     expect(screen.queryByText(/kept for 24 hours/)).toBeNull()
   })
@@ -82,7 +82,7 @@ describe('/scan — what a visitor and a signed-in person are offered', () => {
     wire({ prof: profile({ hasSavedProfile: true }), history: [{ id: SRC, status: 'COMPLETE_FAIL', atsScore: 62, resumeOriginalName: 'cv.pdf', inputMode: 'file', createdAt: '2026-10-19T10:00:00Z', jobTitle: 'PM' }] })
     renderPage()
     expect(await screen.findByRole('radio', { name: /Reuse a recent one/ })).toBeInTheDocument()
-    expect(await screen.findByRole('radio', { name: /Saved profile/ })).toBeInTheDocument()
+    expect(await screen.findByRole('radio', { name: /Use my saved profile/ })).toBeInTheDocument()
   })
 
   it('a scan that is still running or failed is not offered for reuse', async () => {
@@ -100,36 +100,42 @@ describe('/scan — the button is never silently off', () => {
     const user = userEvent.setup()
     renderPage()
     expect(goButton()).toHaveAttribute('aria-disabled', 'true')
-    expect(reasonLine()).toHaveTextContent('Please upload your resume.')
+    expect(reasonLine()).toHaveTextContent('Add your resume to continue.')
     await user.click(goButton())
     expect(api.post).not.toHaveBeenCalled()
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'pick-file' }))   // the resume half's own control, not the tile that was already chosen
 
     await user.click(screen.getByRole('button', { name: 'pick-file' }))
-    expect(reasonLine()).toHaveTextContent('Job description too short (min 50 characters).')
+    expect(reasonLine()).toHaveTextContent('Add the job to continue.')
     await user.click(goButton())
     expect(api.post).not.toHaveBeenCalled()
     expect(document.activeElement).toBe(jdBox())                    // now the job half
   })
 
-  it('marks each half ready as it is completed, in the rail', async () => {
+  it('marks each half ready as it is completed: the lamps by the button, the rail above, and the panel badges', async () => {
     const user = userEvent.setup()
     renderPage()
-    const rail = within(screen.getByRole('complementary', { name: 'Scan summary' }))
-    expect(rail.getByText('Resume').parentElement).toHaveTextContent('Resume missing')
+    const lamp = k => document.querySelector(`[data-lamp="${k}"]`)
+    expect(lamp('resume')).toHaveAttribute('data-on', 'false')
+    expect(lamp('resume')).toHaveTextContent(/Not added yet.* missing/)
+    expect(screen.queryByText('Ready', { selector: 'span' })).toBeNull()
     await user.click(screen.getByRole('button', { name: 'pick-file' }))
     setText(jdBox(), JD)
-    expect(rail.getByText('Resume').parentElement).toHaveTextContent('Resume ready')
-    expect(rail.getByText('Job').parentElement).toHaveTextContent('Job ready')
+    expect(lamp('resume')).toHaveAttribute('data-on', 'true')
+    expect(lamp('resume')).toHaveTextContent(/ ready$/)
+    expect(lamp('job')).toHaveAttribute('data-on', 'true')
+    expect(lamp('job')).toHaveTextContent(/pasted.* ready$/)
+    expect(screen.getAllByText('Ready', { selector: 'span' })).toHaveLength(2)
+    expect(within(screen.getByTestId('rail')).getAllByText('\u2713')).toHaveLength(2)
     expect(goButton()).not.toHaveAttribute('aria-disabled')
-    expect(reasonLine()).toHaveTextContent('')
+    expect(reasonLine()).toHaveTextContent('Ready. About 30 seconds')
   })
 
   it('whitespace does not count towards the 50 characters the server asks for', () => {
     renderPage()
     setText(jdBox(), 'a' + ' '.repeat(80) + 'b')
     expect(screen.getByText('Too short')).toBeInTheDocument()
-    expect(reasonLine()).toHaveTextContent('Please upload your resume.')   // the resume is still the first gap
+    expect(reasonLine()).toHaveTextContent('Add your resume to continue.')   // the resume is still the first gap
     setText(jdBox(), `${'word '.repeat(9)}   \n\n   end`)                  // 9 words + end, well under 50 once collapsed
     expect(screen.getByText('Too short')).toBeInTheDocument()
     setText(jdBox(), JD)
@@ -140,13 +146,13 @@ describe('/scan — the button is never silently off', () => {
     const user = userEvent.setup()
     renderPage()
     const paste = screen.getByRole('button', { name: 'Paste text' })
-    const link = screen.getByRole('button', { name: 'Job link' })
+    const link = screen.getByRole('button', { name: 'From a link' })
     expect(paste).toHaveAttribute('aria-pressed', 'true')
     expect(link).toHaveAttribute('aria-pressed', 'false')
     await user.click(link)
     expect(paste).toHaveAttribute('aria-pressed', 'false')
     expect(link).toHaveAttribute('aria-pressed', 'true')
-    expect(reasonLine()).toHaveTextContent('Please upload your resume.')
+    expect(reasonLine()).toHaveTextContent('Add your resume to continue.')
   })
 
   it('a visitor who describes their background must give a name and a valid email before the scan is ready', async () => {
@@ -154,13 +160,13 @@ describe('/scan — the button is never silently off', () => {
     renderPage()
     await user.click(tile(/^Start from scratch/))
     setText(screen.getByRole('textbox', { name: 'Your background, in your own words' }), BACKGROUND)
-    expect(reasonLine()).toHaveTextContent('Please enter your name.')
+    expect(reasonLine()).toHaveTextContent('Add your name and a valid email to continue.')
     await user.type(screen.getByLabelText('Your full name'), 'Ada Lovelace')
-    expect(reasonLine()).toHaveTextContent('Please enter a valid email address.')
+    expect(reasonLine()).toHaveTextContent('Add your name and a valid email to continue.')
     await user.type(screen.getByLabelText('Your email'), 'ada@example')
-    expect(reasonLine()).toHaveTextContent('Please enter a valid email address.')
+    expect(reasonLine()).toHaveTextContent('Add your name and a valid email to continue.')
     await user.type(screen.getByLabelText('Your email'), '.com')
-    expect(reasonLine()).toHaveTextContent('Job description too short')   // the resume half is done
+    expect(reasonLine()).toHaveTextContent('Add the job to continue.')   // the resume half is done
   })
 })
 
@@ -200,8 +206,8 @@ describe('/scan — sending the scan', () => {
   it('a link that was being added is kept the same way, with the link switch on', () => {
     localStorage.setItem(JD_DRAFT_KEY, JSON.stringify({ text: '', url: 'https://jobs.example.com/pm-1', useUrl: true }))
     renderPage()
-    expect(screen.getByRole('button', { name: 'Job link' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByLabelText(/Link to the employer/)).toHaveValue('https://jobs.example.com/pm-1')
+    expect(screen.getByRole('button', { name: 'From a link' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByLabelText(/Job posting link/)).toHaveValue('https://jobs.example.com/pm-1')
   })
 
   it("someone else's kept job is never shown", () => {
@@ -224,13 +230,14 @@ describe('/scan — the free allowance is a gate, not advice', () => {
     auth.user = { id: 'u1' }
     wire({ prof: profile({ quota: { limit: 3, used: 3, remaining: 0, resetsAt: '2099-01-01T00:00:00Z' } }) })
     renderPage()
-    expect(await screen.findByText(/You've used all 3 free scans for today/)).toBeInTheDocument()
+    expect(await screen.findByTestId('spent')).toHaveTextContent(/That.s today.s 3 free scans/)
     await fillSignedIn(user)
     expect(goButton()).toHaveAttribute('aria-disabled', 'true')
-    expect(reasonLine()).toHaveTextContent(/Your free scans come back at/)
+    expect(reasonLine()).toHaveTextContent(/No free scans left today/)
+    expect(screen.getByTestId('spent')).toHaveTextContent(/They come back at/)
     await user.click(goButton())
     expect(api.post).not.toHaveBeenCalled()
-    expect(within(reasonLine()).getByRole('link', { name: 'See your scans' })).toHaveAttribute('href', '/dashboard')
+    expect(within(screen.getByTestId('spent')).getByRole('link', { name: 'Review my scans' })).toHaveAttribute('href', '/dashboard')
   })
 
   it('a page left open past the reset time is not blocked by its own old "0 left"', async () => {
@@ -292,7 +299,7 @@ describe('the saved-profile choice belongs to the person who made it', () => {
     api.post.mockResolvedValue({ data: { data: { scanId: 's4' } } })
     wire({ prof: profile({ extraProfiles: [{ id: 'p1', label: 'Fintech' }] }) })
     const view = renderPage()
-    await user.click(await screen.findByRole('radio', { name: /Saved profile/ }))
+    await user.click(await screen.findByRole('radio', { name: /Use my saved profile/ }))
     expect(screen.getByRole('combobox', { name: 'Profile to use' })).toHaveValue('p1')
 
     // The session ends and another person signs in: they have a saved profile of their own, and no extras.
@@ -300,7 +307,7 @@ describe('the saved-profile choice belongs to the person who made it', () => {
     wire({ prof: profile({ hasSavedProfile: true }) })
     view.rerender(tree())
     await waitFor(() => expect(api.get.mock.calls.filter(c => c[0] === '/profile').length).toBeGreaterThan(1))
-    await user.click(await screen.findByRole('radio', { name: /Saved profile/ }))
+    await user.click(await screen.findByRole('radio', { name: /Use my saved profile/ }))
     setText(jdBox(), JD)
     await waitFor(() => expect(goButton()).not.toHaveAttribute('aria-disabled'))
     await user.click(goButton())
@@ -313,11 +320,11 @@ describe('the saved-profile choice belongs to the person who made it', () => {
     auth.user = { id: 'u1' }
     wire({ prof: profile({ hasSavedProfile: true }) })
     const view = renderPage()
-    await user.click(await screen.findByRole('radio', { name: /Saved profile/ }))
+    await user.click(await screen.findByRole('radio', { name: /Use my saved profile/ }))
     auth.user = null
     view.rerender(tree())
-    await waitFor(() => expect(tile(/^Upload it/)).toBeChecked())
-    expect(screen.queryByRole('radio', { name: /Saved profile/ })).toBeNull()
+    await waitFor(() => expect(tile(/^Upload a file/)).toBeChecked())
+    expect(screen.queryByRole('radio', { name: /Use my saved profile/ })).toBeNull()
   })
 })
 
@@ -353,18 +360,18 @@ describe('/scan — what is said before the button is pressed', () => {
   it('treats a job link as it is typed: LinkedIn blocked with a way out, junk flagged, a good one welcomed', async () => {
     const user = userEvent.setup()
     renderPage()
-    await user.click(screen.getByRole('button', { name: 'Job link' }))
-    const box = screen.getByLabelText(/Link to the employer/)
+    await user.click(screen.getByRole('button', { name: 'From a link' }))
+    const box = screen.getByLabelText(/Job posting link/)
     await user.type(box, 'https://www.linkedin.com/jobs/view/123')
     expect(screen.getByTestId('link-blocked')).toBeInTheDocument()
     await user.click(within(screen.getByTestId('link-blocked')).getByRole('button', { name: 'Switch to paste' }))
     expect(jdBox()).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Job link' }))
-    await user.clear(screen.getByLabelText(/Link to the employer/))
-    await user.type(screen.getByLabelText(/Link to the employer/), 'not a link')
+    await user.click(screen.getByRole('button', { name: 'From a link' }))
+    await user.clear(screen.getByLabelText(/Job posting link/))
+    await user.type(screen.getByLabelText(/Job posting link/), 'not a link')
     expect(screen.getByTestId('link-bad')).toBeInTheDocument()
-    await user.clear(screen.getByLabelText(/Link to the employer/))
-    await user.type(screen.getByLabelText(/Link to the employer/), 'https://jobs.example.com/pm-123')
+    await user.clear(screen.getByLabelText(/Job posting link/))
+    await user.type(screen.getByLabelText(/Job posting link/), 'https://jobs.example.com/pm-123')
     expect(screen.getByTestId('link-ok')).toBeInTheDocument()
     expect(screen.queryByTestId('link-blocked')).toBeNull()
   })
@@ -389,7 +396,7 @@ describe('/scan — what is said before the button is pressed', () => {
   it('the source tiles move with the arrow keys, one stop in the Tab order', async () => {
     const user = userEvent.setup()
     renderPage()
-    const up = tile(/^Upload it/)
+    const up = tile(/^Upload a file/)
     expect(up).toHaveAttribute('tabindex', '0')
     expect(tile(/^Start from scratch/)).toHaveAttribute('tabindex', '-1')
     up.focus()
@@ -397,7 +404,7 @@ describe('/scan — what is said before the button is pressed', () => {
     expect(tile(/^Start from scratch/)).toHaveAttribute('aria-checked', 'true')
     expect(document.activeElement).toBe(tile(/^Start from scratch/))
     await user.keyboard('{ArrowLeft}')
-    expect(tile(/^Upload it/)).toHaveAttribute('aria-checked', 'true')
+    expect(tile(/^Upload a file/)).toHaveAttribute('aria-checked', 'true')
   })
 
   it('a signed-in person sees a placeholder, not a tile that pops in, while earlier scans load', async () => {

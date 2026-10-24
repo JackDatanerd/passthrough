@@ -23,11 +23,11 @@ import Disclosure from '../ui/Disclosure'
 
 function Chip({ children, tone = 'amber' }) {
   const tones = {
-    amber: 'bg-amber-50 text-amber-800 border-amber-200',
-    gray:  'bg-gray-50 text-gray-600 border-gray-200',
+    amber: 'bg-red-50 text-red-900 border-red-200',
+    gray:  'bg-green-50 text-green-900 border-green-200',
   }
   return (
-    <span className={`inline-block text-xs px-2 py-1 rounded-full border ${tones[tone]}`}>
+    <span className={`inline-block text-[12.5px] font-semibold px-[11px] py-[3px] rounded-full border ${tones[tone]}`}>
       {children}
     </span>
   )
@@ -68,8 +68,8 @@ export default function AtsDetailPanel({ scan, detail: detailProp, title = 'Why 
   if (!hasGaps && !hasContentStats && !hasMatched) return null
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
-      <p className="text-sm font-semibold text-gray-900 mb-1">{title}</p>
+    <div className="rounded-2xl border border-gray-200 bg-white p-[18px] shadow-[0_1px_2px_rgba(10,21,48,.04)]">
+      <h3 className="mb-1 font-display text-lg font-extrabold tracking-[-0.02em] text-ink">{title}</h3>
 
       {!hasGaps && (
         <p className="text-sm text-gray-600 mt-2">

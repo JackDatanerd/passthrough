@@ -17,7 +17,7 @@ vi.mock('@paystack/inline-js', () => ({ default: class {} }))
 const stub = vi.hoisted(() => (name) => ({ default: () => <div data-testid={name} /> }))
 vi.mock('../../src/components/layout/Navbar', () => ({ default: () => null }))
 vi.mock('../../src/components/layout/Footer', () => ({ default: () => null }))
-vi.mock('../../src/components/scan/ScoreGauge', () => stub('score-gauge'))
+vi.mock('../../src/components/scan/ScoreSummary', () => stub('score-summary'))
 vi.mock('../../src/components/scan/CategoryScores', () => ({ default: () => null }))
 vi.mock('../../src/components/scan/AtsDetailPanel', () => stub('ats-detail'))
 vi.mock('../../src/components/scan/PointsLost', () => stub('points-lost'))
@@ -52,10 +52,10 @@ describe('ScanResult — while the fix is being written', () => {
     setup({ status })
     expect(await screen.findByTestId('rewriting-focus')).toHaveTextContent(/rewriting your resume/i)
     expect(screen.getByTestId('rewriting-focus')).toHaveTextContent(/started at 52\/100/)
-    expect(screen.getByText(/Generating your fixed resume/)).toBeInTheDocument()
+    expect(screen.getByText(/Writing your fixed resume/)).toBeInTheDocument()
     expect(tabNames()).toEqual(['Score', 'Why', 'Your resume'])
     expect(screen.getByRole('link', { name: 'Your resume' })).toHaveAttribute('aria-current', 'page')
-    for (const id of ['score-gauge', 'ats-detail', 'points-lost', 'jd-panel', 'fix-banner', 'resume-data-editor', 'save-profile', 'diff-view', 'cover-letter'])
+    for (const id of ['score-summary', 'ats-detail', 'points-lost', 'jd-panel', 'fix-banner', 'resume-data-editor', 'save-profile', 'diff-view', 'cover-letter'])
       expect(screen.queryByTestId(id), id).toBeNull()
     expect(screen.queryByText(/failing ATS filters/)).toBeNull()
   })
@@ -66,7 +66,7 @@ describe('ScanResult — before purchase: Score and Why', () => {
 
   it('shows two steps only, and Score leads with the number, the offer and the three biggest reasons', async () => {
     setup(unpaid)
-    const gauge = await screen.findByTestId('score-gauge')
+    const gauge = await screen.findByTestId('score-summary')
     expect(tabNames()).toEqual(['Score', 'Why'])
     expect(screen.getByRole('link', { name: 'Score' })).toHaveAttribute('aria-current', 'page')
     expect(follows(gauge, screen.getByTestId('points-lost'))).toBe(true)
@@ -79,7 +79,7 @@ describe('ScanResult — before purchase: Score and Why', () => {
   it('Why holds the explanations and the editor, and ends on the way back to the offer', async () => {
     setup(unpaid, '/scan/s1/why')
     expect(await screen.findByTestId('ats-detail')).toBeInTheDocument()
-    const order = [screen.getByTestId('ats-detail'), screen.getByTestId('jd-panel'), screen.getByTestId('resume-data-editor')]
+    const order = [screen.getByTestId('ats-detail'), screen.getByTestId('resume-data-editor'), screen.getByTestId('jd-panel')]
     for (let i = 1; i < order.length; i++) expect(follows(order[i - 1], order[i])).toBe(true)
     expect(screen.queryByTestId('fix-banner')).toBeNull()
     expect(screen.getByRole('link', { name: /See the fix/ })).toHaveAttribute('href', '/scan/s1')
@@ -87,7 +87,7 @@ describe('ScanResult — before purchase: Score and Why', () => {
 
   it('an address for a step that has not been earned lands on the score', async () => {
     setup(unpaid, '/scan/s1/apply')
-    expect(await screen.findByTestId('score-gauge')).toBeInTheDocument()
+    expect(await screen.findByTestId('score-summary')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Score' })).toHaveAttribute('aria-current', 'page')
     expect(screen.queryByTestId('tab-apply')).toBeNull()
   })
@@ -103,18 +103,18 @@ describe('ScanResult — once the fix is delivered: four steps', () => {
     expect(screen.getByRole('link', { name: 'Your resume' })).toHaveAttribute('aria-current', 'page')
   })
 
-  it('Your resume leads with the new resume: summary, downloads, the before and after, the prompts, the editor', async () => {
+  it('Your resume leads with the new resume: summary, downloads, the prompts, the before and after, the editor', async () => {
     setup(delivered)
     const summary = await screen.findByTestId('delivered-summary-stub')
-    const chain = [summary, screen.getByRole('button', { name: /Download \.docx/ }), screen.getByTestId('diff-view'), screen.getByTestId('quant'), screen.getByTestId('delivered-editor')]
+    const chain = [summary, screen.getByRole('button', { name: /Download \.docx/ }), screen.getByTestId('quant'), screen.getByTestId('diff-view'), screen.getByTestId('delivered-editor')]
     for (let i = 1; i < chain.length; i++) expect(follows(chain[i - 1], chain[i]), `item ${i}`).toBe(true)
     // What belongs to Apply, and to the scan before the fix, is not here.
-    for (const id of ['cover-letter', 'sharing-tools', 'score-gauge', 'fix-banner', 'resume-data-editor']) expect(screen.queryByTestId(id), id).toBeNull()
+    for (const id of ['cover-letter', 'sharing-tools', 'score-summary', 'fix-banner', 'resume-data-editor']) expect(screen.queryByTestId(id), id).toBeNull()
   })
 
   it('Score still tells the original story, and points to the result', async () => {
     setup(delivered, '/scan/s1/score')
-    expect(await screen.findByTestId('score-gauge')).toBeInTheDocument()
+    expect(await screen.findByTestId('score-summary')).toBeInTheDocument()
     expect(screen.getByText(/Your fixed resume scores 88/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Open it' })).toHaveAttribute('href', '/scan/s1/resume')
     expect(screen.queryByTestId('fix-banner')).toBeNull()

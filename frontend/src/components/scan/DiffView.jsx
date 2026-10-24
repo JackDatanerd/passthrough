@@ -333,7 +333,7 @@ export default function DiffView({ originalResumeData, rewrittenResumeData, fixT
   const isCredentialOnly = !rewrittenResumeData
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-[0_1px_2px_rgba(10,21,48,.04)]">
       <button
         onClick={() => setExpanded(e => !e)}
         className="w-full flex items-center justify-between px-6 py-4 text-left"

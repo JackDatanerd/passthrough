@@ -24,3 +24,12 @@
 @layer base {
   html { scroll-padding-top: 5rem; }
 }
+
+/* The waiting animation (components/scan/PassAnim): a page passes through the filter and comes out checked. The logo's own gesture. */
+@keyframes pt-pass { 0% { left: 4%; opacity: .4 } 25% { opacity: 1 } 100% { left: 78%; opacity: 1 } }
+@keyframes pt-fin { 0%, 70% { opacity: 0 } 100% { opacity: 1 } }
+@media (prefers-reduced-motion: reduce) {
+  .pt-sheet, .pt-fin { animation: none !important }
+  .pt-sheet { left: 46% !important }
+  .pt-fin { opacity: 1 !important }
+}

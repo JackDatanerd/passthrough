@@ -63,17 +63,19 @@ describe('reasonFor', () => {
 })
 
 describe('PointsLost', () => {
-  it('shows at most the three worst, with their reasons, and the distance to the Verified line', () => {
+  it('shows at most the three worst, each with its reason, under "The three biggest reasons"', () => {
     render(<PointsLost scan={scan()} />)
     const box = screen.getByTestId('points-lost')
+    expect(box).toHaveTextContent('The three biggest reasons')
     expect(box.querySelectorAll('li').length).toBe(3)
-    expect(box).toHaveTextContent('48 of 100 points are missing, and 28 of them stand between you and the 80')
     expect(box).toHaveTextContent('Missing from your resume: kubernetes, terraform')
+    expect(box).toHaveTextContent('\u2212')
   })
-  it('does not mention the Verified line once the score is past it', () => {
-    render(<PointsLost scan={scan({ atsScore: 88, keywordScore: 80 })} />)
-    expect(screen.getByTestId('points-lost')).toHaveTextContent('12 of 100 points are missing')
-    expect(screen.getByTestId('points-lost')).not.toHaveTextContent('stand between you')
+  it('with `all`, lists every point lost under its own heading', () => {
+    render(<PointsLost scan={scan()} all />)
+    const box = screen.getByTestId('points-lost')
+    expect(box).toHaveTextContent('Every point lost')
+    expect(box.querySelectorAll('li').length).toBeGreaterThanOrEqual(3)
   })
   it('renders nothing when it cannot be said honestly', () => {
     render(<PointsLost scan={scan({ atsDetail: null })} />)

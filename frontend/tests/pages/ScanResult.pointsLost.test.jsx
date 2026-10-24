@@ -19,7 +19,6 @@ vi.mock('../../src/lib/utils', async orig => ({ ...(await orig()), downloadBlob:
 vi.mock('@paystack/inline-js', () => ({ default: class { resumeTransaction() {} } }))
 vi.mock('../../src/components/layout/Navbar', () => ({ default: () => null }))
 vi.mock('../../src/components/layout/Footer', () => ({ default: () => null }))
-vi.mock('../../src/components/scan/ScoreGauge', () => ({ default: () => null }))
 vi.mock('../../src/components/scan/CategoryScores', () => ({ default: () => null }))
 vi.mock('../../src/components/scan/QuantificationPrompts', () => ({ default: () => null }))
 vi.mock('../../src/components/scan/SaveProfilePrompt', () => ({ default: () => null }))
@@ -50,7 +49,7 @@ describe('where your points went', () => {
   it('appears on a scored scan, ahead of the detail panel, with the real reason', async () => {
     setup(failing())
     const box = await screen.findByTestId('points-lost')
-    expect(box).toHaveTextContent('48 of 100 points are missing')
+    expect(box).toHaveTextContent('The three biggest reasons')
     expect(box).toHaveTextContent('Missing from your resume: kubernetes')
   })
   it('is absent for a scan from an older API that sent no weights, and the rest of the page still renders', async () => {

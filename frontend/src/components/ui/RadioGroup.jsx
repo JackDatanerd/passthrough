@@ -10,6 +10,8 @@ import Radio from './Radio'
 // (default: a column).
 export default function RadioGroup({
   legend, srOnlyLegend, legendClassName, hint, error, name, value, onChange, options = [], size = 'md', disabled = false, className = 'flex flex-col gap-2',
+  // Optional: classes for each option's row, as a string or (option, checked) => string (the scan page draws its choices as cards).
+  optionClassName,
 }) {
   const autoName = useId()
   const groupName = name || autoName
@@ -19,6 +21,7 @@ export default function RadioGroup({
         <Radio
           key={String(o.value)} size={size} label={o.label} description={o.description}
           name={groupName} value={String(o.value)} checked={value === o.value}
+          wrapperClassName={typeof optionClassName === 'function' ? optionClassName(o, value === o.value) : optionClassName}
           // A group held while a save runs keeps focus (aria-disabled, change swallowed) instead of the native attribute, which drops a keyboard user onto <body>.
           disabled={!!o.disabled} aria-disabled={disabled && !o.disabled ? true : undefined}
           onChange={() => { if (!disabled) onChange?.(o.value) }}

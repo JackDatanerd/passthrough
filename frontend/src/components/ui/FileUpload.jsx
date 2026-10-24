@@ -34,6 +34,8 @@ import useFileDropGuard from '../../hooks/useFileDropGuard'
 export default function FileUpload({
   onFile, value, extensions = ['pdf', 'docx'], accept, maxMB = 5, disabled = false, validate,
   prompt = 'Drop your resume here', typesText = 'PDF or DOCX', ariaLabel,
+  // 'card' is the scan page's look: a plain dashed drop area, and once a file is held, a green chip with Replace / Remove.
+  look = 'default',
 }) {
   const acceptAttr = accept ?? extensions.map(e => `.${e}`).join(',')
   const descId = useId()
@@ -51,8 +53,12 @@ export default function FileUpload({
   // A file dropped a little OUTSIDE the dropzone would make the browser open it in this tab, replacing the app (hooks/useFileDropGuard).
   useFileDropGuard()
 
+  const wantsFocus = useRef(false)
   const controlled = value !== undefined
   const file = controlled ? value : internalFile
+
+  // The zone is not on the page while a file is held (card look), so focus waits for it to come back.
+  useEffect(() => { if (wantsFocus.current && !file) { wantsFocus.current = false; zoneRef.current?.focus() } }, [file])
 
   function commit(next) {
     if (!controlled) setInternalFile(next)
@@ -73,6 +79,54 @@ export default function FileUpload({
 
   function openPicker() {
     if (!disabled) inputRef.current?.click()
+  }
+
+  if (look === 'card') {
+    const ext = (file?.name || '').split('.').pop().toUpperCase().slice(0, 4)
+    const kb = file?.size ? (file.size >= 1048576 ? `${(file.size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(file.size / 1024))} KB`) : ''
+    const hidden = (
+      <input ref={inputRef} type="file" accept={acceptAttr} disabled={disabled} className="hidden" tabIndex={-1}
+        onChange={e => { handle(e.target.files); e.target.value = '' }} />
+    )
+    return (
+      <div>
+        {ariaLabel && <span id={descId} className="sr-only">{ariaLabel}</span>}
+        {file ? (
+          <div data-testid="file-chip" className="flex items-center gap-2.5 rounded-xl border-[1.5px] border-green-700 bg-green-50 px-3 py-2.5 text-sm">
+            <span aria-hidden="true" className="grid h-9 w-[30px] shrink-0 place-items-center rounded-[5px] border border-gray-300 bg-white text-[10px] font-extrabold text-blue-700">{ext}</span>
+            <span className="min-w-0 flex-1">
+              <b className="block truncate text-gray-900">{file.name}</b>
+              <small className="text-gray-500">{kb ? `${kb} \u00b7 ready to scan` : 'Ready to scan'}</small>
+            </span>
+            {!disabled && (
+              <>
+                <button type="button" onClick={openPicker} className="text-[13px] text-blue-700 underline underline-offset-2">Replace</button>
+                <button type="button" onClick={() => { setError(''); wantsFocus.current = true; commit(null); announce('File removed') }} className="text-[13px] text-blue-700 underline underline-offset-2">Remove file</button>
+              </>
+            )}
+            {hidden}
+          </div>
+        ) : (
+          <div
+            ref={zoneRef} data-file-dropzone="" role="button" tabIndex={disabled ? -1 : 0} aria-disabled={disabled || undefined}
+            aria-describedby={ariaLabel ? descId : undefined}
+            onClick={e => { if (e.target === inputRef.current) return; openPicker() }}
+            onKeyDown={e => { if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); openPicker() } }}
+            onDrop={e => { e.preventDefault(); dragDepth.current = 0; setDrag(false); if (!disabled) handle(e.dataTransfer.files) }}
+            onDragOver={e => { e.preventDefault(); if (disabled && e.dataTransfer) e.dataTransfer.dropEffect = 'none' }}
+            onDragEnter={e => { e.preventDefault(); if (disabled) return; dragDepth.current++; setDrag(true) }}
+            onDragLeave={() => { if (disabled) return; dragDepth.current = Math.max(0, dragDepth.current - 1); if (dragDepth.current === 0) setDrag(false) }}
+            className={cn('rounded-xl border-2 border-dashed px-3.5 py-5 text-center text-sm text-gray-600 transition-colors focus:outline-none focus-visible:ring-[3px] focus-visible:ring-blue-200',
+              disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer', drag ? 'border-blue-700 bg-blue-50' : 'border-gray-300 bg-white hover:border-blue-700 hover:bg-blue-50')}
+          >
+            <b className="mb-0.5 block text-[15px] text-ink">{prompt}, or <span className="text-blue-700">browse</span></b>
+            <small className="text-gray-500">{typesText}, max {maxMB}MB</small>
+            {hidden}
+          </div>
+        )}
+        {error && <p role="alert" className="mt-1 text-xs text-red-600">{error}</p>}
+      </div>
+    )
   }
 
   return (

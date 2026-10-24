@@ -19,7 +19,7 @@ vi.mock('../../src/lib/utils', async orig => ({ ...(await orig()), downloadBlob:
 vi.mock('@paystack/inline-js', () => ({ default: class { resumeTransaction() {} } }))
 vi.mock('../../src/components/layout/Navbar', () => ({ default: () => null }))
 vi.mock('../../src/components/layout/Footer', () => ({ default: () => null }))
-vi.mock('../../src/components/scan/ScoreGauge', () => ({ default: () => null }))
+vi.mock('../../src/components/scan/ScoreSummary', () => ({ default: () => null }))
 vi.mock('../../src/components/scan/CategoryScores', () => ({ default: () => null }))
 vi.mock('../../src/components/scan/QuantificationPrompts', () => ({ default: () => null }))
 vi.mock('../../src/components/scan/SaveProfilePrompt', () => ({ default: () => null }))
@@ -66,7 +66,7 @@ describe('the status poll carries the job telemetry into the waiting screens', (
         userId: 'u1', inputMode: 'file', jobDescriptionText: JD, createdAt: now(), updatedAt: now(), fixProgress: fp() },
       { status: 'FIX_GENERATING', scanStage: null, fixProgress: fp({ phase: 'rewriting', attempt: 2, scores: [71] }) },
     )
-    await screen.findByText('Generating your fixed resume…')
+    await screen.findByText('Writing your fixed resume…')
     expect(screen.queryByTestId('fix-attempts')).toBeNull()
     expect(await screen.findByTestId('fix-attempts', {}, { timeout: 8000 })).toHaveTextContent('Attempt 1: 71')
     expect(screen.getByTestId('fix-attempts')).toHaveTextContent('Attempt 2: rewriting…')

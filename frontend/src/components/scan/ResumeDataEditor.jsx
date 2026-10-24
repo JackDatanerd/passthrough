@@ -70,7 +70,7 @@ export default function ResumeDataEditor({ scan, anonToken, onUpdated }) {
   if (!data) {
     if (!isFile) return null
     return (
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6" data-testid="structure-preview">
+      <div className="bg-white rounded-2xl border border-gray-200 shadow-[0_1px_2px_rgba(10,21,48,.04)] p-[18px]" data-testid="structure-preview">
         <h3 className="font-semibold text-gray-900">See what we read from your file</h3>
         <p className="text-sm text-gray-500 mt-0.5">
           If you buy a fix, we rebuild your resume from this. Check it first — a misread date or a missing job is
@@ -124,7 +124,7 @@ export default function ResumeDataEditor({ scan, anonToken, onUpdated }) {
   }
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-[0_1px_2px_rgba(10,21,48,.04)] p-[18px]">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h3 className="font-semibold text-gray-900">{isFile ? 'The resume we read from your file' : 'The resume we built from what you gave us'}</h3>

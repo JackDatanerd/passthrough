@@ -17,7 +17,7 @@ vi.mock('../../src/components/ui/ReferralCodeEntry', () => ({ ReferralCodeEntry:
 
 const renderBanner = props => render(<MemoryRouter><FixBanner onPay={vi.fn()} onRedeemCredit={vi.fn()} {...props} /></MemoryRouter>)
 const eligible = over => ({ id: 's1', status: 'COMPLETE_PASS', fixPurchased: false, atsScore: 86, badgeEligible: true, ...over })
-const badgeBtn = () => screen.queryByRole('button', { name: /Verified Credential only/ })
+const badgeBtn = () => screen.queryByTestId('alt-badge')
 
 describe('FixBanner — the Badge is only offered on a file that would actually be verified (G2)', () => {
   it('an uploaded file with no formatted score yet: no Credential-only button, a check button instead', async () => {
@@ -28,13 +28,13 @@ describe('FixBanner — the Badge is only offered on a file that would actually 
     await user.click(screen.getByRole('button', { name: 'Check the formatted file' }))
     expect(onCheckFormatted).toHaveBeenCalledTimes(1)
     // the other purchases are not held hostage by the check
-    expect(screen.getByRole('button', { name: /Full AI Fix \+ Credential/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Fix & verify my resume/ })).toBeInTheDocument()
   })
   it('a formatted file under the bar: the Badge is withheld and the number is explained', () => {
     renderBanner({ scan: eligible({ inputMode: 'file', atsDetail: { formattedScore: 71 } }) })
     expect(badgeBtn()).not.toBeInTheDocument()
     expect(screen.getByTestId('formatted-low')).toHaveTextContent('71')
-    expect(screen.getByRole('button', { name: /Full AI Fix \+ Credential/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Fix & verify my resume/ })).toBeInTheDocument()
   })
   it('a formatted file over the bar: the Badge is offered, with the score shown', () => {
     renderBanner({ scan: eligible({ inputMode: 'file', atsDetail: { formattedScore: 84 } }) })

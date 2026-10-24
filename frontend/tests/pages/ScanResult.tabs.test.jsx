@@ -18,7 +18,7 @@ vi.mock('@paystack/inline-js', () => ({ default: class {} }))
 const stub = vi.hoisted(() => (name) => ({ default: () => <div data-testid={name} /> }))
 vi.mock('../../src/components/layout/Navbar', () => ({ default: () => null }))
 vi.mock('../../src/components/layout/Footer', () => ({ default: () => null }))
-vi.mock('../../src/components/scan/ScoreGauge', () => stub('score-gauge'))
+vi.mock('../../src/components/scan/ScoreSummary', () => stub('score-summary'))
 vi.mock('../../src/components/scan/CategoryScores', () => ({ default: () => null }))
 vi.mock('../../src/components/scan/AtsDetailPanel', () => stub('ats-detail'))
 vi.mock('../../src/components/scan/PointsLost', () => stub('points-lost'))
@@ -58,12 +58,12 @@ const advance = async status => { current = { ...current, status, fixPurchased: 
 describe('ScanResult — addresses keep the visitor token', () => {
   it('an unearned step goes back to the score with ?token= intact', async () => {
     setup({}, '/scan/s1/apply?token=abc')
-    await screen.findByTestId('score-gauge')
+    await screen.findByTestId('score-summary')
     expect(where()).toBe('/scan/s1?token=abc')
   })
   it('an unknown step does the same', async () => {
     setup({}, '/scan/s1/nonsense?token=abc')
-    await screen.findByTestId('score-gauge')
+    await screen.findByTestId('score-summary')
     expect(where()).toBe('/scan/s1?token=abc')
   })
   it('a bare address of a paid scan moves to Your resume, token kept', async () => {
@@ -76,7 +76,7 @@ describe('ScanResult — addresses keep the visitor token', () => {
 describe('ScanResult — the screen follows the scan', () => {
   it('a payment that lands while on the score moves the screen to Your resume', async () => {
     setup({})
-    await screen.findByTestId('score-gauge')
+    await screen.findByTestId('score-summary')
     expect(where()).toBe('/scan/s1')
     await advance('FIX_GENERATING')
     await waitFor(() => expect(where()).toBe('/scan/s1/resume'))

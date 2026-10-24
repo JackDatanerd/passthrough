@@ -1,4 +1,4 @@
-import ResumeSheet from './ResumeSheet'
+import PassAnim from './PassAnim'
 import ProgressSteps from './ProgressSteps'
 import useElapsedSeconds, { currentStep, gateStep } from '../../hooks/useElapsedSeconds'
 
@@ -21,19 +21,15 @@ function fmt(s) { const n = Math.floor(s); return `${Math.floor(n / 60)}:${Strin
 export default function ScanProgress({ createdAt, stage, leaveNote, children }) {
   const elapsed = useElapsedSeconds(createdAt)
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm" role="status" aria-live="polite">
-      <div className="flex gap-5">
-        <ResumeSheet elapsedSeconds={elapsed} tone="blue" />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-baseline justify-between gap-3">
-            <p className="font-medium text-gray-800">Scanning your resume…</p>
-            <span className="text-xs tabular-nums text-gray-400" data-testid="scan-elapsed">{fmt(elapsed)}</span>
-          </div>
-          <p className="text-sm text-gray-500 mt-0.5">Usually about 30 seconds.</p>
-          <ProgressSteps steps={SCAN_STEPS} current={gateStep(currentStep(elapsed, SCAN_STEP_STARTS), SCAN_STAGE_GATES[stage])} />
-        </div>
+    <div className="max-w-[560px] rounded-2xl border border-gray-200 bg-white p-[22px] shadow-[0_1px_2px_rgba(10,21,48,.04)]" role="status" aria-live="polite">
+      <PassAnim tone="blue" />
+      <div className="flex items-baseline justify-between gap-3">
+        <h2 className="font-display text-lg font-extrabold tracking-[-0.02em] text-ink">Scanning your resume…</h2>
+        <span className="text-xs tabular-nums text-gray-400" data-testid="scan-elapsed">{fmt(elapsed)}</span>
       </div>
-      {leaveNote && <p className="text-xs text-gray-500 mt-4 border-t border-gray-100 pt-3">{leaveNote}</p>}
+      <p className="mt-1 text-sm text-gray-600">Usually about 30 seconds.</p>
+      {leaveNote && <p className="mt-1 text-sm text-gray-600">{leaveNote}</p>}
+      <ProgressSteps steps={SCAN_STEPS} current={gateStep(currentStep(elapsed, SCAN_STEP_STARTS), SCAN_STAGE_GATES[stage])} />
       {children}
     </div>
   )

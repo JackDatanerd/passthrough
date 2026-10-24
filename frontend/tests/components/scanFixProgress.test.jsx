@@ -15,7 +15,7 @@ import { ATS_BADGE_THRESHOLD } from '../../src/lib/scoreThresholds'
 const T0 = new Date('2026-10-16T10:00:00Z').getTime()
 const iso = msAgo => new Date(T0 - msAgo).toISOString()
 const current = () => document.querySelector('[aria-current="step"]')?.textContent || ''
-const doneCount = () => document.querySelectorAll('ol li .bg-green-600').length
+const doneCount = () => document.querySelectorAll('ol li .bg-green-700').length
 
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(T0) })
 afterEach(() => { cleanup(); vi.useRealTimers() })
@@ -81,7 +81,7 @@ describe('ScanProgress', () => {
 describe('FixProgress', () => {
   it('uses the generating copy for a fix and the verifying copy for a badge-only tier', () => {
     const { unmount } = render(<FixProgress tier="FIX" startedAt={iso(0)} />)
-    expect(screen.getByText('Generating your fixed resume…')).toBeTruthy()
+    expect(screen.getByText('Writing your fixed resume…')).toBeTruthy()
     expect(document.body.textContent).toContain('Rewriting weak lines')
     unmount()
     render(<FixProgress tier="BADGE" startedAt={iso(0)} />)

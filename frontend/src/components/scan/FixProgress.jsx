@@ -1,4 +1,4 @@
-import ResumeSheet from './ResumeSheet'
+import PassAnim from './PassAnim'
 import ProgressSteps from './ProgressSteps'
 import AttemptChips from './AttemptChips'
 import useElapsedSeconds, { currentStep, gateStep } from '../../hooks/useElapsedSeconds'
@@ -42,29 +42,25 @@ export default function FixProgress({ tier, startedAt, progress, round, children
   const scores = live && Array.isArray(live.scores) ? live.scores.filter(n => typeof n === 'number') : []
   const retrying = !!live && live.phase === 'rewriting' && scores.length > 0
   return (
-    <div className="bg-blue-50 border border-blue-200 rounded-xl p-6" role="status" aria-live="polite">
-      <div className="flex gap-5">
-        <ResumeSheet elapsedSeconds={elapsed} tone="green" />
-        <div className="min-w-0 flex-1">
-          <p className="font-medium text-blue-900">
-            {badge ? 'Verifying and formatting your resume…' : 'Generating your fixed resume…'}
-          </p>
-          <p className="text-sm text-blue-700 mt-0.5">
-            You can leave this page. We'll email you when it's ready. Usually under 2 minutes.
-          </p>
-          <ProgressSteps steps={badge ? BADGE_STEPS : FIX_STEPS} current={current} />
-          {(scores.length > 0 || retrying) && (
-            <div className="mt-3">
-              <AttemptChips scores={scores} working={retrying ? `Attempt ${live.attempt}: rewriting…` : null} />
-              {retrying && (
-                <p className="text-xs text-blue-700 mt-2">
-                  Aiming for {ATS_BADGE_THRESHOLD}+. The next attempt starts from what the last one missed.
-                </p>
-              )}
-            </div>
+    <div className="max-w-[600px] rounded-2xl border border-gray-200 bg-white p-[22px] shadow-[0_1px_2px_rgba(10,21,48,.04)]" role="status" aria-live="polite">
+      <PassAnim tone="green" />
+      <h2 className="font-display text-lg font-extrabold tracking-[-0.02em] text-ink">
+        {badge ? 'Verifying and formatting your resume…' : 'Writing your fixed resume…'}
+      </h2>
+      <p className="mt-1 text-sm text-gray-600">
+        You can leave this page. We'll email you when it's ready. Usually under 2 minutes.
+      </p>
+      <ProgressSteps steps={badge ? BADGE_STEPS : FIX_STEPS} current={current} />
+      {(scores.length > 0 || retrying) && (
+        <div className="mt-3.5">
+          <AttemptChips scores={scores} working={retrying ? `Attempt ${live.attempt}: rewriting\u2026` : null} />
+          {retrying && (
+            <p className="mt-2 text-xs text-gray-600">
+              Aiming for {ATS_BADGE_THRESHOLD}+. The next attempt starts from what the last one missed.
+            </p>
           )}
         </div>
-      </div>
+      )}
       {children}
     </div>
   )
