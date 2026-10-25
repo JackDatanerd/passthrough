@@ -220,6 +220,51 @@ function RejectApplicationModal({ app, cooldownDays = 30, onClose, onDone }) {
 const APP_PAGE = 50
 const APP_TABS = [['PENDING', 'Waiting'], ['APPROVED', 'Approved'], ['REJECTED', 'Rejected']]
 
+// Partners round 39: "I'd like a code of my own" requests from the partner dashboard. They used to exist only as an alert email.
+function CodeRequestsPanel() {
+  const [rows, setRows] = useState([])
+  const [busy, setBusy] = useState(null)
+  const toast = useToast()
+  async function load() {
+    try {
+      const res = await api.get('/partners/code-requests?status=OPEN&limit=50')
+      setRows(res.data.data || [])
+    } catch (_) { /* optional panel - the partner list still works without it */ }
+  }
+  useEffect(() => { load() }, [])
+  async function resolve(row, status) {
+    setBusy(row.id)
+    try {
+      await api.post(`/partners/code-requests/${row.id}/resolve`, { status })
+      toast({ message: status === 'DONE' ? 'Marked as done.' : 'Request dismissed.', type: 'success' })
+      load()
+    } catch (err) {
+      toast({ message: err?.response?.data?.message || 'Could not update that request.', type: 'error' })
+      load()
+    } finally { setBusy(null) }
+  }
+  if (rows.length === 0) return null
+  return (
+    <div className="border border-amber-200 bg-amber-50 rounded-lg p-4 flex flex-col gap-3" data-testid="code-requests">
+      <h2 className="font-semibold text-gray-900">Code requests ({rows.length} waiting)</h2>
+      {rows.map(r => (
+        <div key={r.id} className="bg-white border border-gray-200 rounded-md p-3 flex items-start justify-between gap-3 flex-wrap">
+          <div className="text-sm min-w-0">
+            <div className="font-medium text-gray-900">{r.partnerName || 'Partner'} <span className="text-gray-400 font-normal">· {r.partnerEmail}</span></div>
+            <div className="text-xs text-gray-400">Asked {formatDate(r.createdAt)} · wants {r.wantedCode || 'no particular code'}</div>
+            {r.note && <p className="text-gray-600 mt-1 whitespace-pre-wrap break-words">{r.note}</p>}
+            <Link to={`/admin/partners/${r.partnerId}`} className="text-xs text-blue-600 hover:underline">Open partner to create the code →</Link>
+          </div>
+          <div className="flex gap-2 shrink-0">
+            <Button size="sm" variant="secondary" loading={busy === r.id} onClick={() => resolve(r, 'DISMISSED')}>Dismiss</Button>
+            <Button size="sm" loading={busy === r.id} onClick={() => resolve(r, 'DONE')}>Mark done</Button>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function ApplicationsPanel({ onApproved }) {
   const [tab, setTab] = useState('PENDING')
   const [apps, setApps] = useState([])
@@ -657,6 +702,7 @@ export default function AdminPartners() {
 
       {showRun && <PayoutRunModal partners={partners} holdHours={holdHours} termsBlockPayout={termsBlockPayout} onClose={() => setShowRun(false)} onDone={load} />}
       <ApplicationsPanel onApproved={load} />
+      <CodeRequestsPanel />
       <OverviewStrip />
       <PartnersLookupPanel />
 

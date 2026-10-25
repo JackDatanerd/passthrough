@@ -74,6 +74,9 @@ router.get(  '/unrecorded-commissions',     admin, c.adminListUnrecordedCommissi
 router.post( '/payouts/batch',             admin, admin.stepUp, c.adminRecordPayoutBatch)
 // Round 8: email partners who have not accepted the current terms version (batched, resumable).
 router.post( '/terms-notice',              admin, c.adminSendTermsNotice)
+// Partners round 39: "I'd like a code of my own" requests (declared before '/:id').
+router.get(  '/code-requests',              admin, c.adminListCodeRequests)
+router.post( '/code-requests/:id/resolve',  admin, validateUuidParam(), c.adminResolveCodeRequest)
 router.get(  '/:id',                       admin, validateUuidParam(), c.adminGetPartner)
 // commission_rate/status (ACTIVE/PAUSED) had no write path at all until
 // this — see adminUpdatePartner's comment in partners.controller.js.

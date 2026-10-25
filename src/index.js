@@ -637,6 +637,9 @@ async function retentionSweep(event, env, ctx) {
         // Resume-from-scratch round 2: a typed background kept for a retry nobody made.
         if (r.failedBackgrounds?.cleared) console.log(`Retention sweep: ${r.failedBackgrounds.cleared} failed-scan background(s) cleared`)
         if (r.failedBackgrounds?.error) console.error('Retention sweep (failed backgrounds):', r.failedBackgrounds.error)
+        // Partners round 39: acceptance-log rows whose application no longer exists.
+        if (r.termsAcceptances?.deleted) console.log(`Retention sweep: ${r.termsAcceptances.deleted} orphaned partner terms-acceptance row(s) purged`)
+        if (r.termsAcceptances?.error) console.error('Retention sweep (terms acceptances):', r.termsAcceptances.error)
       } catch (err) {
         console.error('Retention sweep error:', err.message)
       }

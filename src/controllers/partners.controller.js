@@ -1160,6 +1160,11 @@ async function adminCreateReferralCode(ctx) {
       .then(ok => ok === true || ok === undefined).catch(() => false)
   }
 
+  // Partners round 39: a code now exists for this partner, so a waiting "I'd like a code" request is answered. Best effort - the list's
+  // own Done / Dismiss buttons remain, and a database without migration 0116 simply has none.
+  await supabase.from('partner_code_requests').update({ status: 'DONE', resolved_at: new Date().toISOString() })
+    .eq('partner_id', partnerId).eq('status', 'OPEN').then(r => { if (r && r.error) console.error('code request auto-resolve:', r.error.message) }, err => console.error('code request auto-resolve:', err.message))
+
   await logAdminAction(ctx, supabase, 'partner.referral_code_created', 'referral_code', codeRow.id, {
     partnerId, codeId: codeRow.id, tierPrices: codeRow.tier_prices, usageLimit: codeRow.usage_limit, expiresAt: codeRow.expires_at,
     lowPriceConfirmed: guard.tooLow.length > 0
@@ -3058,6 +3063,20 @@ async function adminAnonymizePartner(ctx) {
     if (upErr) throw upErr
   }
 
+  // Partners round 39 (bug): the acceptance log kept the applicant's email, IP hash and user agent after the erasure. Rows tied to the partner
+  // keep only what proves the acceptance (version, source, time); rows logged at application time (email only) are deleted outright.
+  // Open code requests quote the partner's free text. Done BEFORE the partner row is wiped: a retry after the wipe no longer knows the old addresses.
+  const { error: termsScrubErr } = await supabase.from('partner_terms_acceptances')
+    .update({ application_email: null, ip_hash: null, user_agent: null }).eq('partner_id', partnerId)
+  if (termsScrubErr) throw termsScrubErr
+  for (const addr of allEmails) {
+    const exact = String(addr).replace(/[\\%_]/g, '\\$&')
+    const { error: termsDelErr } = await supabase.from('partner_terms_acceptances').delete().is('partner_id', null).ilike('application_email', exact)
+    if (termsDelErr) throw termsDelErr
+  }
+  const { error: reqScrubErr } = await supabase.from('partner_code_requests').update({ note: null, wanted_code: null }).eq('partner_id', partnerId)
+  if (reqScrubErr) throw reqScrubErr
+
   // 4. The partner row, last.
   const { error: rowErr } = await supabase.from('partners').update({
     name: 'Removed partner', email: `partner-${partnerId}@${REMOVED_EMAIL_DOMAIN}`, status: 'PAUSED',
@@ -3217,7 +3236,7 @@ async function setMyReferralAttribution(ctx) {
 
 const acceptTermsSchema = z.object({ version: z.string().trim().max(40).optional() })
 // Partners round 38: an append-only trail of every acceptance (the partner row only keeps the LATEST one). Best-effort - a database that has
-// not run migration 0114 yet must not stop a partner accepting.
+// not run migration 0115 yet must not stop a partner accepting.
 async function logTermsAcceptance(ctx, supabase, { partnerId = null, applicationEmail = null, version, source, acceptedAt }) {
   try {
     let ipHash = null
@@ -3706,6 +3725,7 @@ async function getPartnerStatement(ctx) {
 
 // "I'd like a code of my own" - until now the dashboard said "ask us" and gave no way to. This tells the owner who wants what; it creates
 // nothing (a code carries prices the owner sets), so there is nothing here to abuse beyond one email per partner per hour.
+const CODE_REQUEST_RESEND_MS = 7 * 24 * 3600 * 1000
 const requestCodeSchema = z.object({
   code: z.string().trim().toUpperCase().regex(/^[A-Z0-9_-]{2,50}$/, 'Use 2\u201350 letters, digits, - or _.').optional().or(z.literal('').transform(() => undefined)),
   note: z.string().trim().max(300).optional()
@@ -3720,18 +3740,62 @@ async function requestPartnerCode(ctx) {
   if (!partner || isRemovedEmail(partner.email)) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)
   if (partner.status !== 'ACTIVE')
     return ctx.json({ success: false, code: 'PARTNER_NOT_ACTIVE', message: 'Your partner account is not active, so new codes cannot be set up right now.' }, 409)
-  const key = `partner-code-request:${partner.id}`
-  if (await referralService.keySeen(ctx.env, key))
-    return ctx.json({ success: true, alreadyRequested: true, message: 'We already have your request. We will be in touch at the address on file.' })
+  // Partners round 39 (bug): the request used to exist only as an owner alert email, and the partner was told "received" and locked out for an
+  // hour even when that alert failed to send. It is now a row (migration 0116) the admin panel lists; the alert is only a nudge. One OPEN
+  // request per partner; an untouched one older than a week may be re-sent (it bumps the request and nudges the owner again).
   if (body.code) {
     const taken = await referralService.lookupCode(supabase, body.code)
     if (taken) return ctx.json({ success: false, code: 'CODE_TAKEN', message: 'That code is already taken - try another.' }, 409)
   }
+  const ALREADY = { success: true, alreadyRequested: true, message: 'We already have your request. We will be in touch at the address on file.' }
+  const { data: open, error: openErr } = await supabase.from('partner_code_requests')
+    .select('id, created_at').eq('partner_id', partner.id).eq('status', 'OPEN').maybeSingle()
+  if (openErr) throw openErr
+  if (open && Date.now() - Date.parse(open.created_at) < CODE_REQUEST_RESEND_MS) return ctx.json(ALREADY)
+  if (open) {
+    const { error } = await supabase.from('partner_code_requests')
+      .update({ wanted_code: body.code || null, note: body.note || null, created_at: new Date().toISOString() }).eq('id', open.id).eq('status', 'OPEN')
+    if (error) throw error
+  } else {
+    const { error } = await supabase.from('partner_code_requests')
+      .insert({ partner_id: partner.id, wanted_code: body.code || null, note: body.note || null })
+    // A second tab won the race: the unique open-request index says it is already in.
+    if (error && error.code === '23505') return ctx.json(ALREADY)
+    if (error) throw error
+  }
   await emailService.sendOwnerAlert(ctx.env, 'Partner asked for a new referral code',
-    `partner: ${partner.name} <${partner.email}>\nwanted code: ${body.code || '(no preference)'}\nnote: ${body.note || '-'}\n\nCreate it under Admin -> Partners -> (partner) -> Referral codes.`,
+    `partner: ${partner.name} <${partner.email}>\nwanted code: ${body.code || '(no preference)'}\nnote: ${body.note || '-'}\n\nIt is also listed under Admin -> Partners -> Code requests. Create the code under (partner) -> Referral codes.`,
     { dedupeKey: partner.id }).catch(() => {})
-  await referralService.keyMark(ctx.env, key, 3600)
   return ctx.json({ success: true, message: 'Thanks - we have your request and will email you when the code is ready.' })
+}
+
+// Admin: the open (or answered) requests for a code of one's own. Declared before '/:id' in the routes.
+const CODE_REQUEST_STATUSES = ['OPEN', 'DONE', 'DISMISSED']
+async function adminListCodeRequests(ctx) {
+  const status = CODE_REQUEST_STATUSES.includes(ctx.req.query('status')) ? ctx.req.query('status') : 'OPEN'
+  const supabase = getSupabase(ctx.env)
+  const { limit, offset } = pageParams(ctx)
+  const { data, error, count } = await supabase.from('partner_code_requests')
+    .select('id, partner_id, wanted_code, note, status, created_at, resolved_at, partners(name, email)', { count: 'exact' })
+    .eq('status', status).order('created_at', { ascending: false }).order('id', { ascending: true })
+    .range(offset, offset + limit - 1)
+  if (error) throw error
+  return ctx.json({ success: true, total: count ?? null, data: (data || []).map(r => ({
+    id: r.id, partnerId: r.partner_id, partnerName: r.partners?.name ?? null, partnerEmail: r.partners?.email ?? null,
+    wantedCode: r.wanted_code ?? null, note: r.note ?? null, status: r.status, createdAt: r.created_at, resolvedAt: r.resolved_at ?? null
+  })) })
+}
+const resolveCodeRequestSchema = z.object({ status: z.enum(['DONE', 'DISMISSED']) })
+async function adminResolveCodeRequest(ctx) {
+  const id = ctx.req.param('id')
+  const body = resolveCodeRequestSchema.parse(await ctx.req.json().catch(() => ({})))
+  const supabase = getSupabase(ctx.env)
+  const { data, error } = await supabase.from('partner_code_requests')
+    .update({ status: body.status, resolved_at: new Date().toISOString() }).eq('id', id).eq('status', 'OPEN').select('id, partner_id').maybeSingle()
+  if (error) throw error
+  if (!data) return ctx.json({ success: false, message: 'That request was not found or was already answered.' }, 404)
+  await logAdminAction(ctx, supabase, 'partner.code_request_resolved', 'partner', data.partner_id, { requestId: id, status: body.status })
+  return ctx.json({ success: true })
 }
 
 // Admin: what each partner was PAID in a calendar year, with the tax details collected for it - the figures a payer needs at year end.
@@ -3785,7 +3849,7 @@ module.exports = {
   adminResendPayoutLink, adminRegeneratePayoutLink, adminGetPartnerLinks, adminRecordPayout,
   adminCreateReferralCode, adminUpdateReferralCode, adminVoidPayout, adminRecordPayoutBatch,
   adminListReferralCodes, adminListPayouts, adminPartnersOverview, adminPayoutRunExport,
-  getPartnerStatement, requestPartnerCode, adminTaxSummary, foldStatementMonths,
+  getPartnerStatement, requestPartnerCode, adminListCodeRequests, adminResolveCodeRequest, adminTaxSummary, foldStatementMonths,
   getPartnerByToken, submitPayoutDetails, getPartnerDashboard, getPartnerConversions, getProgramTerms, requestPayoutLink, updatePartnerNotifications, trackClick,
   applyAsPartner, adminListApplications, adminApproveApplication, adminRejectApplication,
   recoverPartnerLinks, adminAnonymizePartner,

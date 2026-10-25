@@ -1,0 +1,17 @@
+Partners / Referral program - section 4, round 39
+Run migration 0116 BEFORE deploying (EXPECTED_SCHEMA_VERSION is now 116; the code-request flow and the retention step use its table / function).
+
+BUG  Terms-acceptance log outlived erasure and retention (partner_terms_acceptances: application_email, ip_hash, user_agent).
+     adminAnonymizePartner now nulls those columns on the partner's rows and deletes the email-only rows for every address the partner ever had
+     (before the partner row is wiped, so a retry still knows the addresses). New retention step purge_unlinked_terms_acceptances() (migration 0116)
+     removes email-only rows whose application no longer exists (rejected applications are purged after 90 days).
+BUG  A partner's "request a code" was only an owner alert email: the partner was told "received" and locked out for an hour even when the alert
+     failed. It is now a row in partner_code_requests (one OPEN per partner; a request untouched for 7 days can be re-sent), listed in the admin
+     Partners page ("Code requests": Mark done / Dismiss) via GET /partners/code-requests and POST /partners/code-requests/:id/resolve. Creating a code
+     for the partner resolves their open request. The alert is only a nudge. Erasure clears the request text.
+BUG  reverseCommission: the give-back of earlier partial adjustments ran only for the call that inserted the reversal and swallowed its error, so one
+     failed attempt was final (the redelivered refund hit "already reversed" and never retried). It is now idempotent and runs on both paths;
+     a unique index (0116) keeps two racing redeliveries from giving back twice.
+BUG  PartnerDashboard conversions filter: a failed request read "No entries match that filter" (the error was only shown in the non-empty branch).
+Tidy: stale comment said migration 0114 for the acceptance log (it is 0115).
+Tests: tests/partners.round39.test.js, tests/migrations.0116.pglite.test.js, frontend/tests/partnersRound39.test.jsx; round 38 and retention tests updated.

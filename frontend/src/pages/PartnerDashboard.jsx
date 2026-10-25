@@ -384,7 +384,7 @@ function ConversionsSection({ token, initial, total, currency, payouts = [], cod
   useEffect(() => {
     if (!filterOn) { setFRows([]); setFTotal(null); return undefined }
     let alive = true
-    setFLoading(true)
+    setFLoading(true); setError('')
     api.get(`/partners/conversions?limit=50&offset=0${filterQuery}`, partnerAuth(token))
       .then(res => { if (alive) { setFRows(res.data.data || []); setFTotal(typeof res.data.total === 'number' ? res.data.total : null) } })
       .catch(() => { if (alive) { setFRows([]); setFTotal(null); setError('Could not apply that filter — please try again.') } })
@@ -479,7 +479,9 @@ function ConversionsSection({ token, initial, total, currency, payouts = [], cod
         </div>
       )}
       {fLoading ? <p className="text-sm text-gray-500">Loading…</p> : loaded.length === 0 ? (
-        <p className="text-sm text-gray-500">
+        // Partners round 39 (bug): a failed filter request used to read "No entries match that filter" - the error text was only rendered
+        // in the list branch below, so a network failure looked like an empty result.
+        error ? <p role="alert" className="text-sm text-red-600">{error}</p> : <p className="text-sm text-gray-500">
           {filterOn ? 'No entries match that filter.' : "No conversions yet — once someone buys through your link, it'll show up here."}
         </p>
       ) : (

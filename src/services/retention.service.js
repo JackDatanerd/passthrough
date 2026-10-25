@@ -258,11 +258,15 @@ async function drainPurge(supabase, fn, args, batch) {
 // Never throws; returns a count like the other steps.
 const purgeDeadSessions = (supabase) =>
   drainPurge(supabase, 'purge_dead_sessions', { p_days: DEAD_SESSION_RETENTION_DAYS }, PURGE_RPC_BATCH)
+// Partners round 39: terms-acceptance rows logged at application time hold only the applicant's email, IP hash and user agent. Once the
+// application is gone (rejected + REJECTED_APPLICATION_RETENTION_DAYS, or the partner was erased) nothing else would ever remove them.
+const purgeUnlinkedTermsAcceptances = (supabase) =>
+  drainPurge(supabase, 'purge_unlinked_terms_acceptances', {}, PURGE_RPC_BATCH)
 const purgeOldClaudeUsage = (supabase) =>
   drainPurge(supabase, 'purge_old_claude_usage', { p_days: CLAUDE_USAGE_RETENTION_DAYS }, PURGE_RPC_BATCH * 4)
 
 async function runRetention(env, supabase, now = Date.now()) {
-  const [anon, logs, tokens, leads, staleLeads, applications, reports, sessions, claudeUsage, failedBackgrounds] = await Promise.all([
+  const [anon, logs, tokens, leads, staleLeads, applications, reports, sessions, claudeUsage, failedBackgrounds, termsAcceptances] = await Promise.all([
     purgeExpiredAnonScans(env, supabase, now),
     purgeOldLogs(supabase, now),
     clearExpiredTokens(supabase, now),
@@ -273,11 +277,12 @@ async function runRetention(env, supabase, now = Date.now()) {
     purgeDeadSessions(supabase),
     purgeOldClaudeUsage(supabase),
     purgeFailedBackgrounds(supabase, now),
+    purgeUnlinkedTermsAcceptances(supabase),
   ])
-  return { anon, logs, tokens, leads, staleLeads, applications, reports, sessions, claudeUsage, failedBackgrounds }
+  return { anon, logs, tokens, leads, staleLeads, applications, reports, sessions, claudeUsage, failedBackgrounds, termsAcceptances }
 }
 
 module.exports = {
-  runRetention, purgeFailedBackgrounds, FAILED_BACKGROUND_RETENTION_DAYS, purgeDeadSessions, purgeOldClaudeUsage, DEAD_SESSION_RETENTION_DAYS, CLAUDE_USAGE_RETENTION_DAYS, purgeOldVerifyReports, purgeExpiredAnonScans, purgeOldLogs, clearExpiredTokens, purgeArchivedLeads, purgeStaleUnconfirmedLeads, purgeRejectedPartnerApplications,
+  runRetention, purgeFailedBackgrounds, FAILED_BACKGROUND_RETENTION_DAYS, purgeDeadSessions, purgeOldClaudeUsage, DEAD_SESSION_RETENTION_DAYS, CLAUDE_USAGE_RETENTION_DAYS, purgeOldVerifyReports, purgeExpiredAnonScans, purgeOldLogs, clearExpiredTokens, purgeArchivedLeads, purgeStaleUnconfirmedLeads, purgeRejectedPartnerApplications, purgeUnlinkedTermsAcceptances,
   REJECTED_APPLICATION_RETENTION_DAYS, EMAIL_LOG_RETENTION_DAYS, ALERT_LOG_RETENTION_DAYS, ARCHIVED_LEAD_RETENTION_DAYS, UNCONFIRMED_LEAD_RETENTION_DAYS, ANON_SCAN_TTL_HOURS: c.ANON_SCAN_TTL_HOURS
 }

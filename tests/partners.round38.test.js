@@ -29,7 +29,7 @@ const PARTNER = {
 }
 
 function setup(o = {}) {
-  const st = { inserts: [], updates: [], rpcs: [], emails: [], alerts: [] }
+  const st = { inserts: [], updates: [], rpcs: [], emails: [], alerts: [], requests: [] }
   const partner = o.partner || PARTNER
   const db = createFakeSupabase(q => {
     if (q.op === 'rpc') { st.rpcs.push(q); return o.rpc ? o.rpc(q) : { data: null, error: null } }
@@ -40,6 +40,9 @@ function setup(o = {}) {
     }
     if (q.table === 'partners' && q.op === 'update') { st.updates.push(q.patch); return { data: { ...partner, ...q.patch }, error: null } }
     if (q.table === 'partner_terms_acceptances' && q.op === 'insert') { st.inserts.push(q.values); return { data: null, error: null } }
+    // Partners round 39: code requests are a row now (migration 0116), not an alert-email-only note.
+    if (q.table === 'partner_code_requests' && q.op === 'select') return { data: st.requests.find(r => r.status === 'OPEN') ?? null, error: null }
+    if (q.table === 'partner_code_requests' && q.op === 'insert') { st.requests.push({ id: 'r1', status: 'OPEN', created_at: new Date().toISOString(), ...q.values }); return { data: null, error: null } }
     if (q.table === 'referral_codes' && q.op === 'select') return { data: o.code ?? null, error: null }
     if (q.table === 'commission_ledger' && q.op === 'select') return o.ledger ? o.ledger(q) : { data: null, error: null }
     return undefined
@@ -237,7 +240,7 @@ describe('mapper and statement', () => {
 
 describe('requestPartnerCode', () => {
   const body = { code: 'mynews', note: 'hello' }
-  it('tells the owner once per hour, and refuses a taken code', async () => {
+  it('records the request once, nudges the owner once, and refuses a taken code', async () => {
     t = setup()
     const ctx = ctxOf({ headers: { 'x-partner-token': 'dtok' }, body })
     const first = await t.mod.requestPartnerCode(ctx)
@@ -247,6 +250,8 @@ describe('requestPartnerCode', () => {
     const second = await t.mod.requestPartnerCode(ctx)
     expect(second.body.alreadyRequested).toBe(true)
     expect(t.st.alerts).toHaveLength(1)
+    expect(t.st.requests).toHaveLength(1)
+    expect(t.st.requests[0]).toMatchObject({ partner_id: 'p1', wanted_code: 'MYNEWS', note: 'hello' })
     t.restore()
     t = setup({ code: { id: 'c', code: 'MYNEWS', partners: { status: 'ACTIVE' } } })
     const taken = await t.mod.requestPartnerCode(ctxOf({ headers: { 'x-partner-token': 'dtok' }, body }))
