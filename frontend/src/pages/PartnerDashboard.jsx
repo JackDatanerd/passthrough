@@ -744,7 +744,7 @@ function AnnualStatement({ token, currency }) {
 }
 
 // Partners round 38 (feature gap): the dashboard said "ask us about a new code" with no way to. This sends the owner a note; it creates nothing.
-function RequestCode({ token }) {
+function RequestCode({ token, request }) {
   const [open, setOpen] = useState(false)
   const [code, setCode] = useState('')
   const [note, setNote] = useState('')
@@ -760,6 +760,20 @@ function RequestCode({ token }) {
     }
   }
   if (state === 'sent') return <p role="status" className="text-sm text-green-700" data-testid="code-request-sent">{message}</p>
+  // Partners round 40: show where the last request stands instead of forgetting it the moment the page reloads.
+  const status = request?.status
+  const sentOn = request?.createdAt ? new Date(request.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : ''
+  if (!open && status === 'OPEN') return <div className="flex flex-col gap-1" data-testid="code-request-status">
+    <p role="status" className="text-sm text-gray-700">Your request{request.wantedCode ? ` for ${request.wantedCode}` : ''}{sentOn ? ` (sent ${sentOn})` : ''} is with us - we will email you when the code is ready.</p>
+  </div>
+  if (!open && status === 'DONE') return <div className="flex flex-col gap-1" data-testid="code-request-status">
+    <p role="status" className="text-sm text-green-700">Your last request was answered - any new code appears in your list above.</p>
+    <button type="button" onClick={() => setOpen(true)} className="self-start text-sm text-blue-600 hover:underline" data-testid="code-request-open">Request another code</button>
+  </div>
+  if (!open && status === 'DISMISSED') return <div className="flex flex-col gap-1" data-testid="code-request-status">
+    <p role="status" className="text-sm text-gray-600">Your last request was closed without a new code. You are welcome to ask again.</p>
+    <button type="button" onClick={() => setOpen(true)} className="self-start text-sm text-blue-600 hover:underline" data-testid="code-request-open">Request a code of your own</button>
+  </div>
   if (!open) return <button type="button" onClick={() => setOpen(true)} className="self-start text-sm text-blue-600 hover:underline" data-testid="code-request-open">Request a code of your own</button>
   return <div className="flex flex-col gap-2 border border-gray-200 rounded-xl bg-white p-3" data-testid="code-request">
     <Input size="sm" label="Code you'd like (optional)" value={code} onChange={e => setCode(e.target.value.toUpperCase())} maxLength={50} placeholder="e.g. MYNEWSLETTER" />
@@ -937,7 +951,7 @@ export default function PartnerDashboard() {
                       ))}
                     </div>
                   )}
-                  {data.active && <RequestCode token={token} />}
+                  {data.active && <RequestCode token={token} request={data.codeRequest} />}
                 </section>
 
                 <section id="settings" className="scroll-mt-24 flex flex-col gap-3">

@@ -601,8 +601,14 @@ export default function AdminPartners() {
 
   // readyToPayCents is already clamped at 0 per partner by the server (a refund credit is not
   // payable and must not net against another partner's real payable); credits are separate.
-  const totalReadyToPay = partners.reduce((sum, p) => sum + Math.max(0, p.readyToPayCents || 0), 0)
+  // Partners round 40: the tile used to add up everyone's completed-cycle balance, including partners the payout run cannot pay yet (no
+  // payout details, or unpaid in more than one currency), so it promised more than "Record payout run" would do. It now counts only
+  // what the run can pay, and shows the rest separately.
+  const totalReadyToPay = partners.filter(isPayable).reduce((sum, p) => sum + Math.max(0, p.readyToPayCents || 0), 0)
+  const readyButNotPayableCents = partners.filter(p => !isPayable(p)).reduce((sum, p) => sum + Math.max(0, p.readyToPayCents || 0), 0)
   const payableCount = partners.filter(isPayable).length
+  const [taxYear, setTaxYear] = useState(() => new Date().getUTCFullYear() - (new Date().getUTCMonth() < 3 ? 1 : 0))   // January-March: last year is the one being filed
+  const taxYears = (() => { const now = new Date().getUTCFullYear(); return [now, now - 1, now - 2, now - 3].filter(y => y >= 2024) })()
   const mixedCurrencyCount = partners.filter(p => p.mixedCurrency && (p.readyToPayCents || 0) > 0).length
   // Round 8: partners who have not accepted the current terms version (admin-created ones never did).
   // Round 23: ENDED partners are never sent the notice (the server skips them), so they are not counted here either.
@@ -662,9 +668,13 @@ export default function AdminPartners() {
           <Button variant="secondary" disabled={payableCount === 0} onClick={() => setShowRun(true)}>
             Record payout run
           </Button>
+          <select aria-label="Tax summary year" data-testid="tax-summary-year" value={taxYear} onChange={e => setTaxYear(Number(e.target.value))}
+            className="border border-gray-300 rounded-md text-sm px-2 py-1.5 bg-white">
+            {taxYears.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
           <Button variant="secondary" data-testid="tax-summary"
             onClick={async () => {
-              const year = new Date().getUTCFullYear() - (new Date().getUTCMonth() < 3 ? 1 : 0)   // January-March: last year is the one being filed
+              const year = taxYear
               try {
                 const n = await exportTaxSummary(year)
                 toast({ message: `Tax summary for ${year}: ${n} partner row(s).`, type: 'success' })
@@ -718,7 +728,12 @@ export default function AdminPartners() {
                 adminListPartners). Same convention as currentCycleLabel
                 below. */}
             <div className="text-2xl font-bold text-amber-600">{formatCents(totalReadyToPay, partners[0]?.currency)}</div>
-            <div className="text-xs text-gray-400 mt-1">Completed cycles, unpaid</div>
+            <div className="text-xs text-gray-400 mt-1">Completed cycles, unpaid, payable now</div>
+            {readyButNotPayableCents > 0 && (
+              <div className="text-xs text-amber-700 mt-1" data-testid="ready-not-payable">
+                + {formatCents(readyButNotPayableCents, partners[0]?.currency)} waiting on payout details or a single currency
+              </div>
+            )}
           </div>
           <div className="border border-gray-200 rounded-lg p-4 bg-white">
             <div className="text-xs uppercase tracking-wide text-gray-400">Still accruing</div>

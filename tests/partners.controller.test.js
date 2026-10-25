@@ -971,8 +971,9 @@ describe('adminUpdateReferralCode', () => {
     const res = await mod.adminUpdateReferralCode({ env: {}, req: { param: () => 'rc1', json: async () => ({ code: 'new-2' }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) })
     expect(res.status).toBe(200)
     expect(res.body.renamed).toEqual({ from: 'OLD1', to: 'NEW-2' })
-    expect(calls.find(q => q.table === 'users' && q.op === 'update').patch).toEqual({ referred_by_code: 'NEW-2' })
-    expect(calls.find(q => q.table === 'payments' && q.op === 'update').patch).toEqual({ referral_code: 'NEW-2' })
+    // Round 40: the rename is one database call (migration 0117) - buyers and payments follow inside it, not as separate writes.
+    expect(calls.find(q => q.op === 'rpc' && q.name === 'rename_referral_code').args).toEqual({ p_code_id: 'rc1', p_new_code: 'NEW-2' })
+    expect(calls.some(q => (q.table === 'users' || q.table === 'payments') && q.op === 'update')).toBe(false)
   })
 
   it('a rename onto a code already in use is a 409 and moves nothing', async () => {
@@ -980,7 +981,7 @@ describe('adminUpdateReferralCode', () => {
     const db = createFakeSupabase(q => {
       calls.push(q)
       if (q.table === 'referral_codes' && q.op === 'select') return { data: { partner_id: 'p1', code: 'OLD1', partners: { name: 'A', email: 'a@x.co', status: 'ACTIVE' } }, error: null }
-      if (q.table === 'referral_codes' && q.op === 'update') return { data: null, error: { code: '23505', message: 'dup' } }
+      if (q.op === 'rpc') return { data: null, error: { code: '23505', message: 'dup' } }
     })
     const { mod, restore } = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
     t = { restore }

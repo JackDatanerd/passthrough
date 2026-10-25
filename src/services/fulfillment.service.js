@@ -587,6 +587,7 @@ async function findPaymentForEvent(supabase, event) {
 // It is now idempotent and runs on BOTH paths: the amount is whatever the partial adjustments still net to (zero once handed back), and
 // migration 0116's unique index refuses a second give-back for the same sale if two redeliveries race.
 async function giveBackPartialAdjustments(supabase, original) {
+  let givenBack = 0
   try {
     const { data: partials, error: pErr } = await supabase.from('commission_ledger')
       .select('commission_amount_cents').eq('adjusts_ledger_id', original.id)
@@ -599,8 +600,10 @@ async function giveBackPartialAdjustments(supabase, original) {
         adjustment_reason: 'Correction - an earlier partial refund already reduced this sale'
       })
       if (giveBackErr && giveBackErr.code !== '23505') console.error('reverseCommission partial give-back:', giveBackErr.message)
+      else if (!giveBackErr) givenBack = -net
     }
   } catch (err) { console.error('reverseCommission partial give-back:', err.message) }
+  return givenBack
 }
 
 // Reverse the partner's commission for a payment with a NEGATIVE ledger row.
@@ -644,8 +647,10 @@ async function reverseCommission(supabase, paymentId, reason) {
   // row's lock, AFTER the reversal is in — increment_referral_code_usage refuses to count a reversed sale, so
   // the two always net to zero. Best-effort: a failed release must never undo or fail the reversal.
   await releaseUsage()
-  await giveBackPartialAdjustments(supabase, original)
-  return { reversed: true, alreadyPaidOut: !!original.payout_id, commissionCents: original.commission_amount_cents,
+  const givenBack = await giveBackPartialAdjustments(supabase, original)
+  // The partner's real loss is the sale's commission minus what an earlier partial refund had already taken back, so the
+  // notice (and the admin response) report that net figure rather than the full original amount.
+  return { reversed: true, alreadyPaidOut: !!original.payout_id, commissionCents: Math.max(0, original.commission_amount_cents - givenBack),
     partnerId: original.partner_id, currency: original.currency ?? null }
 }
 

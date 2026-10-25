@@ -96,6 +96,7 @@ router.patch('/:id',                       admin, partnerMoneyEdit, validateUuid
 router.post( '/:id/resend-link',           admin, admin.stepUp, validateUuidParam(), c.adminResendPayoutLink)
 router.post( '/:id/regenerate-link',       admin, admin.stepUp, validateUuidParam(), c.adminRegeneratePayoutLink)
 router.get(  '/:id/links',                 admin, admin.stepUp, validateUuidParam(), c.adminGetPartnerLinks)
+router.get(  '/:id/terms-acceptances',     admin, admin.stepUp, validateUuidParam(), c.adminListTermsAcceptances)
 router.get(  '/:id/payout-details',         admin, admin.stepUp, validateUuidParam(), c.adminRevealPayoutDetails)
 router.post( '/:id/payouts',               admin, admin.stepUp, validateUuidParam(), c.adminRecordPayout)
 router.post( '/:id/payouts/:payoutId/void', admin, admin.stepUp, validateUuidParam(), validateUuidParam('payoutId'), c.adminVoidPayout)
@@ -109,7 +110,10 @@ router.post( '/:id/ledger/:ledgerId/reattribute', admin, admin.stepUp, validateU
 // STEP-UP (round 10): a code's tier prices decide what a buyer pays and what the partner earns on it, so setting or changing
 // them is a money decision like the commission rate above. Switching a code off / changing its limit or expiry stays one click.
 // Round 23: renaming a code changes every link already shared, so it takes the same step-up.
-const priceEdit = admin.stepUpWhen(body => !!body && (body.tierPrices !== undefined || body.code !== undefined))
+// Partners round 40: reopening a discount is as consequential as re-pricing one, so switching a code ON, raising its cap or moving its
+// expiry needs step-up too (switching OFF stays frictionless).
+const priceEdit = admin.stepUpWhen(body => !!body && (body.tierPrices !== undefined || body.code !== undefined
+  || body.active === true || body.usageLimit !== undefined || body.expiresAt !== undefined))
 router.post( '/:id/referral-codes',        admin, priceEdit, validateUuidParam(), c.adminCreateReferralCode)
 router.patch('/referral-codes/:codeId',    admin, priceEdit, validateUuidParam('codeId'), c.adminUpdateReferralCode)
 

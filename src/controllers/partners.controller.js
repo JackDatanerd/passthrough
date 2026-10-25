@@ -1132,6 +1132,10 @@ async function adminCreateReferralCode(ctx) {
   if (pErr) throw pErr
   if (!partner) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
   if (isRemovedEmail(partner.email)) return partnerRemovedResponse(ctx)
+  // Partners round 40: an ENDED partnership earns and discounts nothing, so a fresh code would be dead on arrival. A PAUSED
+  // partner may still be given one (it waits for reactivation, and the response says so).
+  if (partner.status === 'ENDED')
+    return ctx.json({ success: false, message: 'This partnership has ended - reactivate the partner before creating a code for them.' }, 409)
 
   const guard = priceGuardrails(ctx.env, body.tierPrices)
   if (guard.tooLow.length && !body.confirmLowPrice) return lowPriceResponse(ctx, guard)
@@ -1233,20 +1237,36 @@ async function adminUpdateReferralCode(ctx) {
   // Round 23: a code's text can be corrected. The old text stops working everywhere, so the buyers and payments that
   // carry it are moved to the new text in the same call (and the rename is undone if that cannot be done).
   const renaming = !!newCode && !!owner && newCode !== owner.code
-  if (renaming) {
-    if (isRemovedEmail(owner.partners?.email) || /^REMOVED-[0-9A-F]{8}$/.test(owner.code))
-      return ctx.json({ success: false, message: 'A removed partner\u2019s code cannot be renamed.' }, 409)
-    patch.code = newCode
-  }
-  if (!Object.keys(patch).length) return ctx.json({ success: false, message: 'Nothing to change.' }, 400)
+  if (renaming && (isRemovedEmail(owner.partners?.email) || /^REMOVED-[0-9A-F]{8}$/.test(owner.code)))
+    return ctx.json({ success: false, message: 'A removed partner\u2019s code cannot be renamed.' }, 409)
+  if (!Object.keys(patch).length && !renaming) return ctx.json({ success: false, message: 'Nothing to change.' }, 400)
 
-  const { data, error } = await supabase.from('referral_codes')
-    .update(patch).eq('id', codeId).select('*').maybeSingle()
-  if (error && error.code === '23505') return ctx.json({ success: false, message: 'That code is already in use - pick a different one.' }, 409)
-  if (error) throw error
+  // Partners round 40: the rename is ONE transaction in the database (migration 0117) rather than three writes with a hand-rolled
+  // undo. A database that has not run 0117 yet falls back to the old sequence so a deploy order slip cannot break renames.
+  let legacyRename = false
+  if (renaming) {
+    const { error: rnErr } = await supabase.rpc('rename_referral_code', { p_code_id: codeId, p_new_code: newCode })
+    if (rnErr && rnErr.code === '23505') return ctx.json({ success: false, message: 'That code is already in use - pick a different one.' }, 409)
+    if (rnErr && rnErr.code === 'P0002') return ctx.json({ success: false, message: 'Referral code not found.' }, 404)
+    if (rnErr && (rnErr.code === 'PGRST202' || rnErr.code === '42883')) { legacyRename = true; patch.code = newCode }
+    else if (rnErr) throw rnErr
+  }
+
+  let data = null
+  if (Object.keys(patch).length) {
+    const { data: upd, error } = await supabase.from('referral_codes')
+      .update(patch).eq('id', codeId).select('*').maybeSingle()
+    if (error && error.code === '23505') return ctx.json({ success: false, message: 'That code is already in use - pick a different one.' }, 409)
+    if (error) throw error
+    data = upd
+  } else {
+    const { data: cur, error } = await supabase.from('referral_codes').select('*').eq('id', codeId).maybeSingle()
+    if (error) throw error
+    data = cur
+  }
   if (!data) return ctx.json({ success: false, message: 'Referral code not found.' }, 404)
 
-  if (renaming) {
+  if (renaming && legacyRename) {
     const undo = async () => { await supabase.from('referral_codes').update({ code: owner.code }).eq('id', codeId).then(() => {}, () => {}) }
     const { error: uErr } = await supabase.from('users').update({ referred_by_code: newCode }).eq('referred_by_code', owner.code)
     if (uErr) { await undo(); throw uErr }
@@ -1258,7 +1278,7 @@ async function adminUpdateReferralCode(ctx) {
   }
 
   await logAdminAction(ctx, supabase, 'partner.referral_code_updated', 'referral_code', codeId, {
-    partnerId: data.partner_id, codeId: data.id, changed: Object.keys(patch), lowPriceConfirmed: guard.tooLow.length > 0,
+    partnerId: data.partner_id, codeId: data.id, changed: [...new Set([...Object.keys(patch), ...(renaming ? ['code'] : [])])], lowPriceConfirmed: guard.tooLow.length > 0,
     ...(renaming ? { renamedFrom: owner.code, renamedTo: newCode } : {})
   })
 
@@ -1277,7 +1297,12 @@ async function adminUpdateReferralCode(ctx) {
 
   const limitWarning = body.usageLimit != null && data.usage_limit != null && (data.uses_so_far || 0) >= data.usage_limit
     ? [`This limit (${data.usage_limit}) is at or below the ${data.uses_so_far || 0} redemption(s) already used, so the code stops applying immediately.`] : []
-  return ctx.json({ success: true, data: referralCodeRowToCamel(data), warnings: [...guardWarnings(guard), ...limitWarning, ...(renaming ? [`Renamed ${owner.code} to ${newCode}. Links and codes already shared with the old text no longer work.`] : [])], notified, ...(renaming ? { renamed: { from: owner.code, to: newCode } } : {}) })
+  // Partners round 40: switching a code on (or editing it) for a PAUSED / ENDED partner reports success, yet isCodeUsable still refuses it.
+  const partnerStatus = owner?.partners?.status
+  const partnerInactive = !!partnerStatus && partnerStatus !== 'ACTIVE' && data.active !== false
+  const inactiveWarning = partnerInactive
+    ? [`This partner is ${partnerStatus === 'ENDED' ? 'ended' : 'paused'}, so the code will not apply discounts or earn commission until the partner is made Active again.`] : []
+  return ctx.json({ success: true, partnerInactive, data: referralCodeRowToCamel(data), warnings: [...guardWarnings(guard), ...limitWarning, ...inactiveWarning, ...(renaming ? [`Renamed ${owner.code} to ${newCode}. Links and codes already shared with the old text no longer work.`] : [])], notified, ...(renaming ? { renamed: { from: owner.code, to: newCode } } : {}) })
 }
 
 // ── Admin: record a payout that has ALREADY been sent manually ─────────────
@@ -2184,6 +2209,16 @@ async function getPartnerDashboard(ctx) {
   const CONVERSIONS_LIST_LIMIT = 50
   const conversions = ledger.slice(0, CONVERSIONS_LIST_LIMIT).map(row => conversionRowOf(row, codeTextById))
 
+  // Partners round 40: after "Request a code" the partner saw nothing again. Return the newest request so the dashboard can say whether it
+  // is still waiting, was answered, or was closed. Best effort - a database without migration 0116 just has none.
+  let codeRequest = null
+  try {
+    const { data: reqRow, error: reqErr } = await supabase.from('partner_code_requests')
+      .select('status, wanted_code, created_at, resolved_at').eq('partner_id', partner.id)
+      .order('created_at', { ascending: false }).limit(1).maybeSingle()
+    if (!reqErr && reqRow) codeRequest = { status: reqRow.status, wantedCode: reqRow.wanted_code ?? null, createdAt: reqRow.created_at, resolvedAt: reqRow.resolved_at ?? null }
+  } catch (_) { codeRequest = null }
+
   return ctx.json({ success: true, data: {
     name:           partner.name,
     commissionRate: Number(partner.commission_rate),
@@ -2212,6 +2247,7 @@ async function getPartnerDashboard(ctx) {
       ...rc, stats: { conversions: rc.stats.conversions, conversionRate: rc.stats.conversionRate, commissionCents: rc.stats.commissionCents }   // round 27: earnings per code (net of reversals); gross sale value stays admin-only
     })),
     notifyConversions: partner.notify_conversions !== false,
+    codeRequest,
     // Round 8: where payouts go (method + provider/bank + last four only - the full number never rides the
     // read-only dashboard), when a recent change is still holding payouts, and the terms prompt.
     payoutAccount:    payoutAccountHint(partner.payout_method, partner.payout_details),
@@ -3801,6 +3837,38 @@ async function adminResolveCodeRequest(ctx) {
 // Admin: what each partner was PAID in a calendar year, with the tax details collected for it - the figures a payer needs at year end.
 // Step-up protected like every other place a full tax ID is shown.
 const TAX_SUMMARY_MAX_PAYOUT_PAGES = 100
+// Partners round 40: the acceptance trail was written on every acceptance and never readable. This is the admin view of it for one
+// partner: acceptances recorded against the partner plus the ones logged under their email when they applied (those carry no partner id).
+async function adminListTermsAcceptances(ctx) {
+  const partnerId = ctx.req.param('id')
+  if (isSystemPartnerId(partnerId)) return systemPartnerResponse(ctx)
+  const supabase = getSupabase(ctx.env)
+  const { data: partner, error: pErr } = await supabase.from('partners').select('id, email').eq('id', partnerId).maybeSingle()
+  if (pErr) throw pErr
+  if (!partner) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
+  const cols = 'id, version, source, accepted_at, ip_hash, user_agent'
+  const { data: own, error: ownErr } = await supabase.from('partner_terms_acceptances').select(cols).eq('partner_id', partnerId)
+    .order('accepted_at', { ascending: false }).limit(200)
+  if (ownErr) {
+    // Migration 0115 not applied: there is no trail yet rather than a failure.
+    if (ownErr.code === '42P01' || ownErr.code === 'PGRST205') return ctx.json({ success: true, data: [] })
+    throw ownErr
+  }
+  let fromApplication = []
+  if (partner.email && !isRemovedEmail(partner.email)) {
+    const exact = String(partner.email).replace(/[\\%_]/g, "\\$&")
+    const { data, error } = await supabase.from('partner_terms_acceptances').select(cols).is('partner_id', null)
+      .ilike('application_email', exact).order('accepted_at', { ascending: false }).limit(50)
+    if (error) throw error
+    fromApplication = data || []
+  }
+  const rows = [...(own || []), ...fromApplication]
+    .sort((a, b) => Date.parse(b.accepted_at) - Date.parse(a.accepted_at))
+    .map(r => ({ id: r.id, version: r.version, source: r.source, acceptedAt: r.accepted_at, ipHash: r.ip_hash ?? null, userAgent: r.user_agent ?? null }))
+  await logAdminAction(ctx, supabase, 'partner.terms_acceptances_viewed', 'partner', partnerId, { count: rows.length })
+  return ctx.json({ success: true, data: rows })
+}
+
 async function adminTaxSummary(ctx) {
   const supabase = getSupabase(ctx.env)
   const year = statementYearOf(ctx)
@@ -3844,6 +3912,7 @@ async function adminTaxSummary(ctx) {
 }
 
 module.exports = {
+  adminListTermsAcceptances,
   buildCyclesSummary, buildCycleTrend, buildAttributionMix, buildSubMix, sweepPayoutDue,
   adminCreatePartner, adminUpdatePartner, adminListPartners, adminGetPartner,
   adminResendPayoutLink, adminRegeneratePayoutLink, adminGetPartnerLinks, adminRecordPayout,

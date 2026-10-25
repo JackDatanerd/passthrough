@@ -11,7 +11,7 @@ import Spinner from '../../components/ui/Spinner'
 import DataTable from '../../components/ui/DataTable'
 import StatCard from '../../components/ui/StatCard'
 import { useToast } from '../../components/ui/Toast'
-import { formatCents, formatDate, formatRate, cn, copyToClipboard, downloadCsv, withinHours } from '../../lib/utils'
+import { formatCents, formatDate, formatDateTime, formatRate, cn, copyToClipboard, downloadCsv, withinHours } from '../../lib/utils'
 import Alert from '../../components/ui/Alert'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import EmptyState from '../../components/ui/EmptyState'
@@ -24,6 +24,59 @@ import useLatestRequest from '../../hooks/useLatestRequest'
 // Round 30: the server says WHY an admin action was refused (partner erased, internal welcome-code record, details changed...). These
 // handlers used to show a fixed "Failed to..." and drop it.
 const whyFailed = (err, fallback) => err?.response?.data?.message || fallback
+
+// Partners round 40: every acceptance is logged (version, when, where from, a hash of the IP, the browser) but nothing could read the log.
+// Loaded on demand because it needs a step-up and carries the IP hash / user agent.
+function TermsTrail({ partner }) {
+  const toast = useToast()
+  const [rows, setRows] = useState(null)
+  const [loading, setLoading] = useState(false)
+  async function load() {
+    setLoading(true)
+    try {
+      const res = await api.get(`/partners/${partner.id}/terms-acceptances`)
+      setRows(res.data.data || [])
+    } catch (err) {
+      toast({ message: whyFailed(err, 'Could not load the acceptance history.'), type: 'error' })
+    } finally { setLoading(false) }
+  }
+  function exportCsv() {
+    downloadCsv(`${partner.name.replace(/[^A-Za-z0-9_-]+/g, '_')}-terms-acceptances.csv`, [
+      ['Accepted at', 'Version', 'Source', 'IP hash', 'User agent'],
+      ...rows.map(r => [r.acceptedAt || '', r.version || '', r.source || '', r.ipHash || '', r.userAgent || ''])
+    ])
+  }
+  if (rows === null) {
+    return <button type="button" onClick={load} disabled={loading} className="self-start text-xs text-blue-600 hover:underline disabled:opacity-50" data-testid="terms-trail-open">
+      {loading ? 'Loading…' : 'Show acceptance history'}
+    </button>
+  }
+  return (
+    <div className="flex flex-col gap-2" data-testid="terms-trail">
+      {rows.length === 0
+        ? <p className="text-xs text-gray-500">No acceptances are logged for this partner.</p>
+        : (
+          <DataTable
+            caption="Terms acceptance history"
+            density="compact"
+            rows={rows}
+            rowKey={r => r.id}
+            columns={[
+              { key: 'when', header: 'When', cellClassName: 'whitespace-nowrap', cell: r => formatDateTime(r.acceptedAt) },
+              { key: 'version', header: 'Version', cell: r => r.version },
+              { key: 'source', header: 'Source', cell: r => r.source },
+              { key: 'ip', header: 'IP hash', cellClassName: 'font-mono', cell: r => (r.ipHash ? r.ipHash.slice(0, 12) : '-') },
+              { key: 'ua', header: 'Browser', cellClassName: 'max-w-xs truncate', cell: r => r.userAgent || '-' },
+            ]}
+          />
+        )}
+      <div className="flex gap-3">
+        {rows.length > 0 && <button type="button" onClick={exportCsv} className="text-xs text-blue-600 hover:underline" data-testid="terms-trail-csv">Download CSV</button>}
+        <button type="button" onClick={() => setRows(null)} className="text-xs text-gray-500 hover:underline">Hide</button>
+      </div>
+    </div>
+  )
+}
 
 function PayoutDetailsFields({ method, details }) {
   const d = details || {}
@@ -738,7 +791,8 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
         ...(codeChanged ? { code: cleanCode } : {}),
         ...(pricesChanged ? { tierPrices } : {}),
         ...(pricesChanged && confirmLow ? { confirmLowPrice: true } : {}),
-        usageLimit: usageLimit ? Number(usageLimit) : null,
+        // Partners round 40: sent only when edited - the server asks for a step-up on any request that carries a limit or expiry.
+        ...(usageLimit !== (codeRow.usageLimit != null ? String(codeRow.usageLimit) : '') ? { usageLimit: usageLimit ? Number(usageLimit) : null } : {}),
         // updateReferralCodeSchema's expiresAt is nullable — unlike create,
         // an explicit null here is how an admin clears an existing
         // expiration, same convention as usageLimit right above.
@@ -793,7 +847,8 @@ function ReferralCodesTab({ partner, onChanged }) {
 
   async function toggle(codeRow) {
     try {
-      await api.patch(`/partners/referral-codes/${codeRow.id}`, { active: !codeRow.active })
+      const res = await api.patch(`/partners/referral-codes/${codeRow.id}`, { active: !codeRow.active })
+      for (const w of res?.data?.warnings || []) toast({ message: w, type: 'warning', duration: 8000 })
       onChanged()
     } catch (err) {
       toast({ message: whyFailed(err, 'Failed to update code.'), type: 'error' })
@@ -1395,6 +1450,7 @@ export default function PartnerDetail() {
               : `Has not accepted the partner terms (current version ${partner.currentTermsVersion}).`}
         </div>
       )}
+      {!String(partner.email || '').endsWith('@removed.invalid') && <TermsTrail partner={partner} />}
 
       <div className="flex gap-2 flex-wrap">
         <Button size="sm" variant="secondary" onClick={() => resendLink('payout')}>Resend payout-details link</Button>

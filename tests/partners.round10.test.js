@@ -225,7 +225,7 @@ describe('wiring', () => {
   it('credential- and price-setting admin routes need the step-up', () => {
     expect(routes).toMatch(/post\(\s*'\/',\s+admin, admin\.stepUp,/)
     expect(routes).toMatch(/applications\/:id\/approve',\s+admin, admin\.stepUp/)
-    expect(routes).toMatch(/stepUpWhen\(body => !!body && \(body\.tierPrices !== undefined \|\| body\.code !== undefined\)\)/)
+    expect(routes).toMatch(/stepUpWhen\(body => !!body && \(body\.tierPrices !== undefined \|\| body\.code !== undefined\s*\|\|\s*body\.active === true \|\| body\.usageLimit !== undefined \|\| body\.expiresAt !== undefined\)\)/)
     expect(routes).toMatch(/'\/payout-export',\s+admin, admin\.stepUp/)
   })
   it('self-serve reset and attribution have their own limiter buckets', () => {
