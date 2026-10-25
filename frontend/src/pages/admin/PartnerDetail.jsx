@@ -473,6 +473,8 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
   // Round 6: within the server's hold window after a payout-details change (partner.payoutDetailsHoldHours, 48 by
   // default) the payout is REFUSED unless the admin states they confirmed the change with the partner directly.
   const [confirmedWithPartner, setConfirmedWithPartner] = useState(false)
+  // Partners round 38: with PAYOUT_REQUIRES_CURRENT_TERMS on, a partner on an older terms version is refused unless this is ticked.
+  const [confirmedTerms, setConfirmedTerms] = useState(false)
   const { loading: saving, error, execute, fail: showError } = useApi()
   const holdHours = partner.payoutDetailsHoldHours ?? 48
   const inHold = holdHours > 0 && withinHours(partner.payoutDetailsSubmittedAt, holdHours)
@@ -501,6 +503,7 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
       const data = await execute(() => api.post(`/partners/${partner.id}/payouts`, {
         amountCents: Math.round(parsed * 100),
         ...(inHold ? { confirmedWithPartner: true } : {}),
+        ...(confirmedTerms ? { confirmedTerms: true } : {}),
         ...(differs ? { acknowledgeDifference: true } : {}),
         // The payout details the admin was looking at; the server refuses (409) if
         // they changed since, so money is never recorded against a stale account.
@@ -557,6 +560,11 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
             <Checkbox wrapperClassName="mt-2" label={`I confirmed the change with ${partner.name}`}
               checked={confirmedWithPartner} onChange={e => setConfirmedWithPartner(e.target.checked)} />
           </div>
+        )}
+        {partner.termsCurrent === false && (
+          <Checkbox wrapperClassName="text-sm" data-testid="confirm-terms"
+            label={`${partner.name} has not accepted the current partner terms — pay anyway`}
+            checked={confirmedTerms} onChange={e => setConfirmedTerms(e.target.checked)} />
         )}
         {!inHold && recentChange && (
           <Alert className="text-xs">
@@ -963,12 +971,23 @@ function ReverseSaleModal({ partner, sale, onClose, onDone }) {
   const toast = useToast()
   const { execute, loading, error, fail: showError } = useApi()
   const [reason, setReason] = useState('')
+  // Partners round 38: a goodwill PARTIAL refund takes back only that share of the commission (at the rate the sale was made under).
+  const [partial, setPartial] = useState(false)
+  const [refund, setRefund] = useState('')
   async function submit() {
     if (reason.trim().length < 5) return showError('Say why.')
+    let refundCents
+    if (partial) {
+      const amount = Number(String(refund).replace(/,/g, '.').trim())
+      refundCents = Math.round(amount * 100)
+      if (!Number.isFinite(amount) || refundCents <= 0) return showError('Enter the amount that was refunded to the buyer.')
+      if (refundCents > (sale.grossAmountCents || 0)) return showError('That is more than the sale.')
+    }
     try {
-      const data = await execute(() => api.post(`/partners/${partner.id}/ledger/${sale.id}/reverse`, { reason: reason.trim() }),
+      const data = await execute(() => api.post(`/partners/${partner.id}/ledger/${sale.id}/reverse`, { reason: reason.trim(), ...(partial ? { refundCents } : {}) }),
         { keepAlive: true, fallback: 'Failed to reverse the sale.' })
-      toast({ message: data.alreadyPaidOut ? 'Sale reversed. It was already paid, so it becomes a refund credit against the next payout.' : 'Sale reversed.', type: 'success' })
+      toast({ message: data.partial ? `Commission reduced by ${formatCents(-data.commissionCents, sale.currency || partner.currency)}; ${formatCents(data.remainingCents, sale.currency || partner.currency)} of it is still earned.`
+        : data.alreadyPaidOut ? 'Sale reversed. It was already paid, so it becomes a refund credit against the next payout.' : 'Sale reversed.', type: 'success' })
       onDone()
       onClose()
     } catch (_) { /* error already captured by useApi */ }
@@ -981,12 +1000,15 @@ function ReverseSaleModal({ partner, sale, onClose, onDone }) {
           <span className="font-mono text-xs">{sale.paymentRef || '—'}</span>. The buyer's payment is not touched. The partner is emailed.
           {sale.payoutId ? ' This sale was already paid out, so the reversal is netted against their next payout.' : ''}
         </p>
+        <Checkbox label="Only part of the sale was refunded" checked={partial} onChange={e => setPartial(e.target.checked)} data-testid="reverse-partial" />
+        {partial && <Input label={`Amount refunded to the buyer (of ${formatCents(sale.grossAmountCents, sale.currency || partner.currency)})`} inputMode="decimal"
+          value={refund} onChange={e => setRefund(e.target.value)} placeholder="e.g. 10.00" data-testid="reverse-partial-amount" />}
         <Textarea showCount label="Reason (audit log only — the partner does not see it)" rows={3} maxLength={300} value={reason}
           onChange={e => setReason(e.target.value)} placeholder="e.g. Buyer was the partner's own second account" />
         {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button type="submit" variant="danger" loading={loading}>Reverse sale</Button>
+          <Button type="submit" variant="danger" loading={loading}>{partial ? 'Reduce commission' : 'Reverse sale'}</Button>
         </div>
       </Form>
     </Modal>
@@ -1474,3 +1496,5 @@ export default function PartnerDetail() {
     </div>
   )
 }
+
+export { ReverseSaleModal }

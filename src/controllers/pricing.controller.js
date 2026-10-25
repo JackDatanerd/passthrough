@@ -65,7 +65,7 @@ async function getPricing(ctx) {
     // code on their own account). The UI needs it to say so instead of the
     // misleading "that code doesn't look right" it showed for any code that
     // did not apply.
-    return { tier, amount: priced[tier].amount, originalAmount, referralApplied: priced[tier].referralApplied, discountApplied: !!priced[tier].discountApplied, selfReferral: !!priced[tier].selfReferral }
+    return { tier, amount: priced[tier].amount, originalAmount, referralApplied: priced[tier].referralApplied, discountApplied: !!priced[tier].discountApplied, selfReferral: !!priced[tier].selfReferral, referralReason: priced[tier].referralReason || null }
   })
 
   return ctx.json({ success: true, data: {
@@ -98,6 +98,8 @@ async function getPricing(ctx) {
     // (as opposed to referralApplied, which is attribution). See B8/B2.
     discountApplied: tiers.some(t => t.discountApplied),
     selfReferral:    tiers.some(t => t.selfReferral),
+    // Partners round 38: why a code that was sent does not apply (expired / exhausted / paused / inactive / unknown), null when it does.
+    referralReason:  tiers.find(t => t.referralReason)?.referralReason || null,
     // FEATURE GAP CLOSED (Payments & Pricing pass 1 — G5): the Pricing page
     // hardcoded "80+" and "two free manual retries" in its copy, which could
     // silently drift from these two constants (the ones that actually gate

@@ -371,7 +371,26 @@ function CycleRow({ cycle, currency }) {
 const CSV_PAGE = 200
 const CSV_MAX_PAGES = 25   // 5,000 rows; the export has its own rate-limit bucket (90 reads per 5 minutes)
 
-function ConversionsSection({ token, initial, total, currency, payouts = [] }) {
+function ConversionsSection({ token, initial, total, currency, payouts = [], codes = [] }) {
+  // Partners round 38: narrow the list (and the CSV) to one code and/or a date range. With no filter nothing below changes.
+  const [codeId, setCodeId] = useState('')
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
+  const filterOn = !!(codeId || from || to)
+  const filterQuery = `${codeId ? `&codeId=${encodeURIComponent(codeId)}` : ''}${from ? `&from=${encodeURIComponent(from)}` : ''}${to ? `&to=${encodeURIComponent(to)}` : ''}`
+  const [fRows, setFRows] = useState([])
+  const [fTotal, setFTotal] = useState(null)
+  const [fLoading, setFLoading] = useState(false)
+  useEffect(() => {
+    if (!filterOn) { setFRows([]); setFTotal(null); return undefined }
+    let alive = true
+    setFLoading(true)
+    api.get(`/partners/conversions?limit=50&offset=0${filterQuery}`, partnerAuth(token))
+      .then(res => { if (alive) { setFRows(res.data.data || []); setFTotal(typeof res.data.total === 'number' ? res.data.total : null) } })
+      .catch(() => { if (alive) { setFRows([]); setFTotal(null); setError('Could not apply that filter — please try again.') } })
+      .finally(() => { if (alive) setFLoading(false) })
+    return () => { alive = false }
+  }, [filterQuery, token])
   const [extra, setExtra] = useState([])
   const [loadingMore, setLoadingMore] = useState(false)
   const [exporting, setExporting] = useState(false)
@@ -379,13 +398,14 @@ function ConversionsSection({ token, initial, total, currency, payouts = [] }) {
   const [notice, setNotice] = useState('')
 
   const seen = new Set(initial.map(c => c.id))
-  const loaded = [...initial, ...extra.filter(c => !seen.has(c.id))]
+  const loaded = filterOn ? fRows : [...initial, ...extra.filter(c => !seen.has(c.id))]
+  if (filterOn) total = fTotal
   const known = typeof total === 'number' ? total : loaded.length
   const more = known > loaded.length
 
   // `export=1` puts the CSV walk in its own rate-limit bucket (round 10) so a long export cannot lock the dashboard out.
   async function fetchPage(offset, limit, exportMode = false) {
-    const res = await api.get(`/partners/conversions?limit=${limit}&offset=${offset}${exportMode ? '&export=1' : ''}`, partnerAuth(token))
+    const res = await api.get(`/partners/conversions?limit=${limit}&offset=${offset}${exportMode ? '&export=1' : ''}${filterQuery}`, partnerAuth(token))
     return res.data
   }
   const paidOnById = new Map(payouts.map(p => [p.id, p.paidAt]))
@@ -393,8 +413,9 @@ function ConversionsSection({ token, initial, total, currency, payouts = [] }) {
   async function loadMore() {
     setLoadingMore(true); setError('')
     try {
-      const page = await fetchPage(initial.length + extra.length, 50)   // round 29: the raw count, not the de-duplicated one, or an all-duplicate page stalls
-      setExtra(prev => [...prev, ...(page.data || [])])
+      const page = await fetchPage(filterOn ? fRows.length : initial.length + extra.length, 50)   // round 29: the raw count, not the de-duplicated one, or an all-duplicate page stalls
+      if (filterOn) setFRows(prev => [...prev, ...(page.data || [])])
+      else setExtra(prev => [...prev, ...(page.data || [])])
     } catch (_) {
       setError('Could not load more — please try again.')
     } finally { setLoadingMore(false) }
@@ -437,16 +458,29 @@ function ConversionsSection({ token, initial, total, currency, payouts = [] }) {
     <>
       <div className="flex items-center justify-between mb-3">
         <h2 className="text-lg font-semibold text-gray-900">Conversions</h2>
-        {loaded.length > 0 && (
+        {(loaded.length > 0) && (
           <button type="button" onClick={exportCsv} disabled={exporting}
             className="text-sm text-blue-600 hover:underline disabled:opacity-50 disabled:no-underline">
             {exporting ? 'Preparing…' : 'Download CSV'}
           </button>
         )}
       </div>
-      {loaded.length === 0 ? (
+      {(initial.length > 0 || filterOn) && (
+        <div className="flex items-end gap-2 flex-wrap mb-3" data-testid="conversion-filters">
+          {codes.length > 1 && (
+            <Select size="sm" value={codeId} onChange={e => setCodeId(e.target.value)} aria-label="Filter by code">
+              <option value="">All codes</option>
+              {codes.map(cd => <option key={cd.id} value={cd.id}>{cd.code}</option>)}
+            </Select>
+          )}
+          <Input size="sm" type="date" value={from} max={to || undefined} onChange={e => setFrom(e.target.value)} aria-label="From date" wrapperClassName="w-36" />
+          <Input size="sm" type="date" value={to} min={from || undefined} onChange={e => setTo(e.target.value)} aria-label="To date" wrapperClassName="w-36" />
+          {filterOn && <button type="button" className="text-sm text-blue-600 hover:underline pb-1" onClick={() => { setCodeId(''); setFrom(''); setTo('') }}>Clear filter</button>}
+        </div>
+      )}
+      {fLoading ? <p className="text-sm text-gray-500">Loading…</p> : loaded.length === 0 ? (
         <p className="text-sm text-gray-500">
-          No conversions yet — once someone buys through your link, it'll show up here.
+          {filterOn ? 'No entries match that filter.' : "No conversions yet — once someone buys through your link, it'll show up here."}
         </p>
       ) : (
         <div>
@@ -622,7 +656,8 @@ function TermsPrompt({ token, version, onAccepted }) {
   const [state, setState] = useState('idle')   // idle | saving | error
   async function accept() {
     setState('saving')
-    try { await api.post('/partners/accept-terms', {}, partnerAuth(token)); onAccepted() } catch (_) { setState('error') }
+    // Partners round 38: send the version that is on screen; the server refuses (409) if the terms moved on, so nobody accepts unseen text.
+    try { await api.post('/partners/accept-terms', version ? { version } : {}, partnerAuth(token)); onAccepted() } catch (err) { setState(err?.response?.data?.code === 'TERMS_VERSION_CHANGED' ? 'changed' : 'error') }
   }
   return (
     <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900" data-testid="terms-prompt">
@@ -635,6 +670,7 @@ function TermsPrompt({ token, version, onAccepted }) {
         {state === 'saving' ? 'Saving…' : 'I accept the current terms'}
       </button>
       {state === 'error' && <p className="text-xs text-red-600 mt-1">Couldn't save that — try again in a moment.</p>}
+      {state === 'changed' && <p role="alert" className="text-xs text-red-700 mt-1" data-testid="terms-changed">The terms were updated while this page was open. <button type="button" className="underline" onClick={() => window.location.reload()}>Reload</button> to read the current version, then accept it.</p>}
     </div>
   )
 }
@@ -644,6 +680,94 @@ function payoutAccountLabel(a) {
   const kind = methodLabel(a.method) || 'Payout account'
   if (a.method === 'PAYPAL') return `${kind}${a.account ? ` · ${a.account}` : ''}`
   return `${kind}${a.provider ? ` · ${a.provider}` : ''}${a.last4 ? ` · ending ${a.last4}` : ''}`
+}
+
+// Partners round 38 (feature gap): a year-end record - what was earned month by month and what was actually paid out - for tax and
+// bookkeeping. The conversions CSV above holds sales only and the payouts CSV only payments; this joins them for one calendar year (UTC).
+const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+function AnnualStatement({ token, currency }) {
+  const thisYear = new Date().getUTCFullYear()
+  const years = [thisYear, thisYear - 1, thisYear - 2].filter(y => y >= 2024)
+  const [year, setYear] = useState(thisYear)
+  const [state, setState] = useState('loading')
+  const [data, setData] = useState(null)
+  useEffect(() => {
+    let alive = true
+    setState('loading')
+    api.get(`/partners/statement?year=${year}`, partnerAuth(token))
+      .then(res => {
+        const d = res?.data?.data
+        if (!alive) return
+        if (!d || !Array.isArray(d.months)) { setState('error'); return }   // not a statement: never render half of one
+        setData(d); setState('ready')
+      })
+      .catch(() => { if (alive) setState('error') })
+    return () => { alive = false }
+  }, [token, year])
+  function download() {
+    if (!data) return
+    downloadCsv(`passthrough-statement-${data.year}.csv`, [
+      ['Month (UTC)', 'Sales', 'Sale total', 'Commission earned', 'Refund reversals', 'Adjustments', 'Net', 'Currency'],
+      ...data.months.map(m => [`${data.year}-${String(m.month).padStart(2, '0')}`, m.sales, m.grossCents / 100, m.commissionCents / 100, m.reversalCents / 100, m.adjustmentCents / 100, m.netCents / 100, currency || data.currency || '']),
+      ['Total earned (net)', '', '', '', '', '', data.earnedCents / 100, currency || data.currency || ''],
+      ['Paid out in the year', '', '', '', '', '', data.paidCents / 100, currency || data.currency || ''],
+    ])
+  }
+  const cur = currency || data?.currency
+  return <section data-testid="annual-statement">
+    <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+      <h2 className="text-lg font-semibold text-gray-900">Yearly statement</h2>
+      <div className="flex items-center gap-3">
+        <Select size="sm" value={year} onChange={e => setYear(Number(e.target.value))} aria-label="Statement year">
+          {years.map(y => <option key={y} value={y}>{y}</option>)}
+        </Select>
+        {state === 'ready' && <button type="button" onClick={download} className="text-sm text-blue-600 hover:underline" data-testid="statement-csv">Download CSV</button>}
+      </div>
+    </div>
+    {state === 'loading' && <p className="text-xs text-gray-500">Loading…</p>}
+    {state === 'error' && <p aria-live="polite" className="text-xs text-red-600">Could not load the statement — please try again.</p>}
+    {state === 'ready' && data && <div className="border border-gray-200 rounded-xl bg-white p-4">
+      <div className="flex gap-6 flex-wrap text-sm">
+        <div><span className="block text-xs text-gray-500">Earned in {data.year} (net of refunds)</span><span className="font-semibold text-gray-900">{fmtCents(data.earnedCents, cur)}</span></div>
+        <div><span className="block text-xs text-gray-500">Paid out in {data.year}</span><span className="font-semibold text-gray-900">{fmtCents(data.paidCents, cur)}</span> <span className="text-xs text-gray-400">({data.payoutCount} payout{data.payoutCount === 1 ? '' : 's'})</span></div>
+      </div>
+      <ul className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-1 text-xs text-gray-600">
+        {data.months.filter(m => m.sales > 0 || m.netCents !== 0).map(m => <li key={m.month} className="flex justify-between"><span>{MONTH_LABELS[m.month - 1]}</span><span>{fmtCents(m.netCents, cur)}</span></li>)}
+      </ul>
+      <p className="text-xs text-gray-400 mt-3">
+        {data.taxCountry || data.taxIdOnFile ? 'Your tax details are on file.' : 'No tax details on file — you can add them on your payout-details page.'} Months are in UTC. Amounts paid out may differ from amounts earned in the same year.
+      </p>
+    </div>}
+  </section>
+}
+
+// Partners round 38 (feature gap): the dashboard said "ask us about a new code" with no way to. This sends the owner a note; it creates nothing.
+function RequestCode({ token }) {
+  const [open, setOpen] = useState(false)
+  const [code, setCode] = useState('')
+  const [note, setNote] = useState('')
+  const [state, setState] = useState('idle')
+  const [message, setMessage] = useState('')
+  async function send() {
+    setState('sending'); setMessage('')
+    try {
+      const res = await api.post('/partners/request-code', { ...(code.trim() ? { code: code.trim() } : {}), ...(note.trim() ? { note: note.trim() } : {}) }, partnerAuth(token))
+      setMessage(res.data?.message || 'Thanks — we have your request.'); setState('sent')
+    } catch (err) {
+      setMessage(err?.response?.data?.message || 'Could not send that — please try again in a few minutes.'); setState('error')
+    }
+  }
+  if (state === 'sent') return <p role="status" className="text-sm text-green-700" data-testid="code-request-sent">{message}</p>
+  if (!open) return <button type="button" onClick={() => setOpen(true)} className="self-start text-sm text-blue-600 hover:underline" data-testid="code-request-open">Request a code of your own</button>
+  return <div className="flex flex-col gap-2 border border-gray-200 rounded-xl bg-white p-3" data-testid="code-request">
+    <Input size="sm" label="Code you'd like (optional)" value={code} onChange={e => setCode(e.target.value.toUpperCase())} maxLength={50} placeholder="e.g. MYNEWSLETTER" />
+    <Input size="sm" label="Anything we should know (optional)" value={note} onChange={e => setNote(e.target.value)} maxLength={300} />
+    {state === 'error' && <p role="alert" className="text-xs text-red-600">{message}</p>}
+    <div className="flex gap-3">
+      <button type="button" onClick={send} disabled={state === 'sending'} className="text-sm font-medium text-blue-700 hover:underline disabled:opacity-50">{state === 'sending' ? 'Sending…' : 'Send request'}</button>
+      <button type="button" onClick={() => setOpen(false)} disabled={state === 'sending'} className="text-sm text-gray-500 hover:underline">Cancel</button>
+    </div>
+  </div>
 }
 
 export default function PartnerDashboard() {
@@ -811,6 +935,7 @@ export default function PartnerDashboard() {
                       ))}
                     </div>
                   )}
+                  {data.active && <RequestCode token={token} />}
                 </section>
 
                 <section id="settings" className="scroll-mt-24 flex flex-col gap-3">
@@ -844,9 +969,11 @@ export default function PartnerDashboard() {
                   <TrendSection trend={data.trend} mix={data.attributionMix} subMix={data.subMix} currency={data.currency} />
 
                   <div>
-                    <ConversionsSection token={token} initial={data.conversions || []} total={data.conversionsTotal} currency={data.currency} payouts={data.payouts || []} />
+                    <ConversionsSection token={token} initial={data.conversions || []} total={data.conversionsTotal} currency={data.currency} payouts={data.payouts || []} codes={data.referralCodes || []} />
                   </div>
                 </section>
+
+                <AnnualStatement token={token} currency={data.currency} />
 
                 <section id="payouts" className="scroll-mt-24">
                   <div className="flex items-center justify-between mb-3">

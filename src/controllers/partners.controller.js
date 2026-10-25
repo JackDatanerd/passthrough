@@ -122,6 +122,10 @@ function voidedPairIds(ledgerRows) {
 
 // Optional minimum payout (env COMMISSION_MIN_PAYOUT_CENTS, default 0 = off).
 // Payable commission below it is "carried forward" rather than shown as ready.
+// Partners round 38: opt-in switch, off by default so nothing changes until the owner turns it on.
+function payoutRequiresCurrentTerms(env) {
+  return String((env && env.PAYOUT_REQUIRES_CURRENT_TERMS) || '').trim() === '1'
+}
 function payoutDetailsHoldHoursFor(env) {
   const { numEnv, NUMERIC_ENV } = require('../lib/numEnv')   // strict: "0.5" used to parse as 0 = hold OFF; now malformed -> 48
   return numEnv(env?.PAYOUT_DETAILS_HOLD_HOURS, 48, NUMERIC_ENV.PAYOUT_DETAILS_HOLD_HOURS)
@@ -660,9 +664,14 @@ async function loadLedgerForPartner(supabase, partnerId, columns) {
   return rows.sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : (a.id < b.id ? -1 : 1)))
 }
 
+const UNPAID_LEDGER_MAX_PAGES = 40
 async function loadUnpaidLedgerByPartner(supabase) {
   const ledgerByPartner = new Map()
   const PAGE = 1000
+  // Partners round 38: the admin list, the payout export and the hourly sweep all read EVERY unpaid row, one request per 1,000. Past the
+  // Worker's subrequest ceiling that surfaced as an opaque 500 in the middle of a payout run. The ceiling is now ours: well below the
+  // platform's, logged as it nears, and refused with a message that says what to do.
+  let pages = 0
   // Round 27 (bug): this paged with range() over a filter (payout_id is null) that SHRINKS whenever a payout is recorded, so a
   // payout landing mid-scan shifted every later page and silently skipped rows. Keyset paging on the primary key is immune.
   let last = null
@@ -677,6 +686,13 @@ async function loadUnpaidLedgerByPartner(supabase) {
     if (last) q = q.gt('id', last)
     const { data: rows, error: lerr } = await q.order('id', { ascending: true }).limit(PAGE)
     if (lerr) throw lerr
+    pages += 1
+    if (pages === Math.floor(UNPAID_LEDGER_MAX_PAGES / 2)) console.warn(`loadUnpaidLedgerByPartner: ${pages * PAGE}+ unpaid ledger rows - record payouts or move this scan into SQL before it reaches ${UNPAID_LEDGER_MAX_PAGES * PAGE}`)
+    if (pages > UNPAID_LEDGER_MAX_PAGES) {
+      const err = new Error(`More than ${UNPAID_LEDGER_MAX_PAGES * PAGE} unpaid commission rows - settle older commissions (record the pending payouts) before using this view.`)
+      err.code = 'UNPAID_LEDGER_TOO_LARGE'
+      throw err
+    }
     for (const r of rows || []) {
       if (!ledgerByPartner.has(r.partner_id)) ledgerByPartner.set(r.partner_id, [])
       ledgerByPartner.get(r.partner_id).push(r)
@@ -841,7 +857,7 @@ async function adminListPartners(ctx) {
     return camel
   })
   // Round 6: the payout-details hold the server enforces, so the "Record payout run" screen flags the same partners.
-  return ctx.json({ success: true, payoutDetailsHoldHours: payoutDetailsHoldHoursFor(ctx.env), currentTermsVersion: PARTNER_TERMS_VERSION, data: partners })
+  return ctx.json({ success: true, payoutDetailsHoldHours: payoutDetailsHoldHoursFor(ctx.env), currentTermsVersion: PARTNER_TERMS_VERSION, termsBlockPayout: payoutRequiresCurrentTerms(ctx.env), data: partners })
 }
 
 // ── Admin: single partner detail — full ledger, full payout history, and a
@@ -1315,8 +1331,12 @@ async function adminUpdateReferralCode(ctx) {
 // would silently record a payout mislabeled as USD, contaminating the
 // books. `currency` is now optional here; the server itself resolves the
 // real default in adminRecordPayout, the same way the rest of this file does.
+// Partners round 38: the settlement RPC stores amount_cents as int4; anything larger overflowed there AFTER the partner row was locked and came
+// back as a bare 500. Refused at the boundary instead.
+const MAX_PAYOUT_CENTS = 2147483647
 const recordPayoutSchema = z.object({
-  amountCents:  z.number().int().positive().optional(),
+  amountCents:  z.number().int().positive().max(MAX_PAYOUT_CENTS, 'That amount is larger than the allowed maximum.').optional(),
+  confirmedTerms: z.boolean().optional(),
   currency:     z.string().trim().regex(/^[A-Za-z]{3}$/, 'Currency must be a 3-letter code.').transform(v => v.toUpperCase()).optional(),
   payoutMethod: z.enum(['BANK', 'MOBILE_MONEY', 'PAYPAL']).optional(),
   // Shown to the partner on their dashboard. Anything internal belongs in internalNote.
@@ -1391,6 +1411,14 @@ async function recordPayoutCore(ctx, supabase, partnerId, body, reply, opts = {}
   if (!payoutMethod)
     return reply({ success: false,
       message: 'This partner has not submitted payout details yet — nothing to pay to.' }, 400)
+  // Partners round 38 (feature gap): the terms prompt on the dashboard was the ONLY consequence of not accepting a new version. With
+  // PAYOUT_REQUIRES_CURRENT_TERMS=1 a payout to a partner on an older version is refused until the admin ticks that they will be paid anyway.
+  if (payoutRequiresCurrentTerms(ctx.env) && partner.terms_version !== PARTNER_TERMS_VERSION && !body.confirmedTerms)
+    return reply({
+      success: false,
+      code: 'TERMS_NOT_ACCEPTED',
+      message: `This partner has not accepted the current partner terms (${PARTNER_TERMS_VERSION}). Ask them to accept on their dashboard, or confirm you are paying them anyway.`
+    }, 409)
   if (body.payoutMethod && body.payoutMethod !== payoutMethod)
     return reply({ success: false,
       message: `This partner's payout details are for ${payoutRails.methodLabelLower(payoutMethod)}, not ${payoutRails.methodLabelLower(body.payoutMethod)}.` }, 400)
@@ -1661,7 +1689,8 @@ const BATCH_PAYOUT_MAX = 25
 const batchPayoutSchema = z.object({
   items: z.array(z.object({
     partnerId:    z.string().regex(UUID_RE, 'Invalid partner id.'),
-    amountCents:  z.number().int().positive(),
+    amountCents:  z.number().int().positive().max(MAX_PAYOUT_CENTS, 'That amount is larger than the allowed maximum.'),
+    confirmedTerms: z.boolean().optional(),
     expectedDetailsSubmittedAt: z.string().datetime({ offset: true }).nullable(),
     confirmedWithPartner: z.boolean().optional(),
     note:         z.string().trim().max(500).optional(),
@@ -1682,6 +1711,7 @@ async function adminRecordPayoutBatch(ctx) {
         amountCents: item.amountCents,
         expectedDetailsSubmittedAt: item.expectedDetailsSubmittedAt,
         confirmedWithPartner: item.confirmedWithPartner,
+        confirmedTerms: item.confirmedTerms,
         note: item.note, internalNote: item.internalNote
       }, (json, status) => ({ status: status || 200, json }), { scope: 'ready' })
       results.push({
@@ -1739,15 +1769,7 @@ async function findPartnerByAnyToken(env, supabase, token, columns) {
 // What the payout page shows back to the link holder: names stay (so they recognise the destination), the
 // number is cut to its last four digits.
 function maskedPayoutDetailsForOwner(method, details) {
-  if (!method || !details) return null
-  const d = details
-  const last4 = v => { const raw = String(v || '').replace(/\s+/g, ''); return raw ? `\u2026${raw.slice(-4)}` : '' }
-  // Routing codes and SWIFT/BIC identify a bank, not the account, and are public: shown whole so the partner can recognise the destination.
-  if (method === 'BANK') return { bankName: d.bankName || '', accountName: d.accountName || '', accountNumber: last4(d.accountNumber),
-    ...(d.bankCountry ? { bankCountry: d.bankCountry } : {}), ...(d.routingCode ? { routingCode: d.routingCode } : {}), ...(d.swiftBic ? { swiftBic: d.swiftBic } : {}) }
-  if (method === 'MOBILE_MONEY') return { provider: d.provider || '', accountName: d.accountName || '', phoneNumber: last4(d.phoneNumber) }
-  if (method === 'PAYPAL') return { accountName: d.accountName || '', paypalEmail: payoutRails.maskedEmail(d.paypalEmail) }
-  return null
+  return payoutRails.maskedPayoutDetails(method, details)
 }
 
 async function getPartnerByToken(ctx) {
@@ -1833,8 +1855,12 @@ const last4Of = v => { const raw = String(v || '').replace(/\s+/g, ''); return r
 // whitespace removed and case folded (a re-typed "Equity  Bank" is not a change of destination).
 function normalizedPayoutDetails(method, details) {
   const out = {}
-  for (const key of Object.keys(details || {}).sort())
-    out[key] = String(details[key] ?? '').replace(/\s+/g, '').toLowerCase()
+  for (const key of Object.keys(details || {}).sort()) {
+    const raw = String(details[key] ?? '')
+    // Partners round 38: identifiers (numbers, codes, emails) ignore ALL spacing, but names are only space-COLLAPSED. Stripping every
+    // space made "Jo Hn" and "John" the same destination, so that edit was saved silently - no hold, no owner alert.
+    out[key] = (/number$|code$|email$|swiftbic$|bankcountry$/i.test(key) ? raw.replace(/\s+/g, '') : raw.trim().replace(/\s+/g, ' ')).toLowerCase()
+  }
   return JSON.stringify([method || null, out])
 }
 // Round 23: spacing-collapsed but CASE-SENSITIVE comparison, to tell a cosmetic correction from a true re-submit.
@@ -2275,6 +2301,14 @@ async function getPartnerConversions(ctx) {
     .eq('partner_id', partner.id)
   if (wantedPayoutId) ledgerQuery = UUID_RE.test(wantedPayoutId) ? ledgerQuery.eq('payout_id', wantedPayoutId) : ledgerQuery.eq('id', '00000000-0000-0000-0000-000000000000')
   else if (ctx.req.query('unpaid') === 'true') ledgerQuery = ledgerQuery.is('payout_id', null)
+  // Partners round 38: narrow by one code and/or a date range (UTC days, inclusive). A malformed value matches nothing instead of being ignored,
+  // so a CSV built from a filter can never silently contain everything.
+  const wantedCode = ctx.req.query('codeId')
+  if (wantedCode) ledgerQuery = UUID_RE.test(wantedCode) ? ledgerQuery.eq('referral_code_id', wantedCode) : ledgerQuery.eq('id', '00000000-0000-0000-0000-000000000000')
+  const dayOf = v => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) && !Number.isNaN(Date.parse(`${v}T00:00:00.000Z`)) ? String(v) : null)
+  const fromQ = ctx.req.query('from'), toQ = ctx.req.query('to')
+  if (fromQ) { const d = dayOf(fromQ); ledgerQuery = d ? ledgerQuery.gte('created_at', `${d}T00:00:00.000Z`) : ledgerQuery.eq('id', '00000000-0000-0000-0000-000000000000') }
+  if (toQ) { const d = dayOf(toQ); ledgerQuery = d ? ledgerQuery.lt('created_at', new Date(Date.parse(`${d}T00:00:00.000Z`) + 86400000).toISOString()) : ledgerQuery.eq('id', '00000000-0000-0000-0000-000000000000') }
   const [codesRes, ledgerRes] = await Promise.all([
     supabase.from('referral_codes').select('id, code').eq('partner_id', partner.id),
     ledgerQuery
@@ -2378,16 +2412,19 @@ async function trackClick(ctx) {
   // code is one that could actually apply (exists, active, unexpired, under its limit, partner active) so the
   // client keeps only those. `valid` is omitted when it can't be determined (lookup failed) — the client then
   // keeps the code, as before.
-  let valid
+  let valid, retry = false
   try {
     const looked = await lookupCode(supabase, code)
+    // Partners round 38: a code of a PAUSED partner is not applying right now but may again within the buyer's 30 days. Answering a bare
+    // "invalid" made the browser delete the visitor's stored code, so the partner lost the attribution for good. `retry` says keep it.
+    retry = !!(looked && !looked.user_id && looked.partners?.status === 'PAUSED')
     // Round 29: a personal welcome code prices for ONE account only. Called "valid" it was stored as the visitor's attribution and
     // replaced a real partner's code with one that can never apply (so nobody was credited). It is not a shareable partner link.
     valid = looked && looked.user_id ? false : isCodeUsable(looked)
   } catch (err) {
     console.error('trackClick lookup:', err.message)
   }
-  if (valid === false) return ctx.json({ success: true, valid: false })
+  if (valid === false) return ctx.json({ success: true, valid: false, ...(retry ? { retry: true } : {}) })
   // Round 29: one visitor counts once per code per 30 minutes (a script or a refresh loop used to inflate clicks and skew the
   // conversion rate). Needs the KV; without it every click counts, as before.
   let ipKey = ''
@@ -2436,6 +2473,8 @@ const applicationSchema = z.object({
   company:  z.string().max(200).optional(),
   // Round 6 (feature gap): applying now records acceptance of the program terms (/partner/terms). Required —
   // `true` or the request is refused — so no application exists without one.
+  // Partners round 38: the version of the terms the applicant was shown; a mismatch is refused so nobody accepts text they did not see.
+  termsVersion: z.string().trim().max(40).optional(),
   acceptTerms: z.literal(true, { errorMap: () => ({ message: 'You must accept the partner program terms to apply.' }) }),
   // Cloudflare Turnstile token (lib/turnstile.js). Only required when the deployment has
   // TURNSTILE_SECRET_KEY set — same opt-in as the employer-lead and auth forms.
@@ -2459,6 +2498,9 @@ const REAPPLY_COOLDOWN_DAYS = 30
 async function applyAsPartner(ctx) {
   const body = applicationSchema.parse(await ctx.req.json())
   if (body.company) return ctx.json(APPLY_OK)   // honeypot tripped — pretend success
+  if (body.termsVersion !== undefined && body.termsVersion !== PARTNER_TERMS_VERSION)
+    return ctx.json({ success: false, code: 'TERMS_VERSION_CHANGED', currentTermsVersion: PARTNER_TERMS_VERSION,
+      message: 'The partner terms were updated while this page was open. Reload to read the current version, then apply.' }, 409)
 
   // Round 5: this public form creates a DB row and an owner alert per distinct email, and the
   // alert's dedupe is per applicant address — so only the per-IP limit stood in the way of
@@ -2481,15 +2523,17 @@ async function applyAsPartner(ctx) {
     if ((recent || []).length > 0) return ctx.json(APPLY_OK)
   }
 
+  const appliedAt = new Date().toISOString()
   const { error } = await supabase.from('partner_applications').insert({
     name: body.name, email: body.email,
     audience: body.audience || null, website: body.website || null, message: body.message || null,
-    terms_accepted_at: new Date().toISOString(), terms_version: PARTNER_TERMS_VERSION
+    terms_accepted_at: appliedAt, terms_version: PARTNER_TERMS_VERSION
   })
   if (error) {
     if (error.code === '23505') return ctx.json(APPLY_OK)   // already has a pending application
     throw error
   }
+  await logTermsAcceptance(ctx, supabase, { applicationEmail: body.email.toLowerCase(), version: PARTNER_TERMS_VERSION, source: 'application', acceptedAt: appliedAt })
 
   // Round 16: both mails ran inline, so a request that stored a NEW application took visibly longer (two provider round-trips) than
   // every silent path above (existing partner, cooldown, duplicate pending) that answers at once — a timing oracle for "is this
@@ -3171,6 +3215,23 @@ async function setMyReferralAttribution(ctx) {
   return ctx.json({ success: true, data: out })
 }
 
+const acceptTermsSchema = z.object({ version: z.string().trim().max(40).optional() })
+// Partners round 38: an append-only trail of every acceptance (the partner row only keeps the LATEST one). Best-effort - a database that has
+// not run migration 0114 yet must not stop a partner accepting.
+async function logTermsAcceptance(ctx, supabase, { partnerId = null, applicationEmail = null, version, source, acceptedAt }) {
+  try {
+    let ipHash = null
+    try { ipHash = (await cryptoLib.sha256(String(clientIp(ctx) || ''))).slice(0, 32) } catch (_) { ipHash = null }
+    const ua = (ctx.req.header && ctx.req.header('user-agent')) || null
+    const { error } = await supabase.from('partner_terms_acceptances').insert({
+      partner_id: partnerId, application_email: applicationEmail, version, source, accepted_at: acceptedAt,
+      ip_hash: ipHash, user_agent: ua ? String(ua).slice(0, 300) : null
+    })
+    if (error) console.error('logTermsAcceptance:', error.message)
+  } catch (err) {
+    console.error('logTermsAcceptance unexpected:', err.message)
+  }
+}
 async function acceptPartnerTerms(ctx) {
   noStore(ctx)
   const token = partnerTokenOf(ctx)
@@ -3178,12 +3239,20 @@ async function acceptPartnerTerms(ctx) {
   const supabase = getSupabase(ctx.env)
   const { partner } = await findPartnerByAnyToken(ctx.env, supabase, token, 'id, name, email, terms_version')
   if (!partner || isRemovedEmail(partner.email)) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)
+  // Partners round 38: the click used to record whichever version was current at that moment, not the one on screen. The dashboard now
+  // sends the version it displayed; if the terms moved on since, nothing is recorded and the page reloads to show the new text.
+  const acceptBody = acceptTermsSchema.safeParse(await (typeof ctx.req.json === 'function' ? ctx.req.json().catch(() => ({})) : {}) || {})
+  const shownVersion = acceptBody.success ? acceptBody.data.version : undefined
+  if (shownVersion !== undefined && shownVersion !== PARTNER_TERMS_VERSION)
+    return ctx.json({ success: false, code: 'TERMS_VERSION_CHANGED', currentTermsVersion: PARTNER_TERMS_VERSION,
+      message: 'The partner terms were updated while this page was open. Reload to read the current version, then accept it.' }, 409)
   if (partner.terms_version === PARTNER_TERMS_VERSION)
     return ctx.json({ success: true, alreadyAccepted: true, termsVersion: PARTNER_TERMS_VERSION })
   const acceptedAt = new Date().toISOString()
   const { error } = await supabase.from('partners')
     .update({ terms_accepted_at: acceptedAt, terms_version: PARTNER_TERMS_VERSION }).eq('id', partner.id)
   if (error) throw error
+  await logTermsAcceptance(ctx, supabase, { partnerId: partner.id, version: PARTNER_TERMS_VERSION, source: 'dashboard', acceptedAt })
   // Round 10: the read-only dashboard token is enough to record a legal acceptance. The partner is told at the address on
   // file, so an acceptance they did not make is visible to them. Best-effort, after the response.
   runInBackground(ctx, emailService.sendPartnerTermsAccepted(ctx.env, supabase, partner.email, partner.name, PARTNER_TERMS_VERSION).catch(() => false))
@@ -3380,6 +3449,14 @@ async function adminReattributeSale(ctx) {
     return ctx.json({ success: false, message: 'That code belongs to a partner who is not active.' }, 409)
   if (target.id === row.referral_code_id)
     return ctx.json({ success: false, message: 'The sale already belongs to that code.' }, 409)
+  // Partners round 38: a partial-refund adjustment stays with the partner it was charged to. Moving the sale would leave that deduction
+  // behind while the new partner earned the whole commission.
+  {
+    const { data: partials, error: partialsErr } = await supabase.from('commission_ledger').select('id').eq('adjusts_ledger_id', row.id).limit(1)
+    if (partialsErr) throw partialsErr
+    if ((partials || []).length > 0)
+      return ctx.json({ success: false, code: 'HAS_PARTIAL_ADJUSTMENT', message: 'Part of this sale\u2019s commission was already taken back (a partial refund). Reverse the sale in full, or leave it where it is.' }, 409)
+  }
   const rate = Number(target.partners.commission_rate)
   if (!Number.isFinite(rate) || rate < 0 || rate > 1)
     return ctx.json({ success: false, message: 'That partner has no valid commission rate.' }, 409)
@@ -3439,18 +3516,60 @@ async function adminReattributeSale(ctx) {
   return ctx.json({ success: true, emailed, data: { toPartnerId: target.partner_id, toCodeId: target.id, commissionCents } })
 }
 
-const reverseSaleSchema = z.object({ reason: z.string().trim().min(5, 'Give a reason (at least 5 characters).').max(300) })
+// Partners round 38 (feature gap): `refundCents` takes back the commission on PART of the sale (a goodwill partial refund). Only a full refund
+// ever reversed commission automatically; a partial one was alerted and left to a hand-typed adjustment that nothing tied to the sale.
+// Without it the whole sale is reversed, exactly as before.
+const reverseSaleSchema = z.object({
+  reason: z.string().trim().min(5, 'Give a reason (at least 5 characters).').max(300),
+  refundCents: z.number().int().positive().max(MAX_PAYOUT_CENTS).optional()
+})
 async function adminReverseSale(ctx) {
   const ledgerId = ctx.req.param('ledgerId')
   const body = reverseSaleSchema.parse(await ctx.req.json().catch(() => ({})))
   const supabase = getSupabase(ctx.env)
   const { data: row, error } = await supabase.from('commission_ledger')
-    .select('id, payment_id, partner_id, kind, reverses_ledger_id, commission_amount_cents, payout_id')
+    .select('id, payment_id, partner_id, kind, reverses_ledger_id, commission_amount_cents, commission_rate, gross_amount_cents, currency, payout_id')
     .eq('id', ledgerId).eq('partner_id', ctx.req.param('id')).maybeSingle()
   if (error) throw error
   if (!row) return ctx.json({ success: false, message: 'Sale not found for this partner.' }, 404)
   if (row.kind === 'ADJUSTMENT' || row.reverses_ledger_id || !row.payment_id)
     return ctx.json({ success: false, message: 'Only a sale can be reversed. Use an adjustment for anything else.' }, 400)
+
+  if (body.refundCents !== undefined) {
+    if (body.refundCents > row.gross_amount_cents)
+      return ctx.json({ success: false, code: 'REFUND_EXCEEDS_SALE', message: `The refund (${body.refundCents}) is more than the sale (${row.gross_amount_cents}).` }, 400)
+    const takeBack = Math.round(body.refundCents * Number(row.commission_rate))
+    if (!Number.isFinite(takeBack) || takeBack <= 0)
+      return ctx.json({ success: false, code: 'NOTHING_TO_REVERSE', message: 'That refund is too small to change the commission.' }, 400)
+    const actor = ctx.get && ctx.get('user')
+    const { data: adj, error: adjErr } = await supabase.rpc('adjust_sale_commission', {
+      p_ledger_id: row.id, p_amount_cents: takeBack,
+      p_reason: `Partial refund of ${(body.refundCents / 100).toFixed(2)} ${row.currency || c.activeCurrency(ctx.env)} - commission reduced`,
+      p_created_by: actor?.id || null
+    })
+    if (adjErr) throw adjErr
+    const refusals = {
+      not_found:        [404, 'Sale not found for this partner.'],
+      not_a_sale:       [400, 'Only a sale can be adjusted.'],
+      already_reversed: [409, 'This sale was already reversed in full.'],
+      exceeds:          [409, `That would take back more than this sale still earns (${adj?.remaining_cents ?? 0} cents left).`]
+    }
+    if (!adj || adj.status !== 'ok') {
+      const [status, message] = refusals[adj?.status] || [409, 'The adjustment could not be recorded.']
+      return ctx.json({ success: false, code: String(adj?.status || 'REFUSED').toUpperCase(), message }, status)
+    }
+    await logAdminAction(ctx, supabase, 'partner.sale_partially_reversed', 'partner', row.partner_id,
+      { ledgerId: row.id, paymentId: row.payment_id, refundCents: body.refundCents, commissionCents: takeBack, remainingCents: adj.remaining_cents, reason: body.reason })
+    let partialEmailed = false
+    try {
+      const { data: partner } = await supabase.from('partners').select(`name, email, ${partnerLinks.DASHBOARD_LINK_COLUMNS}`).eq('id', row.partner_id).maybeSingle()
+      if (partner?.email && !isRemovedEmail(partner.email))
+        partialEmailed = await emailService.sendPartnerBalanceAdjusted(ctx.env, supabase, partner.email, partner.name, -takeBack,
+          row.currency || c.activeCurrency(ctx.env), adj.row.adjustment_reason, await partnerLinks.dashboardUrlOf(ctx.env, partner))
+          .then(ok => ok === true || ok === undefined).catch(() => false)
+    } catch (err) { console.error('adminReverseSale partial notify:', err.message) }
+    return ctx.json({ success: true, partial: true, commissionCents: -takeBack, remainingCents: adj.remaining_cents, emailed: partialEmailed })
+  }
 
   const { reverseCommission } = require('../services/fulfillment.service')
   const out = await reverseCommission(supabase, row.payment_id, 'ADMIN_REVERSED')
@@ -3534,16 +3653,143 @@ async function adminListUnrecordedCommissions(ctx) {
   return ctx.json({ success: true, data: missing, checked: ids.length, truncated })
 }
 
+// ── Partners round 38: partner-side statement, code requests, and the admin tax summary ────────────────────────────────
+
+const STATEMENT_YEAR_MIN = 2024
+function statementYearOf(ctx) {
+  const now = new Date().getUTCFullYear()
+  const asked = Number(ctx.req.query('year'))
+  return Number.isInteger(asked) && asked >= STATEMENT_YEAR_MIN && asked <= now ? asked : now
+}
+// The ledger rows of one UTC calendar year folded into twelve months. Sales and reversals are kept apart so a refund reads as a refund;
+// money is per currency because a partner's ledger can span more than one.
+function foldStatementMonths(rows, year) {
+  const months = Array.from({ length: 12 }, (_, i) => ({ month: i + 1, sales: 0, grossCents: 0, commissionCents: 0, reversalCents: 0, adjustmentCents: 0, netCents: 0 }))
+  for (const r of rows) {
+    const at = new Date(r.created_at)
+    if (Number.isNaN(at.getTime()) || at.getUTCFullYear() !== year) continue
+    const m = months[at.getUTCMonth()]
+    const cents = Number(r.commission_amount_cents) || 0
+    if (r.kind === 'ADJUSTMENT') m.adjustmentCents += cents
+    else if (r.reverses_ledger_id) m.reversalCents += cents
+    else { m.sales += 1; m.grossCents += Number(r.gross_amount_cents) || 0; m.commissionCents += cents }
+    m.netCents += cents
+  }
+  return months
+}
+async function getPartnerStatement(ctx) {
+  noStore(ctx)
+  const token = partnerTokenOf(ctx)
+  if (!token) return ctx.json({ success: false, message: 'Missing token.' }, 400)
+  const supabase = getSupabase(ctx.env)
+  const { partner } = await findPartnerByAnyToken(ctx.env, supabase, token, 'id, name, email, tax_country, tax_id')
+  if (!partner || isRemovedEmail(partner.email)) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)
+  const year = statementYearOf(ctx)
+  const [ledger, payoutsRes] = await Promise.all([
+    loadLedgerForPartner(supabase, partner.id, 'id, kind, reverses_ledger_id, gross_amount_cents, commission_amount_cents, currency, created_at'),
+    supabase.from('payouts').select('amount_cents, currency, paid_at, voided_at').eq('partner_id', partner.id)
+      .is('voided_at', null).gte('paid_at', `${year}-01-01T00:00:00.000Z`).lt('paid_at', `${year + 1}-01-01T00:00:00.000Z`).order('paid_at', { ascending: true })
+  ])
+  if (payoutsRes.error) throw payoutsRes.error
+  const months = foldStatementMonths(ledger, year)
+  const paidCents = (payoutsRes.data || []).reduce((sum, p) => sum + (Number(p.amount_cents) || 0), 0)
+  return ctx.json({ success: true, data: {
+    year, currency: c.activeCurrency(ctx.env), name: partner.name,
+    months, earnedCents: months.reduce((sum, m) => sum + m.netCents, 0), paidCents,
+    payoutCount: (payoutsRes.data || []).length,
+    taxCountry: partner.tax_country ?? null,
+    taxIdOnFile: !!partner.tax_id,
+    // Statement years the partner can ask for: from the first year they have any ledger row or payout.
+    firstYear: ledger.reduce((min, r) => Math.min(min, new Date(r.created_at).getUTCFullYear() || min), new Date().getUTCFullYear())
+  } })
+}
+
+// "I'd like a code of my own" - until now the dashboard said "ask us" and gave no way to. This tells the owner who wants what; it creates
+// nothing (a code carries prices the owner sets), so there is nothing here to abuse beyond one email per partner per hour.
+const requestCodeSchema = z.object({
+  code: z.string().trim().toUpperCase().regex(/^[A-Z0-9_-]{2,50}$/, 'Use 2\u201350 letters, digits, - or _.').optional().or(z.literal('').transform(() => undefined)),
+  note: z.string().trim().max(300).optional()
+})
+async function requestPartnerCode(ctx) {
+  noStore(ctx)
+  const token = partnerTokenOf(ctx)
+  if (!token) return ctx.json({ success: false, message: 'Missing token.' }, 400)
+  const body = requestCodeSchema.parse(await ctx.req.json().catch(() => ({})))
+  const supabase = getSupabase(ctx.env)
+  const { partner } = await findPartnerByAnyToken(ctx.env, supabase, token, 'id, name, email, status')
+  if (!partner || isRemovedEmail(partner.email)) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)
+  if (partner.status !== 'ACTIVE')
+    return ctx.json({ success: false, code: 'PARTNER_NOT_ACTIVE', message: 'Your partner account is not active, so new codes cannot be set up right now.' }, 409)
+  const key = `partner-code-request:${partner.id}`
+  if (await referralService.keySeen(ctx.env, key))
+    return ctx.json({ success: true, alreadyRequested: true, message: 'We already have your request. We will be in touch at the address on file.' })
+  if (body.code) {
+    const taken = await referralService.lookupCode(supabase, body.code)
+    if (taken) return ctx.json({ success: false, code: 'CODE_TAKEN', message: 'That code is already taken - try another.' }, 409)
+  }
+  await emailService.sendOwnerAlert(ctx.env, 'Partner asked for a new referral code',
+    `partner: ${partner.name} <${partner.email}>\nwanted code: ${body.code || '(no preference)'}\nnote: ${body.note || '-'}\n\nCreate it under Admin -> Partners -> (partner) -> Referral codes.`,
+    { dedupeKey: partner.id }).catch(() => {})
+  await referralService.keyMark(ctx.env, key, 3600)
+  return ctx.json({ success: true, message: 'Thanks - we have your request and will email you when the code is ready.' })
+}
+
+// Admin: what each partner was PAID in a calendar year, with the tax details collected for it - the figures a payer needs at year end.
+// Step-up protected like every other place a full tax ID is shown.
+const TAX_SUMMARY_MAX_PAYOUT_PAGES = 100
+async function adminTaxSummary(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const year = statementYearOf(ctx)
+  const totals = new Map()   // `${partner_id}|${currency}` -> { partnerId, currency, paidCents, payouts }
+  let last = null
+  for (let page = 0; page < TAX_SUMMARY_MAX_PAYOUT_PAGES; page += 1) {
+    let q = supabase.from('payouts').select('id, partner_id, amount_cents, currency')
+      .is('voided_at', null).gte('paid_at', `${year}-01-01T00:00:00.000Z`).lt('paid_at', `${year + 1}-01-01T00:00:00.000Z`)
+    if (last) q = q.gt('id', last)
+    const { data, error } = await q.order('id', { ascending: true }).limit(1000)
+    if (error) throw error
+    for (const p of data || []) {
+      if (isSystemPartnerId(p.partner_id)) continue
+      const key = `${p.partner_id}|${p.currency || ''}`
+      const t = totals.get(key) || { partnerId: p.partner_id, currency: p.currency || c.activeCurrency(ctx.env), paidCents: 0, payouts: 0 }
+      t.paidCents += Number(p.amount_cents) || 0
+      t.payouts += 1
+      totals.set(key, t)
+    }
+    if (!data || data.length < 1000) break
+    last = data[data.length - 1].id
+  }
+  const ids = [...new Set([...totals.values()].map(t => t.partnerId))]
+  const people = new Map()
+  for (let i = 0; i < ids.length; i += 100) {
+    const { data, error } = await supabase.from('partners').select('id, name, email, tax_country, tax_id').in('id', ids.slice(i, i + 100))
+    if (error) throw error
+    for (const r of data || []) people.set(r.id, r)
+  }
+  const rows = []
+  for (const t of totals.values()) {
+    const p = people.get(t.partnerId)
+    if (!p) continue
+    const removed = isRemovedEmail(p.email)
+    rows.push({ partnerId: t.partnerId, name: removed ? '(removed partner)' : p.name, email: removed ? '' : p.email, currency: t.currency,
+      paidCents: t.paidCents, payouts: t.payouts, taxCountry: p.tax_country ?? null, taxId: removed ? null : ((await fieldCrypto.openTaxId(ctx.env, p.tax_id)) || null) })
+  }
+  rows.sort((a, b) => b.paidCents - a.paidCents)
+  await logAdminAction(ctx, supabase, 'partner.tax_summary_viewed', 'partner', null, { year, partners: rows.length })
+  return ctx.json({ success: true, year, data: rows })
+}
+
 module.exports = {
   buildCyclesSummary, buildCycleTrend, buildAttributionMix, buildSubMix, sweepPayoutDue,
   adminCreatePartner, adminUpdatePartner, adminListPartners, adminGetPartner,
   adminResendPayoutLink, adminRegeneratePayoutLink, adminGetPartnerLinks, adminRecordPayout,
   adminCreateReferralCode, adminUpdateReferralCode, adminVoidPayout, adminRecordPayoutBatch,
   adminListReferralCodes, adminListPayouts, adminPartnersOverview, adminPayoutRunExport,
+  getPartnerStatement, requestPartnerCode, adminTaxSummary, foldStatementMonths,
   getPartnerByToken, submitPayoutDetails, getPartnerDashboard, getPartnerConversions, getProgramTerms, requestPayoutLink, updatePartnerNotifications, trackClick,
   applyAsPartner, adminListApplications, adminApproveApplication, adminRejectApplication,
   recoverPartnerLinks, adminAnonymizePartner,
   adminAdjustLedger, acceptPartnerTerms, adminSendTermsNotice, adminReopenApplication, adminListLedger,
-  resetMyPartnerLinks, setMyReferralAttribution, adminReverseSale, adminListUnrecordedCommissions,
+  resetMyPartnerLinks, setMyReferralAttribution, payoutDetailsEqual, adminReverseSale, adminListUnrecordedCommissions,
   adminRevealPayoutDetails, adminReattributeSale, adminConvertLegacyDashboardLinks
 }

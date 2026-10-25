@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import api from '../lib/api'
 import { useApi } from '../hooks/useApi'
@@ -26,6 +26,16 @@ export default function PartnerApply() {
   // Round 6: applying records acceptance of the program terms (/partner/terms); the server requires it.
   const [accepted, setAccepted] = useState(false)
   const [sent, setSent] = useState(false)
+  // Partners round 38: the terms version current when this page loaded. Sent with the application so the server can refuse (409) if the terms
+  // changed in between, instead of recording acceptance of text the applicant never saw. Unknown (request failed) -> not sent, as before.
+  const [termsVersion, setTermsVersion] = useState(null)
+  useEffect(() => {
+    let alive = true
+    try {
+      api.get('/partners/program').then(res => { if (alive) setTermsVersion(res?.data?.data?.termsVersion || res?.data?.termsVersion || null) }).catch(() => {})
+    } catch (_) { /* no version known: the server records the current one, as before */ }
+    return () => { alive = false }
+  }, [])
   // Cloudflare Turnstile (opt-in: renders nothing and demands nothing unless the site key is set).
   const [captcha, setCaptcha] = useState('')
   const [captchaReset, setCaptchaReset] = useState(0)
@@ -47,6 +57,7 @@ export default function PartnerApply() {
     try {
       await execute(() => api.post('/partners/apply', {
         name: name.trim(), email: email.trim(), acceptTerms: true,
+        ...(termsVersion ? { termsVersion } : {}),
         ...(website.trim() ? { website: website.trim() } : {}),
         ...(audience.trim() ? { audience: audience.trim() } : {}),
         ...(message.trim() ? { message: message.trim() } : {}),

@@ -24,6 +24,9 @@ router.get( '/dashboard',      rl.partnerRead,  c.getPartnerDashboard)
 // long history cannot spend the dashboard's read budget.
 router.get( '/conversions',    (ctx, next) => (ctx.req.query('export') === '1' || ctx.req.query('payoutId') ? rl.partnerExport : rl.partnerRead)(ctx, next), c.getPartnerConversions)
 router.post('/request-payout-link', rl.partnerLinkRequest, c.requestPayoutLink)
+// Partners round 38: the year's earnings statement, a request for a code of their own.
+router.get( '/statement',       rl.partnerExport, c.getPartnerStatement)
+router.post('/request-code',    rl.partnerWrite,  c.requestPartnerCode)
 // Round 7: "I lost my link" — mails the read-only dashboard link to the address on file (own limiter bucket).
 router.post('/recover-links', rl.partnerRecover, c.recoverPartnerLinks)
 // Round 10: "reset my links" — replaces BOTH links and mails the new ones to the address on file (never returned).
@@ -63,6 +66,7 @@ router.get(  '/payouts',                   admin, c.adminListPayouts)
 router.get(  '/ledger',                    admin, c.adminListLedger)
 // Round 23: full payout details of everyone payable now, for the payout-run CSV (step-up: the one bulk read of account numbers).
 router.get(  '/payout-export',             admin, admin.stepUp, c.adminPayoutRunExport)
+router.get(  '/tax-summary',               admin, admin.stepUp, c.adminTaxSummary)
 router.post( '/dashboard-links/convert',   admin, admin.stepUp, c.adminConvertLegacyDashboardLinks)
 // Round 18: paid sales that used a code but have no commission row (declared before '/:id').
 router.get(  '/unrecorded-commissions',     admin, c.adminListUnrecordedCommissions)

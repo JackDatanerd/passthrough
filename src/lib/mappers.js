@@ -355,7 +355,7 @@ function partnerRowToCamel(row) {
     // consistent with that.
     commissionRate:            rest.commission_rate == null ? null : Number(rest.commission_rate),
     payoutMethod:              rest.payout_method,
-    payoutDetails:             rest.payout_details,
+    payoutDetails:             require('./payoutRails').maskedPayoutDetails(rest.payout_method, rest.payout_details),   // Partners round 38: masked BY DEFAULT (last four only); a caller that must see the whole thing reads the row itself
     payoutDetailsSubmittedAt:  rest.payout_details_submitted_at,
     website:                   rest.website ?? null,
     audience:                  rest.audience ?? null,
@@ -442,6 +442,7 @@ function commissionLedgerRowToCamel(row) {
     paymentStatus:         row.payments?.status ?? null,
     // Section 8 audit: a reversal is a NEGATIVE row pointing at the row it undoes.
     reversesLedgerId:      row.reverses_ledger_id ?? null,
+    adjustsLedgerId:       row.adjusts_ledger_id ?? null,   // Partners round 38: the sale a partial-refund adjustment reduces
     reversalReason:        row.reversal_reason ?? null,
     // Migration 0069: 'SALE' (original or reversal) or 'ADJUSTMENT' (manual admin entry, no payment/code).
     kind:                  row.kind ?? 'SALE',

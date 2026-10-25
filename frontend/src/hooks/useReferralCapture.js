@@ -160,7 +160,9 @@ function trackClick(code, subOnly = false) {
   // sends none (the stored tag is only trusted when it belongs to this code).
   const rec = readStoredRecord()
   api.post('/partners/track-click', { code, ...(rec?.code === code && rec.sub ? { sub: rec.sub } : {}), ...(subOnly ? { subOnly: true } : {}) })
-    .then(res => { if (res?.data?.valid === false) rejectCode(code); else { const rec = readStoredRecord(); syncToAccount(code, rec?.code === code ? rec.capturedAt : undefined, rec?.code === code ? rec.sub : undefined) } })
+    // Partners round 38: `retry` = the code is real but its partner is paused right now. Keep it (the buyer's 30 days keep running and the
+    // partner may be back); checkout falls back to standard pricing meanwhile and the box says why.
+    .then(res => { if (res?.data?.valid === false && res?.data?.retry !== true) rejectCode(code); else if (res?.data?.valid === false) { /* keep */ } else { const rec = readStoredRecord(); syncToAccount(code, rec?.code === code ? rec.capturedAt : undefined, rec?.code === code ? rec.sub : undefined) } })
     .catch(() => {})
 }
 // The last location.search the synchronous capture looked at. It runs ONCE per distinct

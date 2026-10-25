@@ -139,6 +139,20 @@ function accountIdentifier(details) {
 // CSV hands exactly that to whoever keys it into a bank portal. Store the canonical form, and drop optional keys that arrive empty (an empty
 // string is a different key set from "absent", which the change-detection would read as an edit). The change check already ignores spaces
 // and case, so an old value stored in the loose form is quietly rewritten to the canonical one the next time it is saved unchanged.
+// What may be SHOWN of a stored payout destination: names stay (so the owner recognises it), the number is cut to its last four, an email is
+// masked. Routing codes and SWIFT/BIC identify a bank, not the account, and are public: shown whole. Lives here so the row mapper can apply
+// it by default - a mapper that returned the stored object made every new endpoint one forgotten line away from leaking account numbers.
+function maskedPayoutDetails(method, details) {
+  if (!method || !details) return null
+  const d = details
+  const last4 = v => { const raw = String(v || '').replace(/\s+/g, ''); return raw ? `\u2026${raw.slice(-4)}` : '' }
+  if (method === 'BANK') return { bankName: d.bankName || '', accountName: d.accountName || '', accountNumber: last4(d.accountNumber),
+    ...(d.bankCountry ? { bankCountry: d.bankCountry } : {}), ...(d.routingCode ? { routingCode: d.routingCode } : {}), ...(d.swiftBic ? { swiftBic: d.swiftBic } : {}) }
+  if (method === 'MOBILE_MONEY') return { provider: d.provider || '', accountName: d.accountName || '', phoneNumber: last4(d.phoneNumber) }
+  if (method === 'PAYPAL') return { accountName: d.accountName || '', paypalEmail: maskedEmail(d.paypalEmail) }
+  return null
+}
+
 function canonicalPayoutDetails(details) {
   const out = { ...details }
   if (typeof out.swiftBic === 'string') out.swiftBic = out.swiftBic.replace(/\s+/g, '').toUpperCase()
@@ -149,7 +163,7 @@ function canonicalPayoutDetails(details) {
 }
 
 module.exports = {
-  canonicalPayoutDetails, cleanBankDetails,
+  canonicalPayoutDetails, cleanBankDetails, maskedPayoutDetails,
   METHOD_LABELS, methodLabel, methodLabelLower, IBAN_COUNTRIES, LOCAL_RAIL_COUNTRIES,
   validAbaRouting, validIban, validSwiftBic, bankRailProblems, maskedEmail, accountIdentifier, EMAIL_RE
 }

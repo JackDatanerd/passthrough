@@ -621,6 +621,23 @@ async function reverseCommission(supabase, paymentId, reason) {
   // row's lock, AFTER the reversal is in — increment_referral_code_usage refuses to count a reversed sale, so
   // the two always net to zero. Best-effort: a failed release must never undo or fail the reversal.
   await releaseUsage()
+  // Partners round 38: an admin may already have taken back part of this sale (adjusts_ledger_id rows). The reversal above removes the WHOLE
+  // commission, so what the partial adjustments took is handed back here - otherwise the partner would be charged for it twice. Best-effort
+  // like releaseUsage: it must never undo or fail the reversal, and a database without migration 0114 simply has nothing to give back.
+  try {
+    const { data: partials, error: pErr } = await supabase.from('commission_ledger')
+      .select('commission_amount_cents').eq('adjusts_ledger_id', original.id)
+    if (pErr) throw pErr
+    const taken = (Array.isArray(partials) ? partials : []).reduce((sum, r) => sum + (Number(r.commission_amount_cents) || 0), 0)
+    if (taken < 0) {
+      const { error: giveBackErr } = await supabase.from('commission_ledger').insert({
+        partner_id: original.partner_id, kind: 'ADJUSTMENT', gross_amount_cents: 0, commission_rate: 0,
+        commission_amount_cents: -taken, currency: original.currency ?? null, adjusts_ledger_id: original.id,
+        adjustment_reason: 'Correction - an earlier partial refund already reduced this sale'
+      })
+      if (giveBackErr) console.error('reverseCommission partial give-back:', giveBackErr.message)
+    }
+  } catch (err) { console.error('reverseCommission partial give-back:', err.message) }
   return { reversed: true, alreadyPaidOut: !!original.payout_id, commissionCents: original.commission_amount_cents,
     partnerId: original.partner_id, currency: original.currency ?? null }
 }

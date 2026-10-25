@@ -41,7 +41,10 @@ describe('0114: sealed tax IDs fit the check', () => {
   })
   it('is safe to run twice', async () => {
     await db.exec(read('0114_tax_id_sealed.sql'))
-    expect((await q(`select value->>'version' v from system_state where key = 'schema_version'`))[0].v).toBe('114')
+    // Re-running an older migration must never move schema_version BACKWARDS: it stays at the NEWEST migration in the folder (this test
+    // loads them all, so a hard-coded 114 broke the moment 0115 existed).
+    const newest = Math.max(...files.map(f => parseInt(f.slice(0, 4), 10)))
+    expect((await q(`select value->>'version' v from system_state where key = 'schema_version'`))[0].v).toBe(String(newest))
   })
 })
 

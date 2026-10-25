@@ -77,6 +77,21 @@ function isCodeUsable(row) {
 // shape) and resolvePricesForTiers (all three tiers, one shared lookup —
 // getPricing's shape) reduce to the exact same tier-price math and can never
 // independently drift on what "the price for this code+tier" means.
+// Partners round 38: WHY a code does not apply, so the checkout can say "this code has expired" instead of a blanket "doesn't look right".
+// Never more specific than a buyer may know: a code that is not a shareable partner code reads as 'unknown'.
+function unusableReason(row) {
+  if (!row || row.user_id) return 'unknown'
+  if (!row.active) return 'inactive'
+  if (row.expires_at) {
+    const expiresMs = Date.parse(row.expires_at)
+    if (Number.isNaN(expiresMs) || expiresMs < Date.now()) return 'expired'
+  }
+  if (row.usage_limit != null && row.uses_so_far >= row.usage_limit) return 'exhausted'
+  if (row.partners?.status === 'PAUSED') return 'paused'
+  if (row.partners?.status !== 'ACTIVE') return 'inactive'
+  return null
+}
+
 function priceForResolvedCode(fixTier, env, codeRow, opts = {}) {
   const standard = c.priceForTier(fixTier, env)
   // AUDIT FIX: this used to hardcode c.CURRENCY ('USD') in all three returns
@@ -92,7 +107,7 @@ function priceForResolvedCode(fixTier, env, codeRow, opts = {}) {
   const tierPrice = codeRow?.user_id && Number.isInteger(storedTierPrice) ? c.welcomeAmountFor(standard) : storedTierPrice
 
   if (!isCodeUsable(codeRow))
-    return { amount: standard, currency, referralApplied: false, referralCode: null }
+    return { amount: standard, currency, referralApplied: false, referralCode: null, referralReason: unusableReason(codeRow) }
 
   // Self-referral guard: a partner buying with their own code would collect
   // the buyer discount AND the commission on the same sale. Silently fall
@@ -203,6 +218,7 @@ async function resolvePricesForTiers(supabase, tiers, env, rawReferralCode, opts
   // counts uses_so_far PLUS live reservations. A limited code whose last slots were held by
   // checkouts in progress therefore QUOTED its discount here and then silently charged the full
   // price at checkout. The quote now applies the same rule the claim does.
+  let heldByOthers = false
   if (codeRow && isCodeUsable(codeRow) && codeRow.usage_limit != null) {
     // PAYMENTS & PRICING ROUND 7 (bug): `live` includes the BUYER'S OWN checkout in progress. With the
     // last slot of a limited code held by their own pending payment, a reload quoted the full price
@@ -210,9 +226,12 @@ async function resolvePricesForTiers(supabase, tiers, env, rawReferralCode, opts
     // without a new claim). Their own held reservations are not competition for the slot.
     const live = Math.max(0, (await countLiveReservations(supabase, codeRow.id))
       - (opts.buyerUserId && opts.buyerScanId ? await countOwnLiveReservations(supabase, codeRow.id, opts.buyerUserId, opts.buyerScanId) : 0))
-    if ((codeRow.uses_so_far || 0) + live >= codeRow.usage_limit) codeRow = null
+    if ((codeRow.uses_so_far || 0) + live >= codeRow.usage_limit) { codeRow = null; heldByOthers = true }
   }
-  return Object.fromEntries(tiers.map(t => [t, priceForResolvedCode(t, env, codeRow, opts)]))
+  return Object.fromEntries(tiers.map(t => {
+    const out = priceForResolvedCode(t, env, codeRow, opts)
+    return [t, heldByOthers ? { ...out, referralReason: 'exhausted' } : out]
+  }))
 }
 
 // This buyer's PENDING checkouts that hold a live reservation on the code. Fails open to 0 like
@@ -791,7 +810,7 @@ async function notifyPartnerReversal(env, supabase, partnerId, commissionCents, 
 }
 
 module.exports = {
-  canonicalEmail, keySeen, keyMark, keyGet,
+  unusableReason, canonicalEmail, keySeen, keyMark, keyGet,
   notifyPartnerReversal,
   resolvePrice, resolvePricesForTiers, recordConversion, notifyConversionFailure, isCodeUsable, lookupCode,
   setUserAttribution, sweepExpiringCodes, afterConversionNotices, isSelfReferral,

@@ -24,6 +24,7 @@ beforeEach(() => { cleanup(); api.get.mockReset(); csv.calls.length = 0 })
 function mount(pageSize) {
   api.get.mockImplementation(url => {
     if (url.startsWith('/partners/dashboard')) return Promise.resolve({ data: { data: base } })
+    if (url.startsWith('/partners/statement')) return Promise.reject(new Error('no statement in this test'))   // round 38: the yearly statement loads on mount
     const offset = Number(/offset=(\d+)/.exec(url)[1])
     return Promise.resolve({ data: { data: Array.from({ length: pageSize(offset) }, (_, i) => cv(offset + i)) } })
   })

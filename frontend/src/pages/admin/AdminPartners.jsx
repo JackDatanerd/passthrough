@@ -370,22 +370,36 @@ async function exportPayoutRun(partners, holdHours = 0) {
 // amounts the list showed as ready to pay; the server re-checks each one (amount still right, payout details
 // unchanged since this list loaded, not inside the post-change hold, currency) and reports per partner, so one
 // stale row never blocks the rest and a partner is never recorded as paid for an amount that moved.
+// Partners round 38 (feature gap): what each partner was paid in a calendar year, with the tax details collected for it. Opens the full tax ID,
+// so the server asks for step-up like every other place that does.
+async function exportTaxSummary(year) {
+  const res = await api.get(`/partners/tax-summary?year=${year}`)
+  const rows = res.data.data || []
+  downloadCsv(`partner-tax-summary-${year}.csv`, [
+    ['Partner', 'Email', 'Tax country', 'Tax ID', 'Paid in year', 'Currency', 'Payouts', 'Year'],
+    ...rows.map(r => [r.name, r.email, r.taxCountry || '', csvText(r.taxId || ''), (r.paidCents / 100).toFixed(2), r.currency || '', r.payouts, year]),
+  ])
+  return rows.length
+}
 const RUN_CHUNK = 25   // the server's per-request cap
 
-function PayoutRunModal({ partners, holdHours, onClose, onDone }) {
+function PayoutRunModal({ partners, holdHours, termsBlockPayout = false, onClose, onDone }) {
   const toast = useToast()
   const rows = partners.filter(isPayable)
   const held = p => isHeld(p, holdHours)
   // A partner whose details changed inside the hold window starts unselected; ticking them requires the confirmation.
   const [selected, setSelected] = useState(() => new Set(rows.filter(p => !held(p)).map(p => p.id)))
   const [confirmed, setConfirmed] = useState(() => new Set())
+  // Partners round 38: with PAYOUT_REQUIRES_CURRENT_TERMS on, a partner on an older terms version is refused unless the admin ticks this.
+  const termsPending = p => termsBlockPayout && p.termsCurrent === false
+  const [termsOk, setTermsOk] = useState(() => new Set())
   const [sentAll, setSentAll] = useState(false)
   const [note, setNote] = useState('')
   const [running, setRunning] = useState(false)
   const [results, setResults] = useState(null)
 
   const chosen = rows.filter(p => selected.has(p.id))
-  const unconfirmedHeld = chosen.filter(p => held(p) && !confirmed.has(p.id))
+  const unconfirmedHeld = [...chosen.filter(p => held(p) && !confirmed.has(p.id)), ...chosen.filter(p => termsPending(p) && !termsOk.has(p.id))]
   const totalCents = chosen.reduce((sum, p) => sum + p.readyToPayCents, 0)
   const currency = rows[0]?.currency
   const toggle = (set, setter, id) => setter(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
@@ -397,6 +411,7 @@ function PayoutRunModal({ partners, holdHours, onClose, onDone }) {
     const items = chosen.map(p => ({
       partnerId: p.id, amountCents: p.readyToPayCents, expectedDetailsSubmittedAt: p.payoutDetailsSubmittedAt ?? null,
       ...(held(p) ? { confirmedWithPartner: true } : {}),
+      ...(termsPending(p) ? { confirmedTerms: true } : {}),
       ...(note.trim() ? { note: note.trim() } : {}),
     }))
     for (let i = 0; i < items.length; i += RUN_CHUNK) {
@@ -457,6 +472,13 @@ function PayoutRunModal({ partners, holdHours, onClose, onDone }) {
                     checked={confirmed.has(p.id)} onChange={() => toggle(confirmed, setConfirmed, p.id)} />
                 </div>
               )}
+              {termsPending(p) && selected.has(p.id) && (
+                <div className="ml-6 text-xs text-amber-800" data-testid={`terms-${p.id}`}>
+                  Has not accepted the current partner terms.
+                  <Checkbox wrapperClassName="mt-1 text-xs" label={`Pay ${p.name} anyway`}
+                    checked={termsOk.has(p.id)} onChange={() => toggle(termsOk, setTermsOk, p.id)} />
+                </div>
+              )}
               {held(p) && !selected.has(p.id) && (
                 <div className="ml-6 text-xs text-gray-400">Held — details changed {formatDate(p.payoutDetailsSubmittedAt)}.</div>
               )}
@@ -501,6 +523,7 @@ export default function AdminPartners() {
   const [showAdd, setShowAdd] = useState(false)
   const [showRun, setShowRun] = useState(false)
   const [holdHours, setHoldHours] = useState(48)
+  const [termsBlockPayout, setTermsBlockPayout] = useState(false)
   const [query, setQuery] = useState('')
   const [sortKey, setSortKey] = useState('newest')
   const [filterKey, setFilterKey] = useState('all')
@@ -512,6 +535,7 @@ export default function AdminPartners() {
       const res = await api.get('/partners')
       setPartners(res.data.data)
       if (typeof res.data.payoutDetailsHoldHours === 'number') setHoldHours(res.data.payoutDetailsHoldHours)
+      setTermsBlockPayout(res.data.termsBlockPayout === true)
     } catch (_) {
       toast({ message: 'Failed to load partners.', type: 'error' })
     } finally {
@@ -593,6 +617,16 @@ export default function AdminPartners() {
           <Button variant="secondary" disabled={payableCount === 0} onClick={() => setShowRun(true)}>
             Record payout run
           </Button>
+          <Button variant="secondary" data-testid="tax-summary"
+            onClick={async () => {
+              const year = new Date().getUTCFullYear() - (new Date().getUTCMonth() < 3 ? 1 : 0)   // January-March: last year is the one being filed
+              try {
+                const n = await exportTaxSummary(year)
+                toast({ message: `Tax summary for ${year}: ${n} partner row(s).`, type: 'success' })
+              } catch (_) { toast({ message: 'Could not build the tax summary — try again.', type: 'error' }) }
+            }}>
+            Tax summary
+          </Button>
           {termsOutstanding > 0 && (
             <Button variant="secondary" onClick={() => setConfirmTerms(true)}>
               Send terms notice ({termsOutstanding})
@@ -621,7 +655,7 @@ export default function AdminPartners() {
         message={`${legacyLinkCount} partner${legacyLinkCount === 1 ? ' is' : 's are'} still on an older stored dashboard link. Each gets a new link by email and the old one stops working (up to 25 per run).`}
         confirmLabel="Convert and email" onConfirm={convertLegacyLinks} onCancel={() => setConfirmConvert(false)} />
 
-      {showRun && <PayoutRunModal partners={partners} holdHours={holdHours} onClose={() => setShowRun(false)} onDone={load} />}
+      {showRun && <PayoutRunModal partners={partners} holdHours={holdHours} termsBlockPayout={termsBlockPayout} onClose={() => setShowRun(false)} onDone={load} />}
       <ApplicationsPanel onApproved={load} />
       <OverviewStrip />
       <PartnersLookupPanel />

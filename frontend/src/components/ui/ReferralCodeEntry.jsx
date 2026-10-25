@@ -13,6 +13,14 @@ import Button from './Button'
 //
 // Two states: a code is already applied (show the confirmation + a way to
 // change it), or no code is applied yet (show the entry field).
+// Partners round 38: the server now says WHY a code does not apply; 'unknown' (and anything older/unrecognised) keeps the generic wording.
+const REASON_MESSAGES = {
+  expired:   "That code has expired — clear it to continue at the regular price.",
+  exhausted: "That code has been used up — clear it to continue at the regular price.",
+  paused:    "That code isn't available right now — clear it to continue at the regular price.",
+  inactive:  "That code isn't active any more — clear it to continue at the regular price.",
+}
+
 export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled, collapsible = false }) {
   const [value, setValue] = useState(referralCode || '')
   const [editing, setEditing] = useState(!referralCode)
@@ -107,7 +115,7 @@ export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled, co
 
   const invalidMessage = !invalid ? undefined : selfReferral
     ? "Partner codes can't be used on your own purchases — clear it to continue at the regular price."
-    : "That code doesn't look right — check it and try again, or leave it blank."
+    : REASON_MESSAGES[pricing.referralReason] || "That code doesn't look right — check it and try again, or leave it blank."
 
   if (collapsible && !referralCode && !opened) {
     return (

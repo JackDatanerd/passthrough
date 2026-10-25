@@ -453,7 +453,11 @@ async function initializePayment(c2) {
     // reservation inserts exactly the pre-0044 row shape.
     ...(reservationId ? { referral_reservation_id: reservationId } : {}),
     // Round 10 (0076): kept only when a code actually priced this checkout.
-    ...(finalPriced.referralCode && parsed.data.referralSource ? { referral_source: parsed.data.referralSource } : {}),
+    // Partners round 38: "account" says the buyer came back through attribution remembered on their account. That is checkable here, so it
+    // is only kept when it is true; a script claiming it only skewed the partner's attribution mix. (link / typed cannot be checked.)
+    ...(finalPriced.referralCode && parsed.data.referralSource
+      ? { referral_source: parsed.data.referralSource === 'account' && String(user.referredByCode || '').toUpperCase() !== String(finalPriced.referralCode.code || '').toUpperCase()
+          ? 'link' : parsed.data.referralSource } : {}),
     // Round 16 (0093): the channel tag rides along only with a code that really priced this checkout.
     ...(finalPriced.referralCode && parsed.data.referralSub ? { referral_sub: parsed.data.referralSub } : {}),
     // Round 27 (0107): the partner's commission rate AT CHECKOUT, so a later rate change or a late reconcile retry still pays the

@@ -179,7 +179,7 @@ describe('partner dashboard', () => {
     api.post.mockResolvedValue({ data: { success: true } })
     mountDash({ termsAcceptanceRequired: true, currentTermsVersion: '2026-10' })
     fireEvent.click(await screen.findByRole('button', { name: /i accept the current terms/i }))
-    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/partners/accept-terms', {}, { headers: { 'X-Partner-Token': 'TOK' } }))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/partners/accept-terms', { version: '2026-10' }, { headers: { 'X-Partner-Token': 'TOK' } }))   // round 38: the version on screen travels with the click)
     await waitFor(() => expect(screen.queryByTestId('terms-prompt')).toBeNull())
   })
   it('keeps the prompt and says so when the save fails', async () => {
