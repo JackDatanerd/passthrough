@@ -17,7 +17,8 @@ vi.mock('../../src/components/ui/ReferralCodeEntry', () => ({ ReferralCodeEntry:
 
 const renderBanner = props => render(<MemoryRouter><FixBanner onPay={vi.fn()} onRedeemCredit={vi.fn()} {...props} /></MemoryRouter>)
 const eligible = over => ({ id: 's1', status: 'COMPLETE_PASS', fixPurchased: false, atsScore: 86, badgeEligible: true, ...over })
-const badgeBtn = () => screen.queryByTestId('alt-badge')
+// Over the bar, with a file that would verify, the credential IS the lead offer.
+const badgeBtn = () => screen.queryByRole('button', { name: /Get my Verified credential/ })
 
 describe('FixBanner — the Badge is only offered on a file that would actually be verified (G2)', () => {
   it('an uploaded file with no formatted score yet: no Credential-only button, a check button instead', async () => {

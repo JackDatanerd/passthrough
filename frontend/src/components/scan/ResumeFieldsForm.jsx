@@ -6,6 +6,11 @@ import Textarea from '../ui/Textarea'
 // the scan-result editor (ResumeDataEditor) and the saved-profile editor in Settings
 // (SavedProfileEditor). One copy, so the two can never offer different fields or drop different
 // ones. Controlled by the parent: `draft` is the parent's working copy, `setDraft` its setter.
+// Saved data can be older, hand-edited or shaped by a model; a section of the wrong shape must open as an empty one, never take the
+// page down. `asLines` shows a list of lines (or a lone string) as text, one entry per line.
+const asList = v => (Array.isArray(v) ? v.filter(x => x && typeof x === 'object') : [])
+const asLines = v => (Array.isArray(v) ? v.filter(x => typeof x === 'string') : typeof v === 'string' && v ? [v] : []).join('\n')
+
 export default function ResumeFieldsForm({ draft, setDraft }) {
   function updateField(field, value) {
     setDraft(prev => ({ ...prev, [field]: value }))
@@ -41,7 +46,7 @@ export default function ResumeFieldsForm({ draft, setDraft }) {
 
           <EditSection
             title="Experience"
-            items={draft.experience || []}
+            items={asList(draft.experience)}
             onAdd={() => addListItem('experience', { company: '', title: '', dates: '', location: '', bullets: [] })}
             onRemove={i => removeListItem('experience', i)}
             renderItem={(item, i) => (
@@ -54,7 +59,7 @@ export default function ResumeFieldsForm({ draft, setDraft }) {
                   className="sm:col-span-3"
                   rows={4}
                   placeholder="One bullet per line"
-                  value={(item.bullets || []).join('\n')}
+                  value={asLines(item.bullets)}
                   onChange={e => updateListItem('experience', i, 'bullets', e.target.value.split('\n'))}
                 />
               </div>
@@ -63,7 +68,7 @@ export default function ResumeFieldsForm({ draft, setDraft }) {
 
           <EditSection
             title="Education"
-            items={draft.education || []}
+            items={asList(draft.education)}
             onAdd={() => addListItem('education', { institution: '', degree: '', dates: '', details: '' })}
             onRemove={i => removeListItem('education', i)}
             renderItem={(item, i) => (
@@ -78,7 +83,7 @@ export default function ResumeFieldsForm({ draft, setDraft }) {
 
           <EditSection
             title="Projects"
-            items={draft.projects || []}
+            items={asList(draft.projects)}
             onAdd={() => addListItem('projects', { name: '', description: '', technologies: [], link: null })}
             onRemove={i => removeListItem('projects', i)}
             renderItem={(item, i) => (
@@ -95,7 +100,7 @@ export default function ResumeFieldsForm({ draft, setDraft }) {
 
           <EditSection
             title="Volunteer experience"
-            items={draft.volunteer || []}
+            items={asList(draft.volunteer)}
             onAdd={() => addListItem('volunteer', { organization: '', role: '', dates: '', bullets: [] })}
             onRemove={i => removeListItem('volunteer', i)}
             renderItem={(item, i) => (
@@ -107,7 +112,7 @@ export default function ResumeFieldsForm({ draft, setDraft }) {
                   className="sm:col-span-3"
                   rows={3}
                   placeholder="One bullet per line"
-                  value={(item.bullets || []).join('\n')}
+                  value={asLines(item.bullets)}
                   onChange={e => updateListItem('volunteer', i, 'bullets', e.target.value.split('\n'))}
                 />
               </div>
@@ -118,9 +123,9 @@ export default function ResumeFieldsForm({ draft, setDraft }) {
           <CsvInput label="Certifications (comma-separated)" value={draft.certifications} onChange={arr => updateField('certifications', arr)} />
           <CsvInput label="Languages (comma-separated)" value={draft.languages} onChange={arr => updateField('languages', arr)} />
           {/* One per line, not comma-separated: award and publication titles contain commas. */}
-          <Textarea label="Awards & honours (one per line)" rows={2} value={(draft.awards || []).join('\n')}
+          <Textarea label="Awards & honours (one per line)" rows={2} value={asLines(draft.awards)}
             onChange={e => updateField('awards', e.target.value.split('\n'))} />
-          <Textarea label="Publications (one per line)" rows={2} value={(draft.publications || []).join('\n')}
+          <Textarea label="Publications (one per line)" rows={2} value={asLines(draft.publications)}
             onChange={e => updateField('publications', e.target.value.split('\n'))} />
     </>
   )

@@ -119,6 +119,17 @@ describe('composer: every mode submits what it says', () => {
 })
 
 describe('composer: deep links and recovery', () => {
+  it('?from=<credential-only delivery> offers the delivered version too (its file IS the original, and the server accepts it)', async () => {
+    wire({ signedIn: true })
+    const real = api.get.getMockImplementation()
+    api.get.mockImplementation(async (url, ...a) => url === '/scan/' + SOURCE ? { data: { data: { id: SOURCE, status: 'FIX_DELIVERED', fixPurchased: true, fixTier: 'BADGE', rewrittenResumeData: null, userEditedResumeData: null, resumeOriginalName: 'old.pdf', inputMode: 'file' } } } : real(url, ...a))
+    const u = userEvent.setup(); mount('/scan?from=' + SOURCE)
+    const box = await screen.findByTestId('rescan-use-improved')
+    await u.click(box)
+    fireEvent.change(jd(), { target: { value: JD } })
+    await u.click(goBtn()); await waitFor(() => screen.getByText('RESULT'))
+    expect(lastForm.rescanVersion).toBe('delivered')
+  })
   it('?from=<scan> opens reuse with that resume chosen and sends sourceScanId', async () => {
     wire({ signedIn: true }); const u = userEvent.setup(); mount('/scan?from=' + SOURCE)
     await waitFor(() => expect(screen.getByRole('radio', { name: /old\.pdf/ })).toBeChecked())

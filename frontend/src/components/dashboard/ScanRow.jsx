@@ -7,21 +7,21 @@ import ScoreRing, { barColor } from './ScoreRing'
 import { formatDate } from '../../lib/utils'
 import { ATS_PASS_THRESHOLD, ATS_BADGE_THRESHOLD } from '../../lib/scoreThresholds'
 import { canDeleteScan, scanHeading, scanDetails } from '../../lib/scanDisplay'
-import { displayScore, scanNeed, scanMessage, stages } from '../../lib/scanNext'
+import { displayScore, scanNeed, scanMessage, passage } from '../../lib/scanNext'
+import { rewrites } from '../../lib/scanTiers'
 
 const TONE = { g: 'bg-green-100 text-green-800', a: 'bg-amber-100 text-amber-800', r: 'bg-red-100 text-red-700', b: 'bg-blue-100 text-blue-800' }
-const STAGE_NAMES = ['Scanned', 'Fixed', 'Verified']
 const STAGE_CLASS = { done: 'text-green-700 font-semibold', now: 'text-blue-700 font-semibold', todo: 'text-gray-400' }
 const RESCANNABLE = ['COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED']
 
 export function StageTracker({ scan, now }) {
-  const st = stages(scan, now)
+  const steps = passage(scan, now)
   return (
     <ol aria-label="Progress" className="flex items-center gap-1.5 text-xs">
-      {STAGE_NAMES.map((name, i) => (
-        <li key={name} className={`flex items-center gap-1.5 ${STAGE_CLASS[st[i]]}`} aria-current={st[i] === 'now' ? 'step' : undefined}>
+      {steps.map(({ name, state }, i) => (
+        <li key={name} className={`flex items-center gap-1.5 ${STAGE_CLASS[state]}`} aria-current={state === 'now' ? 'step' : undefined}>
           {i > 0 && <span aria-hidden="true" className="h-px w-3 bg-gray-300" />}
-          {st[i] === 'done' ? '✓ ' : ''}{name}{st[i] === 'done' && <span className="sr-only"> done</span>}
+          {state === 'done' ? '\u2713 ' : ''}{name}{state === 'done' && <span className="sr-only"> done</span>}
         </li>
       ))}
     </ol>
@@ -32,7 +32,7 @@ export function StageTracker({ scan, now }) {
 export function Gauge({ scan }) {
   const n = displayScore(scan)
   if (n == null || scan.status === 'ERROR') return null
-  const fixed = scan.fixPurchased && scan.fixAtsScore != null && scan.atsScore != null
+  const fixed = scan.fixPurchased && rewrites(scan.fixTier) && scan.fixAtsScore != null && scan.atsScore != null
   return (
     <div role="img" className="relative mt-1.5 h-1.5 max-w-xs rounded-full bg-gray-100"
       aria-label={`Score ${n}${fixed ? `, up from ${scan.atsScore}` : ''}. Pass line ${ATS_PASS_THRESHOLD}, credential line ${ATS_BADGE_THRESHOLD}.`}>

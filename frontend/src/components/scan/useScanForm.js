@@ -180,7 +180,8 @@ export default function useScanForm({ loadRecent = false } = {}) {
         setRescanSource({
           id: d.id,
           // A delivered paid resume can be scanned instead of the original upload.
-          hasImproved: d.status === 'FIX_DELIVERED' && !!d.fixPurchased && !!(d.userEditedResumeData || d.rewrittenResumeData),
+          // A credential-only delivery has no rewrite; its delivered file IS the original (the server accepts it, as for the recent list).
+          hasImproved: d.status === 'FIX_DELIVERED' && !!d.fixPurchased && !!(d.userEditedResumeData || d.rewrittenResumeData || d.fixTier === 'BADGE'),
           paperSize: d.paperSize || '',
           label: d.resumeOriginalName
             || (d.inputMode === 'brain_dump' ? 'the background you wrote' : d.inputMode === 'file' ? 'the resume you uploaded' : 'your saved profile'),

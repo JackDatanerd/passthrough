@@ -54,12 +54,18 @@ describe('Badge -> Fix upgrade on the delivered screen', () => {
   it('offers the upgrade to a Badge owner who has a free credit, and posts to the upgrade endpoint', async () => {
     auth.user = { id: 'u1', emailVerified: true, freeFixCredits: 2 }
     api.post.mockResolvedValue({ data: { success: true } })
-    setup(delivered())
+    setup(delivered({ fixAtsScore: 72, verificationUrl: null }))     // the credential was NOT earned: this is when the credit helps
     const panel = await screen.findByTestId('badge-upgrade')
     expect(panel).toHaveTextContent('Upgrade this resume to the full Fix')
     await userEvent.click(screen.getByRole('button', { name: /Use a free credit \(2 available\)/ }))
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/scan/s1/upgrade-to-fix'))
     await waitFor(() => expect(auth.refreshUser).toHaveBeenCalled())
+  })
+  it('shows nothing once the credential is earned, even with credits on the account (the job is done)', async () => {
+    auth.user = { id: 'u1', emailVerified: true, freeFixCredits: 3 }
+    setup(delivered({ fixAtsScore: 84 }))
+    await screen.findByText(/Passthrough Verified resume is ready/)
+    expect(screen.queryByTestId('badge-upgrade')).toBeNull()
   })
   it('shows nothing when there is no credit', async () => {
     setup(delivered())
@@ -75,7 +81,7 @@ describe('Badge -> Fix upgrade on the delivered screen', () => {
   it('surfaces the server\'s refusal and keeps the button usable', async () => {
     auth.user = { id: 'u1', emailVerified: true, freeFixCredits: 1 }
     api.post.mockRejectedValue({ response: { data: { message: 'This purchase was refunded or is under dispute, so it can no longer be changed or regenerated.' } } })
-    setup(delivered())
+    setup(delivered({ fixAtsScore: 72, verificationUrl: null }))
     await userEvent.click(await screen.findByRole('button', { name: /Use a free credit/ }))
     expect(await screen.findByText(/refunded or is under dispute/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Use a free credit/ })).toBeEnabled()

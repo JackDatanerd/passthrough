@@ -83,6 +83,16 @@ export function stages(scan, now = Date.now()) {
   return ['done', fixed, isVerified(scan) ? 'done' : 'todo']
 }
 
+// The passage a row shows, by what was bought: a credential-only purchase rewrites nothing (Scanned, Verified); a plain fix has no
+// credential to earn (Scanned, Fixed); the full fix is all three, and so is a scan nobody has paid for yet (that is what is on offer).
+export function passage(scan, now = Date.now()) {
+  const [scanned, fixed, verified] = stages(scan, now)
+  const bought = !!scan.fixPurchased || ['FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED'].includes(scan.status)
+  if (bought && scan.fixTier === 'BADGE') return [{ name: 'Scanned', state: scanned }, { name: 'Verified', state: fixed === 'now' ? 'now' : verified }]
+  if (bought && scan.fixTier === 'FIX_PLAIN') return [{ name: 'Scanned', state: scanned }, { name: 'Fixed', state: fixed }]
+  return [{ name: 'Scanned', state: scanned }, { name: 'Fixed', state: fixed }, { name: 'Verified', state: verified }]
+}
+
 // One line for the row: { tone: 'g'|'a'|'r'|'b', label, text }.
 export function scanMessage(scan, now = Date.now()) {
   const need = scanNeed(scan, now)
@@ -90,7 +100,9 @@ export function scanMessage(scan, now = Date.now()) {
   switch (need) {
     case 'wait':
       if (scan.status === 'FIX_PURCHASED') return { tone: 'b', label: 'Payment received', text: 'Starting your fix.' }
-      if (scan.status === 'FIX_GENERATING') return { tone: 'b', label: 'Writing your fix', text: `Original score ${scan.atsScore ?? '—'}. You can leave this page; we email you when it is ready.` }
+      if (scan.status === 'FIX_GENERATING') return scan.fixTier === 'BADGE'
+        ? { tone: 'b', label: 'Verifying', text: `Score ${scan.atsScore ?? ''}. You can leave this page; we email you when your link is ready.` }
+        : { tone: 'b', label: 'Writing your fix', text: `Original score ${scan.atsScore ?? '—'}. You can leave this page; we email you when it is ready.` }
       return { tone: 'b', label: 'Scanning', text: 'Usually about a minute. You can leave this page.' }
     case 'stuck':
       return { tone: 'a', label: 'Looks stuck', text: 'This has not moved for over an hour. You can delete it and scan again.' }

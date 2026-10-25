@@ -62,10 +62,16 @@ describe('result page buttons do what they say (real children)', () => {
     await user().click(within(screen.getByTestId('alt-plain')).getByRole('button'))
     await waitFor(() => expect(posted()[0]).toMatchObject({ fixTier: 'FIX_PLAIN' }))
   })
-  it('eligible: "Verified only" starts BADGE', async () => {
+  it('over the credential bar the LEAD button starts BADGE, and the rewrite is the quiet step up', async () => {
     await open(mk({ status: 'COMPLETE_PASS', atsScore: 86, passed: true, badgeEligible: true, inputMode: 'text', atsDetail: { ...detail, formattedScore: 85 } }), '/scan/s1'); initOk()
-    await user().click(within(screen.getByTestId('alt-badge')).getByRole('button'))
+    expect(screen.getByTestId('offer-card')).toHaveAttribute('data-primary', 'BADGE')
+    await user().click(screen.getByRole('button', { name: /Get my Verified credential/ }))
     await waitFor(() => expect(posted()[0]).toMatchObject({ fixTier: 'BADGE' }))
+  })
+  it('...and the step up from there starts the full FIX', async () => {
+    await open(mk({ status: 'COMPLETE_PASS', atsScore: 86, passed: true, badgeEligible: true, inputMode: 'text', atsDetail: { ...detail, formattedScore: 85 } }), '/scan/s1'); initOk()
+    await user().click(within(screen.getByTestId('alt-fix')).getByRole('button'))
+    await waitFor(() => expect(posted()[0]).toMatchObject({ fixTier: 'FIX' }))
   })
   it('a free credit is redeemed through its own call, not a payment', async () => {
     auth.user = { id: 'u1', name: 'Ada', emailVerified: true, freeFixCredits: 1 }

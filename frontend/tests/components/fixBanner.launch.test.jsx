@@ -23,33 +23,45 @@ const show = (over, props) => render(<FixBanner scan={scan(over)} onPay={vi.fn()
 describe('offer card — credential-eligible', () => {
   const pass = (over, props) => show({ status: 'COMPLETE_PASS', atsScore: 87, badgeEligible: true, ...over }, props)
 
-  it('features the full fix with a flag that does not overclaim, and says a rewrite is optional', () => {
-    pass()
-    expect(screen.getByText('Most complete')).toBeInTheDocument()
-    expect(screen.queryByText('Best for most people')).toBeNull()
-    expect(screen.getByText(/You may not need a rewrite/)).toBeInTheDocument()
-  })
-
-  it('still sells the credential on its own, and the plain fix, as quiet lines', () => {
+  it('leads with the credential: nothing needs rewriting, so the cheapest plan that does the job comes first', () => {
     const onPay = vi.fn()
     pass({}, { onPay })
-    fireEvent.click(within(screen.getByTestId('alt-badge')).getByRole('button'))
+    expect(screen.getByTestId('offer-card')).toHaveAttribute('data-primary', 'BADGE')
+    expect(screen.getByText('Best for your score')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Get your Verified credential' })).toBeInTheDocument()
+    expect(screen.getByTestId('offer-price')).toHaveTextContent('$9')
+    expect(screen.getByText(/No rewrite is needed to earn the credential/)).toBeInTheDocument()
+    expect(screen.getByText('Nothing is rewritten. Your 87 stays your 87.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Get my Verified credential/ }))
     expect(onPay).toHaveBeenCalledWith('BADGE')
-    expect(within(screen.getByTestId('alt-badge')).getByRole('button')).toHaveTextContent('$9')
-    expect(screen.getByTestId('alt-plain')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Fix & verify my resume/ })).toBeNull()
   })
 
-  it('does not sell the credential alone when the file we would deliver scores under the bar', () => {
+  it('the rewrite is the quiet step up, and the plain fix stays available; the guarantee is the credential\'s own', () => {
+    const onPay = vi.fn()
+    pass({}, { onPay })
+    fireEvent.click(within(screen.getByTestId('alt-fix')).getByRole('button'))
+    expect(onPay).toHaveBeenCalledWith('FIX')
+    expect(screen.getByTestId('alt-fix')).toHaveTextContent('Want it rewritten too?')
+    fireEvent.click(within(screen.getByTestId('alt-plain')).getByRole('button'))
+    expect(onPay).toHaveBeenCalledWith('FIX_PLAIN')
+    expect(screen.getByTestId('fix-guarantee')).toHaveTextContent(/only issued if the file we deliver scores 80 or more/)
+    expect(screen.getByTestId('fix-guarantee')).toHaveTextContent(/not a refund/)
+  })
+
+  it('does NOT lead with the credential when the file we would deliver scores under the bar: the full fix leads', () => {
     pass({ inputMode: 'file', atsDetail: { formattedScore: 70 } })
-    expect(screen.queryByTestId('alt-badge')).toBeNull()
+    expect(screen.getByTestId('offer-card')).toHaveAttribute('data-primary', 'FIX')
+    expect(screen.getByRole('button', { name: /Fix & verify my resume/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Get my Verified credential/ })).toBeNull()
     expect(screen.getByTestId('formatted-low')).toBeInTheDocument()
   })
 
-  it('asks for the formatted-file check first when it is not known yet', () => {
+  it('asks for the formatted-file check first when it is not known yet (the full fix leads until the credential is confirmed)', () => {
     const onCheckFormatted = vi.fn()
     pass({ inputMode: 'file' }, { onCheckFormatted })
+    expect(screen.getByTestId('offer-card')).toHaveAttribute('data-primary', 'FIX')
     fireEvent.click(screen.getByRole('button', { name: /Check the formatted file/ }))
     expect(onCheckFormatted).toHaveBeenCalled()
   })
 })
-

@@ -32,6 +32,8 @@ import Button from '../components/ui/Button'
 import { statusLabel, formatDate } from '../lib/utils'
 import { scanHeading, scanSource } from '../lib/scanDisplay'
 import ScanStrip from '../components/scan/ScanStrip'
+import SectionBoundary from '../components/ui/SectionBoundary'
+import { rewrites, credentialEarned } from '../lib/scanTiers'
 import CopyButton from '../components/ui/CopyButton'
 import ButtonLink from '../components/ui/ButtonLink'
 import { ATS_BADGE_THRESHOLD, MAX_FIX_RETRIES } from '../lib/scoreThresholds'
@@ -948,7 +950,11 @@ export default function ScanResult() {
                 {delivered && (
                   <div className="flex flex-wrap items-center gap-3 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800" role="status">
                     <span aria-hidden="true">✓</span>
-                    <span><b className="text-green-900">Your fixed resume scores {scan.fixAtsScore ?? '—'}.</b> It's ready{scan.verificationUrl ? ', with your Verified link' : ''}.</span>
+                    {rewrites(scan.fixTier)
+                      ? <span><b className="text-green-900">Your fixed resume scores {scan.fixAtsScore ?? '—'}.</b> It's ready{scan.verificationUrl ? ', with your Verified link' : ''}.</span>
+                      : credentialEarned(scan)
+                        ? <span><b className="text-green-900">Your Verified resume is ready.</b> Your score of {scan.fixAtsScore} now carries a link employers can check.</span>
+                        : <span><b className="text-green-900">Your files are ready.</b> The formatted file scored {scan.fixAtsScore ?? '—'}, under the {ATS_BADGE_THRESHOLD} the credential needs.</span>}
                     <ButtonLink to={`/scan/${id}/resume${search}`} size="sm" className="ml-auto">Open it</ButtonLink>
                   </div>
                 )}
@@ -1103,7 +1109,7 @@ export default function ScanResult() {
             {current === 'why' && (
               <section data-testid="tab-why" aria-label="Why" className="flex flex-col gap-4">
                 {purchased && (
-                  <p className="text-sm text-gray-500">This is your original scan. Your fixed resume is on <Link to={tabPath('resume')} className="font-semibold text-blue-700 underline underline-offset-2">Your resume</Link>.</p>
+                  <p className="text-sm text-gray-500">This is your original scan. Your {rewrites(scan.fixTier) ? 'fixed' : 'Verified'} resume is on <Link to={tabPath('resume')} className="font-semibold text-blue-700 underline underline-offset-2">Your resume</Link>.</p>
                 )}
                 <div className="grid gap-4 lg:grid-cols-[1.05fr_.95fr] lg:items-start">
                   <div className="flex min-w-0 flex-col gap-4">
@@ -1118,11 +1124,13 @@ export default function ScanResult() {
             {(scan.inputMode === 'file' || (['brain_dump', 'saved_profile'].includes(scan.inputMode) && scan.originalResumeData)) &&
               !scan.fixPurchased &&
               ['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status) && (
-                <ResumeDataEditor
-                  scan={scan}
-                  anonToken={anonToken}
-                  onUpdated={updated => setScan(prev => ({ ...prev, ...updated }))}
-                />
+                <SectionBoundary name="resume-data-editor" resetKey={scan.id} message="The resume editor could not load.">
+                  <ResumeDataEditor
+                    scan={scan}
+                    anonToken={anonToken}
+                    onUpdated={updated => setScan(prev => ({ ...prev, ...updated }))}
+                  />
+                </SectionBoundary>
             )}
                     <JobDescriptionPanel scan={scan} />
                   </div>
@@ -1142,10 +1150,14 @@ export default function ScanResult() {
             {rewriting && (
               <div className="flex flex-col gap-4" data-testid="rewriting-focus">
                 <div>
-                  <h2 className="text-xl font-bold text-gray-900">We're rewriting your resume</h2>
+                  <h2 className="text-xl font-bold text-gray-900">{rewrites(scan.fixTier) ? "We're rewriting your resume" : "We're verifying your resume"}</h2>
                   <p className="mt-1 text-sm text-gray-600">
-                    {typeof scan.atsScore === 'number' && <>You started at {scan.atsScore}/100. </>}
-                    We're reworking it for this job and scoring the real file.{!scan.fixRetryCount && ' Your cover letter unlocks as soon as it\'s done.'}
+                    {typeof scan.atsScore === 'number' && (rewrites(scan.fixTier)
+                      ? <>You started at {scan.atsScore}/100. </>
+                      : <>You scored {scan.atsScore}/100, and nothing is rewritten. </>)}
+                    {rewrites(scan.fixTier)
+                      ? <>We're reworking it for this job and scoring the real file.{!scan.fixRetryCount && " Your cover letter unlocks as soon as it's done."}</>
+                      : <>We're formatting your existing content, scoring the real file and issuing your Verified link. Your cover letter unlocks as soon as it's done.</>}
                   </p>
                 </div>
                 {/* "Already paid" and similar answers arrive as the payment message; the page has moved on to the rewrite, so they read as a note. */}
@@ -1275,7 +1287,7 @@ export default function ScanResult() {
                     )}
                   </>
                 )}
-                {scan.fixTier === 'BADGE' && (user?.freeFixCredits || 0) > 0 && (
+                {scan.fixTier === 'BADGE' && !credentialEarned(scan) && (user?.freeFixCredits || 0) > 0 && (
                   <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3" data-testid="badge-upgrade">
                     <p className="text-sm font-medium text-blue-900">Upgrade this resume to the full Fix</p>
                     <p className="text-sm text-blue-800 mt-0.5">
@@ -1386,10 +1398,12 @@ export default function ScanResult() {
             {scan.status === 'FIX_DELIVERED' && user && scan.userId && user.id === scan.userId &&
               !(scan.verificationStatus === 'REVOKED' && scan.verificationRevokedReason !== 'OWNER') && (
               <>
-                <DeliveredResumeEditor
-                  scan={scan}
-                  onSaved={async updated => { setScan(prev => ({ ...prev, ...updated })); await fetchScan() }}
-                />
+                <SectionBoundary name="delivered-resume-editor" resetKey={scan.id} message="The resume editor could not load.">
+                  <DeliveredResumeEditor
+                    scan={scan}
+                    onSaved={async updated => { setScan(prev => ({ ...prev, ...updated })); await fetchScan() }}
+                  />
+                </SectionBoundary>
               </>
             )}
                       </div>

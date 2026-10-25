@@ -3,6 +3,7 @@ import Badge from '../ui/Badge'
 import Alert from '../ui/Alert'
 import PromoCountdown from '../ui/PromoCountdown'
 import { usePricing, fmtPrice } from '../../hooks/usePricing'
+import { recommendPlan } from '../../lib/scanTiers'
 import { ATS_BADGE_THRESHOLD, MAX_FIX_RETRIES } from '../../lib/scoreThresholds'
 import { ReferralCodeEntry, PricingFailedNotice } from '../ui/ReferralCodeEntry'
 import NewTag from '../ui/NewTag'
@@ -122,18 +123,32 @@ export default function FixBanner({
 
   // Short form of the guarantee, as the last bullet of what the purchase includes.
   const retriesLine = `${MAX_FIX_RETRIES} free retries. Still short? You get a free fix credit.`
-  const includes = [
+  const includesFix = [
     [false, 'AI rewrite using only your real experience'],
     [false, 'ATS-ready .docx and PDF'],
     [false, 'Passthrough Verified link & badge'],
     [true, coverLetterText(pricing, 'FIX')],
     [false, retriesLine],
   ]
+  // The credential-only plan rewrites nothing: it formats what is already there, scores the real file, and issues the link.
+  const includesBadge = [
+    [false, 'Passthrough Verified link & badge'],
+    [false, 'An integrity check employers can run'],
+    [false, 'ATS-ready .docx and PDF of your existing resume'],
+    [true, coverLetterText(pricing, 'BADGE')],
+    [false, `Nothing is rewritten. Your ${score} stays your ${score}.`],
+  ]
 
-  const guarantee = (
+  const guaranteeFix = (
     <p className="mt-2 text-xs text-gray-600" data-testid="fix-guarantee">
       <span className="font-semibold text-gray-800">If the fixed version still falls short, you don't pay again.</span>{' '}
       Every fix includes {MAX_FIX_RETRIES} free retries. If it still misses, you get a free fix credit. This is a credit, not a refund.
+    </p>
+  )
+  const guaranteeBadge = (
+    <p className="mt-2 text-xs text-gray-600" data-testid="fix-guarantee">
+      <span className="font-semibold text-gray-800">The credential is only issued if the file we deliver scores {ATS_BADGE_THRESHOLD} or more.</span>{' '}
+      If it doesn't, your files carry the plain Scan Report wording and you get a free fix credit. This is a credit, not a refund.
     </p>
   )
 
@@ -152,21 +167,30 @@ export default function FixBanner({
   )
 
   const eligible = badgeEligible
+  // The plan this scan should lead with (lib/scanTiers.js, one rule for every surface that recommends one).
+  const plan = recommendPlan({ eligible, badgeSafe, provisional })
+  const primary = plan.primary
+  const isBadge = primary === 'BADGE'
+  const includes = isBadge ? includesBadge : includesFix
+  const guarantee = isBadge ? guaranteeBadge : guaranteeFix
   return (
-    <section data-testid="offer-card" className="rounded-xl border border-blue-300 bg-blue-50 p-5 shadow-sm">
+    <section data-testid="offer-card" data-primary={primary} className="rounded-xl border border-blue-300 bg-blue-50 p-5 shadow-sm">
       {showCountdown ? (
         <PromoCountdown endsAt={pricing.promoEndsAt} clockOffsetMs={clockOffsetMs} label={pricing.promoLabel} onExpire={refreshPricing} className="mb-2" />
       ) : (
-        <Badge variant="amber" className="mb-2">{eligible ? 'Most complete' : 'Best for most people'}</Badge>
+        <Badge variant="amber" className="mb-2">{isBadge ? 'Best for your score' : 'Best for most people'}</Badge>
       )}
-      <h3 className="text-lg font-semibold text-gray-900">Fix &amp; verify my resume</h3>
+      <h3 className="text-lg font-semibold text-gray-900">{isBadge ? 'Get your Verified credential' : 'Fix & verify my resume'}</h3>
       <div className="mt-2 text-3xl font-bold leading-none text-gray-900" data-testid="offer-price">
-        <PriceTag tier="FIX" byTier={byTier} currency={currency} struckAfter />
+        <PriceTag tier={primary} byTier={byTier} currency={currency} struckAfter />
       </div>
 
       {eligible && (
         <p className="mt-3 text-sm text-gray-700">
-          <b className="text-green-800">Your resume passed ATS and is Verified-eligible.</b> You may not need a rewrite. The credential lets an employer check your score and confirm the file hasn't been changed. A rewrite is optional.
+          <b className="text-green-800">Your resume passed ATS and is Verified-eligible.</b>{' '}
+          {isBadge
+            ? 'No rewrite is needed to earn the credential. It lets an employer check your score and confirm the file has not been changed.'
+            : 'You may not need a rewrite. The credential lets an employer check your score and confirm the file has not been changed. A rewrite is optional.'}
         </p>
       )}
       {!eligible && !provisional && gap > 0 && (
@@ -214,13 +238,13 @@ export default function FixBanner({
           </Button>
         </>
       )}
-      <Button onClick={() => onPay('FIX')} size="lg" className="w-full" disabled={payLoading} loading={payingTier === 'FIX'}>
-        Fix &amp; verify my resume <span aria-hidden="true">{'\u2192'}</span>
+      <Button onClick={() => onPay(primary)} size="lg" className="w-full" disabled={payLoading} loading={payingTier === primary}>
+        {isBadge ? 'Get my Verified credential' : 'Fix & verify my resume'} <span aria-hidden="true">{'\u2192'}</span>
       </Button>
-      <p className="mt-2 text-center text-xs text-gray-500">You've seen the full breakdown free. Pay only for the fix.</p>
+      <p className="mt-2 text-center text-xs text-gray-500">{isBadge ? "You've seen the full breakdown free. Pay only for the credential." : "You've seen the full breakdown free. Pay only for the fix."}</p>
 
+      {isBadge && <Alt lead="Want it rewritten too?" tier="FIX" label="Fix & verify" testid="alt-fix" />}
       <Alt lead="Just the rewrite, no Verified?" tier="FIX_PLAIN" label="Fix only" testid="alt-plain" />
-      {eligible && badgeSafe && <Alt lead="Just the credential, no rewrite?" tier="BADGE" label="Verified only" testid="alt-badge" />}
 
       {showWriterCompare && (
         <div className="mt-3 flex flex-wrap gap-x-3.5 gap-y-1 border-t border-gray-200 pt-2.5 text-xs text-gray-500" data-testid="writer-compare" aria-label="How it compares">
