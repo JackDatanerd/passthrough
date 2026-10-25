@@ -125,9 +125,33 @@ const TENURE_RE = /\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|e
 // words around it say it is the posting's requirement.
 const REQ_BEFORE = /(?:posting|description|advert|advertisement|listing|role|position|job|you|your\s+(?:team|company|organi[sz]ation)|employer)\s+(?:\w+\s+){0,3}?(?:asks?|requires?|required|requiring|seeks?|seeking|wants?|lists?|calls?\s+for|looking\s+for|expects?|needs?|specifi(?:es|ed))\s+(?:for\s+)?(?:at\s+least\s+|a\s+minimum\s+of\s+|minimum\s+of\s+)?$/i
 const REQ_AFTER  = /^\s*(?:of\s+)?(?:\w+\s+){0,3}?(?:that\s+)?(?:you|your\s+(?:posting|team))\s+(?:ask|require|list|seek|specif)/i
+// SCAN/ATS ROUND 23 (bug, reproduced): a tenure claim written without a digit or a "N years" phrase was invisible. "Analyst with over a
+// decade of experience" on a 3-year career passed the summary guard and the cover-letter guard alike ("two decades" was only
+// stopped by accident, as a stray "2"). A decade claim is read as the years it stands for: a / one decade 10, half a decade 5, two
+// decades 20, "3 decades" 30, a quarter-century 25, "several / multiple / many decades" at least 20, "decade-long" 10. A decade
+// that is not a claim about the person ("over the past decade", "a decade ago", "this decade") is left alone.
+const DECADE_N = { a: 10, one: 10, two: 20, three: 30, four: 40, five: 50, several: 20, multiple: 20, many: 20 }
+const DECADE_RE = /\b(?:(half\s+a|a|one|two|three|four|five|several|multiple|many|\d{1,2})[\s-]+decades?(?:[\s-]+long)?|(quarter[\s-]century)|(decade[\s-]long)|(decades(?=\s+of\s+(?:experience|expertise|leadership|service))))\b(?!\s+(?:ago|earlier|later|from now|of\s+(?:growth|change|decline|progress|innovation|history|war|peace)))/gi
+const DECADE_NOT_ABOUT_PERSON = /\b(?:past|last|this|previous|next|coming|every|each|that|the|those|these)\s*$/i
+function decadeMatches(src) {
+  const out = []
+  for (const m of src.matchAll(DECADE_RE)) {
+    if (DECADE_NOT_ABOUT_PERSON.test(src.slice(Math.max(0, m.index - 12), m.index))) continue
+    let n
+    if (m[2]) n = 25
+    else if (m[3]) n = 10
+    else if (m[4]) n = 20
+    else {
+      const w = m[1].toLowerCase().replace(/\s+/g, ' ')
+      n = w === 'half a' ? 5 : /^\d/.test(w) ? parseInt(w, 10) * 10 : DECADE_N[w]
+    }
+    if (Number.isFinite(n)) out.push({ index: m.index, length: m[0].length, ns: [n] })
+  }
+  return out
+}
 function tenureClaims(text, { posting = null } = {}) {
   const src = String(text || '')
-  const out = []
+  const found = []
   for (const m of src.matchAll(TENURE_RE)) {
     const ns = []
     for (const g of [m[1], m[2]]) {
@@ -135,15 +159,24 @@ function tenureClaims(text, { posting = null } = {}) {
       const n = /^\d/.test(g) ? parseInt(g, 10) : WORD_NUM[g.toLowerCase()]
       if (Number.isFinite(n)) ns.push(n)
     }
+    found.push({ index: m.index, length: m[0].length, ns })
+  }
+  found.push(...decadeMatches(src))
+  const out = []
+  for (const m of found) {
+    const { ns } = m
     if (posting && ns.length && ns.every(n => posting.has(n))
-        && (REQ_BEFORE.test(src.slice(Math.max(0, m.index - 90), m.index)) || REQ_AFTER.test(src.slice(m.index + m[0].length, m.index + m[0].length + 70)))) continue
+        && (REQ_BEFORE.test(src.slice(Math.max(0, m.index - 90), m.index)) || REQ_AFTER.test(src.slice(m.index + m.length, m.index + m.length + 70)))) continue
     out.push(...ns)
   }
   return out
 }
 // The text with its tenure phrases blanked, so the generic "no invented figure" check does not see them twice.
 function withoutTenureClaims(text) {
-  return String(text || '').replace(TENURE_RE, ' ')
+  return String(text || '').replace(TENURE_RE, ' ').replace(DECADE_RE, (all, ...rest) => {
+    const idx = rest[rest.length - 2], src = rest[rest.length - 1]
+    return DECADE_NOT_ABOUT_PERSON.test(String(src).slice(Math.max(0, idx - 12), idx)) ? all : ' '
+  })
 }
 
 // A claim is honest when it does not exceed the span the dates support (or the person wrote it themselves).
@@ -165,7 +198,9 @@ const EDU_HEADING = /^\s*(?:education(?:\s*(?:and|&)\s*(?:training|certification
 const OTHER_HEADING = /^\s*(?:(?:professional\s+)?summary|profile|(?:work|professional|relevant|employment|career)\s+(?:experience|history)|experience|employment|projects?|(?:technical\s+)?skills|certifications?|licen[sc]es|volunteer(?:ing)?(?:\s+experience)?|awards?|publications?|languages?|interests|references|additional\s+information)\s*:?\s*$/i
 // "Industry Experience", "Clinical Background", "Career Highlights", "Employment Record": a short line that is only a work-section noun phrase.
 const WORK_HEADING = /^\s*(?:[A-Za-z&/'’-]+\s+){0,3}(?:experience|history|background|highlights|record|appointments|employment|positions|internships?|career)\s*:?\s*$/i
-const DEGREE_WORDS = /\b(?:bachelor(?:['’]s)?|b\.?sc|bsc|b\.?a\.?\b|m\.?sc|msc|mba|phd|ph\.d|diploma|gpa|a-levels?|gcses?|coursework|dissertation|thesis|master['’]s|masters?\s+(?:of|degree|in)|graduated|graduation|undergraduate|postgraduate)\b/i
+// SCAN/ATS ROUND 23: the common Commonwealth / UK abbreviations (BCom, BBA, LLB, MPhil, HND ...) are education lines too - a "BCom 2011 - 2015"
+// line with no school word was counted as 4 years of WORK. Ordinary English words ("bed", "med", "dba") are left out on purpose.
+const DEGREE_WORDS = /\b(?:bachelor(?:['’]s)?|b\.?sc|bsc|b\.?a\.?\b|m\.?sc|msc|mba|phd|ph\.d|bcom|b\.com|mcom|m\.com|bba|llb|ll\.b|llm|ll\.m|mphil|m\.phil|mfa|hnd|bpharm|b\.pharm|bsn|bca|barch|msw|edd|diploma|gpa|a-levels?|gcses?|coursework|dissertation|thesis|master['’]s|masters?\s+(?:of|degree|in)|graduated|graduation|undergraduate|postgraduate)\b/i
 const SCHOOL_WORDS = /\b(?:universit(?:y|é|à)|college|school|academy|institute|degree|graduate)\b/i
 // A job-title word: a line with a school word AND one of these is a post held at (or about) a school, not a place studied at.
 const TITLE_WORDS = /\b(?:teacher|lecturer|professor|tutor|instructor|trainee|engineer|analyst|manager|officer|assistant|developer|coordinator|administrator|consultant|director|specialist|associate|intern|supervisor|principal|head|dean|librarian|counsell?or|nurse|clerk|technician|accountant|designer|researcher|fellow)\b/i

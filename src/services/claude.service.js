@@ -1041,13 +1041,19 @@ function detectFabrication(orig, rewritten) {
     if (!matches.length) continue
     if (!matches.some(m => experienceOk(e, m))) return true
   }
+  // SCAN/ATS ROUND 23 (bug, reproduced): only a handful of abbreviations were known, so an original "BCom" / "BBA" / "LLB" / "BEd" /
+  // "MPhil" / "MPH" / "EdD" / "HND" had NO level, and an honest expansion ("BCom" -> "Bachelor of Commerce") read as an invented
+  // degree level - FABRICATION_DETECTED on a faithful rewrite, the paid fix failing, over and over (these are everyday degrees in
+  // the Kenyan / UK / Indian market). The flip side was a hole: "LLB" -> "LLM" was a real upgrade nothing could see. The common
+  // abbreviations of every level are known now. Words that are also ordinary English ("be", "bit", "march") are only read in
+  // their upper-case abbreviation form, from the text as written.
   const degreeLevels = s => {
-    const t = String(s || '').toLowerCase(), out = new Set()
-    if (/\b(?:ph\.?d|doctorate|doctor of)\b/.test(t)) out.add('doctorate')
-    if (/\b(?:masters?|m\.?sc|mba|m\.?eng|m\.?s\.?|m\.?a\.?)\b/.test(t)) out.add('masters')
-    if (/\b(?:bachelors?|b\.?sc|b\.?eng|b\.?tech|b\.?s\.?|b\.?a\.?)\b/.test(t)) out.add('bachelors')
+    const raw = String(s || ''), t = raw.toLowerCase(), out = new Set()
+    if (/\b(?:ph\.?d|d\.?phil|doctorate|doctor of|ed\.?d|d\.?b\.?a|d\.?n\.?p|psy\.?d)\b/.test(t)) out.add('doctorate')
+    if (/\b(?:masters?|m\.?sc|mba|m\.?eng|m\.?s\.?|m\.?a\.?|m\.?phil|mph|m\.?ed|mfa|ll\.?m|mres|m\.?com|msw|mpa|m\.?tech|m\.arch|m\.?pharm|msn|m\.?c\.?a)\b/.test(t)) out.add('masters')
+    if (/\b(?:bachelors?|b\.?sc|b\.?eng|b\.?tech|b\.?s\.?|b\.?a\.?|bba|b\.b\.a|b\.?com|b\.?ed|ll\.?b|bca|b\.?pharm|bsn|bfa|b\.?arch|bsw|bcs|bpa)\b/.test(t) || /\b(?:BIT|B\.I\.T|BE|B\.E)\b\.?/.test(raw)) out.add('bachelors')
     if (/\bassociate/.test(t) || /\ba\.?a\.?(?:s)?\b/.test(t)) out.add('associate')   // A.A. / A.A.S. are associate degrees
-    if (/\bdiploma\b/.test(t)) out.add('diploma')
+    if (/\b(?:diploma|hnd|pgdip|pgd)\b/.test(t)) out.add('diploma')
     return out
   }
   const educationOk = (e, m) => {
@@ -1297,18 +1303,23 @@ function sanitizeResumeShape(r) {
   const nul  = v => { const s = str(v).trim(); return s || null }
   const list = v => Array.isArray(v) ? v.filter(x => typeof x === 'string' && x.trim()).map(x => x.trim())
     : (typeof v === 'string' && v.trim() ? v.split(/[,;\n]/).map(x => x.trim()).filter(Boolean) : [])
+  // SCAN/ATS ROUND 23 (bug, reproduced): a bullet the model returned as ONE STRING was split on commas like a skills list, so
+  // "Cut reporting time by 40%, saving the team $1,200 a month" shipped as four fragments ("...saving the team $1", "200 a month").
+  // A bullet is a sentence: a string splits only on line breaks / bullet glyphs, never on a comma or semicolon.
+  const lines = v => Array.isArray(v) ? list(v)
+    : (typeof v === 'string' && v.trim() ? v.split(/\r?\n|[\u2022\u25cf\u25aa\u25e6]/).map(x => x.replace(/^\s*[-*\u2013\u2014]\s+/, '').trim()).filter(Boolean) : [])
   const objs = v => (Array.isArray(v) ? v.filter(x => x && typeof x === 'object' && !Array.isArray(x)) : [])
   return {
     name: str(r.name), email: str(r.email), phone: nul(r.phone), location: nul(r.location),
     linkedin: nul(r.linkedin), portfolio: nul(r.portfolio), summary: nul(r.summary),
-    experience: objs(r.experience).map(e => ({ company: str(e.company), title: str(e.title), dates: str(e.dates), location: nul(e.location), bullets: list(e.bullets) })),
+    experience: objs(r.experience).map(e => ({ company: str(e.company), title: str(e.title), dates: str(e.dates), location: nul(e.location), bullets: lines(e.bullets) })),
     education:  objs(r.education).map(e => ({ institution: str(e.institution), degree: str(e.degree), dates: str(e.dates), details: nul(e.details) })),
     skills: list(r.skills),
     certifications: list(r.certifications),
     languages: list(r.languages),
     awards: list(r.awards),
     publications: list(r.publications),
-    volunteer: objs(r.volunteer).map(v => ({ organization: str(v.organization), role: str(v.role), dates: str(v.dates), bullets: list(v.bullets) })),
+    volunteer: objs(r.volunteer).map(v => ({ organization: str(v.organization), role: str(v.role), dates: str(v.dates), bullets: lines(v.bullets) })),
     projects: objs(r.projects).map(p => ({ name: str(p.name), description: str(p.description), technologies: list(p.technologies), link: nul(p.link) })),
   }
 }
