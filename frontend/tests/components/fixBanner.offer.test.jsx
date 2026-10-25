@@ -54,9 +54,17 @@ describe('offer card — below the credential bar', () => {
     expect(screen.getByText(/2 free retries\. Still short\? You get a free fix credit\./)).toBeInTheDocument()
   })
 
-  it('says a provisional score is provisional', () => {
+  it('does not repeat the provisional notice (the page already shows its own, with the re-check button) and drops the gap claim', () => {
     show({}, { provisional: true })
-    expect(screen.getByTestId('provisional-note')).toHaveTextContent(/provisional/)
+    expect(screen.queryByTestId('provisional-note')).toBeNull()
+    expect(screen.queryByText(/provisional/i)).toBeNull()
+    expect(screen.queryByText(/points short of the 80/)).toBeNull()      // a provisional number may read low, so no gap is claimed
+  })
+  it('names what each quieter option includes, cover letters first', () => {
+    promo = { coverLetterLimits: { BADGE: 2, FIX_PLAIN: 3, FIX: 5 } }
+    show()
+    expect(screen.getByTestId('alt-plain-letters')).toHaveTextContent('Cover letter writing: 3 tailored letters')
+    promo = {}
   })
 
   it('shows the countdown in place of the flag for a live promo with a deadline', () => {

@@ -8,8 +8,8 @@ export default function PassAnim({ tone = 'blue' }) {
       <div className="pt-sheet absolute left-[4%] top-2.5 grid h-[68px] w-[52px] content-start gap-[5px] rounded-md border-[1.5px] border-gray-300 bg-white px-[7px] py-[9px] [animation:pt-pass_3.4s_ease-in-out_infinite]">
         <i className="h-1 rounded-sm bg-gray-300" /><i className="h-1 w-[70%] rounded-sm bg-gray-300" /><i className="h-1 rounded-sm bg-gray-300" /><i className="h-1 w-1/2 rounded-sm bg-gray-300" />
       </div>
-      <div className="absolute inset-y-1 left-[46%] flex w-11 justify-between"><s className="w-[9px] rounded-[5px] bg-blue-800" /><s className="w-[9px] rounded-[5px] bg-blue-800" /></div>
-      <div className={`pt-fin absolute right-[5%] top-[22px] text-[30px] font-extrabold opacity-0 [animation:pt-fin_3.4s_ease-in-out_infinite] ${fin}`}>{'\u2713'}</div>
+      <div className="absolute inset-y-1 left-[46%] flex w-11 justify-between"><s className="w-2 rounded-full bg-blue-800" /><s className="w-2 rounded-full bg-blue-800" /></div>
+      <div className={`pt-fin absolute right-[5%] top-[22px] text-3xl font-bold opacity-0 [animation:pt-fin_3.4s_ease-in-out_infinite] ${fin}`}>{'\u2713'}</div>
     </div>
   )
 }

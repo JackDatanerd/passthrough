@@ -21,10 +21,10 @@ function fmt(s) { const n = Math.floor(s); return `${Math.floor(n / 60)}:${Strin
 export default function ScanProgress({ createdAt, stage, leaveNote, children }) {
   const elapsed = useElapsedSeconds(createdAt)
   return (
-    <div className="max-w-[560px] rounded-2xl border border-gray-200 bg-white p-[22px] shadow-[0_1px_2px_rgba(10,21,48,.04)]" role="status" aria-live="polite">
+    <div className="max-w-[560px] rounded-xl border border-gray-200 bg-white p-[22px] shadow-sm" role="status" aria-live="polite">
       <PassAnim tone="blue" />
       <div className="flex items-baseline justify-between gap-3">
-        <h2 className="font-display text-lg font-extrabold tracking-[-0.02em] text-ink">Scanning your resume…</h2>
+        <h2 className="text-lg font-semibold text-gray-900">Scanning your resume…</h2>
         <span className="text-xs tabular-nums text-gray-400" data-testid="scan-elapsed">{fmt(elapsed)}</span>
       </div>
       <p className="mt-1 text-sm text-gray-600">Usually about 30 seconds.</p>

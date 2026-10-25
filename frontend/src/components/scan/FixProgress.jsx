@@ -42,9 +42,9 @@ export default function FixProgress({ tier, startedAt, progress, round, children
   const scores = live && Array.isArray(live.scores) ? live.scores.filter(n => typeof n === 'number') : []
   const retrying = !!live && live.phase === 'rewriting' && scores.length > 0
   return (
-    <div className="max-w-[600px] rounded-2xl border border-gray-200 bg-white p-[22px] shadow-[0_1px_2px_rgba(10,21,48,.04)]" role="status" aria-live="polite">
+    <div className="max-w-[600px] rounded-xl border border-gray-200 bg-white p-[22px] shadow-sm" role="status" aria-live="polite">
       <PassAnim tone="green" />
-      <h2 className="font-display text-lg font-extrabold tracking-[-0.02em] text-ink">
+      <h2 className="text-lg font-semibold text-gray-900">
         {badge ? 'Verifying and formatting your resume…' : 'Writing your fixed resume…'}
       </h2>
       <p className="mt-1 text-sm text-gray-600">

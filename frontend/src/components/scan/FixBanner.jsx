@@ -1,4 +1,6 @@
 import Button from '../ui/Button'
+import Badge from '../ui/Badge'
+import Alert from '../ui/Alert'
 import PromoCountdown from '../ui/PromoCountdown'
 import { usePricing, fmtPrice } from '../../hooks/usePricing'
 import { ATS_BADGE_THRESHOLD, MAX_FIX_RETRIES } from '../../lib/scoreThresholds'
@@ -137,45 +139,43 @@ export default function FixBanner({
 
   // A second way to buy, as a quiet line under the main button: "Just the rewrite, no Verified?  Fix only $29".
   const Alt = ({ lead, tier, label, testid }) => (
-    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[13px] text-gray-600" data-testid={testid}>
+    <div className="mt-3 text-sm text-gray-600" data-testid={testid}>
+    <div className="flex flex-wrap items-center justify-between gap-2">
       <span>{lead}</span>
       <button type="button" onClick={() => onPay(tier)} disabled={payLoading}
         className="font-bold text-blue-700 underline underline-offset-2 hover:text-blue-800 disabled:opacity-60">
         {label} {'\u00b7'} <PriceTag tier={tier} byTier={byTier} currency={currency} struckAfter />
       </button>
     </div>
+    <p className="mt-0.5 text-xs text-gray-500" data-testid={`${testid}-letters`}>{coverLetterText(pricing, tier)}</p>
+    </div>
   )
 
   const eligible = badgeEligible
   return (
-    <section data-testid="offer-card" className="rounded-2xl border-2 border-blue-700 bg-gradient-to-b from-white to-blue-50 p-[18px] shadow-[0_1px_2px_rgba(10,21,48,.04)]">
+    <section data-testid="offer-card" className="rounded-xl border border-blue-300 bg-blue-50 p-5 shadow-sm">
       {showCountdown ? (
         <PromoCountdown endsAt={pricing.promoEndsAt} clockOffsetMs={clockOffsetMs} label={pricing.promoLabel} onExpire={refreshPricing} className="mb-2" />
       ) : (
-        <span className="mb-2 inline-block rounded-full bg-[#FFE27A] px-2.5 py-0.5 text-[11px] font-extrabold text-[#5C4600]">{eligible ? 'Most complete' : 'Best for most people'}</span>
+        <Badge variant="amber" className="mb-2">{eligible ? 'Most complete' : 'Best for most people'}</Badge>
       )}
-      <h3 className="font-display text-lg font-extrabold tracking-[-0.02em] text-ink">Fix &amp; verify my resume</h3>
-      <div className="mt-2 font-display text-[34px] font-extrabold leading-none text-ink" data-testid="offer-price">
+      <h3 className="text-lg font-semibold text-gray-900">Fix &amp; verify my resume</h3>
+      <div className="mt-2 text-3xl font-bold leading-none text-gray-900" data-testid="offer-price">
         <PriceTag tier="FIX" byTier={byTier} currency={currency} struckAfter />
       </div>
 
-      {provisional && (
-        <p role="status" className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-900" data-testid="provisional-note">
-          Your score is provisional. The AI half of the check was unavailable, so this number may read lower than it should. Re-check it before choosing.
-        </p>
-      )}
       {eligible && (
-        <p className="mt-3 text-[13px] text-gray-700">
+        <p className="mt-3 text-sm text-gray-700">
           <b className="text-green-800">Your resume passed ATS and is Verified-eligible.</b> You may not need a rewrite. The credential lets an employer check your score and confirm the file hasn't been changed. A rewrite is optional.
         </p>
       )}
       {!eligible && !provisional && gap > 0 && (
-        <p className="mt-3 text-[13px] text-gray-700">You are {gap} point{gap === 1 ? '' : 's'} short of the {ATS_BADGE_THRESHOLD} a resume needs to earn the Verified credential. A fix rewrites your own experience in the words the job post and the software look for.</p>
+        <p className="mt-3 text-sm text-gray-700">You are {gap} point{gap === 1 ? '' : 's'} short of the {ATS_BADGE_THRESHOLD} a resume needs to earn the Verified credential. A fix rewrites your own experience in the words the job post and the software look for.</p>
       )}
 
       {eligible && isFile && !formattedKnown && (
-        <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2" data-testid="formatted-check">
-          <p className="text-sm text-amber-900">
+        <Alert variant="warning" className="mt-3" data-testid="formatted-check">
+          <p>
             The credential is issued on the ATS-formatted version we build from your file, which can score
             differently from the file you uploaded. Check it first. It takes a few seconds.
           </p>
@@ -185,23 +185,23 @@ export default function FixBanner({
             </Button>
           )}
           {checkFormattedError && <p role="alert" className="mt-2 text-sm text-red-700">{checkFormattedError}</p>}
-        </div>
+        </Alert>
       )}
       {eligible && formattedLow && (
-        <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="formatted-low">
+        <Alert variant="warning" className="mt-3" data-testid="formatted-low">
           The ATS-formatted file we'd deliver scores {formatted}, under the {ATS_BADGE_THRESHOLD} the credential needs, so a
           Credential-only purchase would not come out verified. A Fix rewrites it to clear the bar.
-        </p>
+        </Alert>
       )}
       {eligible && isFile && formatted != null && !formattedLow && (
-        <p className="mt-3 text-sm text-green-800" data-testid="formatted-ok">
+        <Alert variant="success" className="mt-3" data-testid="formatted-ok">
           The ATS-formatted file we'd deliver scores {formatted}, credential-ready.
-        </p>
+        </Alert>
       )}
 
-      <ul className="my-3 grid gap-1.5 text-[13.5px] text-gray-700">
+      <ul className="my-3 grid gap-1.5 text-sm text-gray-700">
         {includes.map(([isNew, text]) => (
-          <li key={text} className="flex gap-1.5"><span aria-hidden="true" className="font-extrabold text-green-700">{'\u2713'}</span><span>{isNew && <><NewTag />{' '}</>}{text}</span></li>
+          <li key={text} className="flex gap-1.5"><span aria-hidden="true" className="font-bold text-green-700">{'\u2713'}</span><span>{isNew && <><NewTag />{' '}</>}{text}</span></li>
         ))}
       </ul>
 
@@ -214,7 +214,7 @@ export default function FixBanner({
           </Button>
         </>
       )}
-      <Button onClick={() => onPay('FIX')} size="lg" className="w-full shadow-[0_3px_0_#1e3a8a] active:translate-y-0.5 active:shadow-[0_1px_0_#1e3a8a]" disabled={payLoading} loading={payingTier === 'FIX'}>
+      <Button onClick={() => onPay('FIX')} size="lg" className="w-full" disabled={payLoading} loading={payingTier === 'FIX'}>
         Fix &amp; verify my resume <span aria-hidden="true">{'\u2192'}</span>
       </Button>
       <p className="mt-2 text-center text-xs text-gray-500">You've seen the full breakdown free. Pay only for the fix.</p>
@@ -224,12 +224,12 @@ export default function FixBanner({
 
       {showWriterCompare && (
         <div className="mt-3 flex flex-wrap gap-x-3.5 gap-y-1 border-t border-gray-200 pt-2.5 text-xs text-gray-500" data-testid="writer-compare" aria-label="How it compares">
-          <span><b className="text-ink">{fmtPrice(WRITER_TYPICAL_CENTS, currency)}+</b> resume writer, days</span>
-          <span><b className="text-ink">{fmtPrice(0, currency)}</b> change nothing</span>
+          <span><b className="text-gray-900">{fmtPrice(WRITER_TYPICAL_CENTS, currency)}+</b> resume writer, days</span>
+          <span><b className="text-gray-900">{fmtPrice(0, currency)}</b> change nothing</span>
         </div>
       )}
 
-      <p className="mt-2.5 rounded-[10px] border border-dashed border-blue-200 bg-white px-2.5 py-2 text-[12.5px] text-gray-600">
+      <p className="mt-3 rounded-lg border border-dashed border-blue-300 bg-white px-3 py-2 text-xs text-gray-600">
         After you pay, <b>Your resume</b> and <b>Apply</b> tabs open here. Nothing to find.
       </p>
       {guarantee}

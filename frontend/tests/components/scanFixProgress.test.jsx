@@ -8,7 +8,7 @@ import React from 'react'
 
 import ScanProgress, { SCAN_STEPS, SCAN_STEP_STARTS } from '../../src/components/scan/ScanProgress'
 import FixProgress, { FIX_STEP_STARTS } from '../../src/components/scan/FixProgress'
-import ResumeSheet from '../../src/components/scan/ResumeSheet'
+import PassAnim from '../../src/components/scan/PassAnim'
 import { currentStep, gateStep } from '../../src/hooks/useElapsedSeconds'
 import { ATS_BADGE_THRESHOLD } from '../../src/lib/scoreThresholds'
 
@@ -109,26 +109,16 @@ describe('FixProgress', () => {
   })
 })
 
-describe('ResumeSheet', () => {
+describe('PassAnim', () => {
   it('is decorative: hidden from assistive tech and carrying no text of the user\'s resume', () => {
-    render(<ResumeSheet elapsedSeconds={5} />)
-    const sheet = screen.getByTestId('resume-sheet')
-    expect(sheet.getAttribute('aria-hidden')).toBe('true')
-    expect(sheet.textContent).toBe('')
+    render(<PassAnim />)
+    const a = screen.getByTestId('pass-anim')
+    expect(a.getAttribute('aria-hidden')).toBe('true')
+    expect(a.textContent.replace(/\u2713/g, '')).toBe('')            // only the finishing tick, no words
   })
-
-  it('hides the moving beam for people who prefer reduced motion (class-level guarantee)', () => {
-    render(<ResumeSheet elapsedSeconds={5} />)
-    expect(screen.getByTestId('resume-beam').className).toContain('motion-reduce:hidden')
-  })
-
-  it('keeps the beam inside the page however long the wait runs', () => {
-    for (const s of [0, 3, 14, 15, 999]) {
-      const { unmount } = render(<ResumeSheet elapsedSeconds={s} />)
-      const top = parseFloat(screen.getByTestId('resume-beam').style.top)
-      expect(top).toBeGreaterThanOrEqual(0); expect(top).toBeLessThan(100)
-      unmount()
-    }
+  it('stops moving for people who prefer reduced motion (the stylesheet guarantees it)', async () => {
+    const css = (await import('node:fs')).readFileSync((await import('node:path')).resolve(process.cwd(), 'frontend/src/index.css'), 'utf8')
+    expect(css).toMatch(/prefers-reduced-motion: reduce[\s\S]*\.pt-sheet[\s\S]*animation: none/)
   })
 })
 

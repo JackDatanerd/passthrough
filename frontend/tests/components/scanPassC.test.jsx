@@ -6,7 +6,7 @@ import api from '../../src/lib/api'
 import ResumeDataEditor from '../../src/components/scan/ResumeDataEditor'
 import DeliveredResumeEditor from '../../src/components/scan/DeliveredResumeEditor'
 import CoverLetterPanel from '../../src/components/scan/CoverLetterPanel'
-import ScoreGauge from '../../src/components/scan/ScoreGauge'
+import ScoreSummary from '../../src/components/scan/ScoreSummary'
 import { buildResumeDiff } from '../../src/lib/resumeDiff'
 
 // Scan / ATS pass: the new owner tools and the guards behind them.
@@ -135,8 +135,14 @@ describe('guards', () => {
     expect(() => buildResumeDiff(wrong, { ...wrong, skills: ['Python'] })).not.toThrow()
     expect(() => buildResumeDiff({ name: 'J' }, wrong)).not.toThrow()
   })
-  it('ScoreGauge shows no verdict (not "Fail") when there is no score yet', () => {
-    render(<ScoreGauge score={null} />)
-    expect(screen.queryByText('Fail')).not.toBeInTheDocument()
+  it('the score card shows no verdict (not "failing") when there is no score yet', () => {
+    render(<ScoreSummary score={null} />)
+    expect(screen.getByText('No score yet')).toBeInTheDocument()
+    expect(screen.queryByText(/failing/)).not.toBeInTheDocument()
+  })
+  it('a provisional score is called "your score so far", never "failing" (the AI half was unavailable)', () => {
+    render(<ScoreSummary score={40} passed={false} provisional />)
+    expect(screen.getByText('Your score so far')).toBeInTheDocument()
+    expect(screen.queryByText(/failing/)).not.toBeInTheDocument()
   })
 })

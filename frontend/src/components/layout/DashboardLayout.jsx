@@ -1,5 +1,6 @@
 import { Link, useLocation } from 'react-router-dom'
 import ShellFrame from './ShellFrame'
+import ButtonLink from '../ui/ButtonLink'
 import LogoMark from './LogoMark'
 import { cn } from '../../lib/utils'
 import { useAuth } from '../../hooks/useAuth'
@@ -80,10 +81,9 @@ export function AppHeader() {
             <Link to="/admin" className="text-gray-600 hover:text-gray-900 transition-colors">Admin</Link>
           )}
           {/* The one verb of the app, on every tab: lit while the person is on the scan page itself. */}
-          <Link to="/scan" aria-current={onNewScan ? 'page' : undefined}
-            className={cn('inline-flex items-center gap-1.5 font-bold px-3.5 py-2 rounded-[10px] text-white bg-blue-700 hover:bg-blue-800 shadow-[0_3px_0_#1e3a8a] active:translate-y-0.5 active:shadow-[0_1px_0_#1e3a8a] transition-colors whitespace-nowrap', onNewScan && 'ring-2 ring-offset-2 ring-blue-300')}>
-            <span aria-hidden="true">＋</span> New scan
-          </Link>
+          <ButtonLink to="/scan" size="sm" aria-current={onNewScan ? 'page' : undefined} className={cn(onNewScan && 'ring-2 ring-offset-2 ring-blue-300')}>
+            <span aria-hidden="true">+</span> New scan
+          </ButtonLink>
           <button type="button" onClick={handleLogout} className="hidden sm:block py-4 text-gray-600 hover:text-gray-900 transition-colors">
             Sign out
           </button>

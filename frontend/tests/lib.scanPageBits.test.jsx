@@ -62,7 +62,10 @@ describe('page titles and privacy of /scan', () => {
   it('titles the form and the result differently', () => {
     expect(titleFor('/scan')).toBe('New scan — Passthrough')
     expect(titleFor('/scan/')).toBe('New scan — Passthrough')
-    expect(titleFor('/scan/abc/why')).toBe('Your scan — Passthrough')
+    expect(titleFor('/scan/abc')).toBe('Your scan — Passthrough')
+    expect(titleFor('/scan/abc/why')).toBe('Why this score — Passthrough')
+    expect(titleFor('/scan/abc/resume')).toBe('Your resume — Passthrough')
+    expect(titleFor('/scan/abc/apply')).toBe('Apply — Passthrough')
   })
   it('keeps both out of search', () => {
     expect(isPrivatePath('/scan')).toBe(true)

@@ -11,7 +11,7 @@ export default function JobDescriptionPanel({ scan }) {
   const url = scan.jobDescriptionUrl
   const safeUrl = typeof url === 'string' && /^https?:\/\//i.test(url) ? url : null
   return (
-    <Disclosure className="rounded-2xl border border-gray-200 bg-white px-[18px] py-3.5 shadow-[0_1px_2px_rgba(10,21,48,.04)]" data-testid="jd-panel" summaryClassName="text-sm font-bold text-ink"
+    <Disclosure className="rounded-xl border border-gray-200 bg-white px-5 py-3.5 shadow-sm" data-testid="jd-panel" summaryClassName="text-sm font-semibold text-gray-900"
       summary={<>The job description we scored against{scan.jobTitle ? <span className="text-gray-500 font-normal"> — {scan.jobTitle}</span> : null}</>}>
       <p className="mt-2 text-xs text-gray-500">
         {safeUrl

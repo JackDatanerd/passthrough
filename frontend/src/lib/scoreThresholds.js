@@ -1,4 +1,4 @@
-// AUDIT FIX: ScoreGauge.jsx, CategoryScores.jsx, and FixBanner.jsx each had
+// AUDIT FIX: ScoreSummary.jsx, CategoryScores.jsx, and FixBanner.jsx each had
 // their own hardcoded copy of the pass/badge thresholds (75 / 80) — the
 // same numbers as the backend's ATS_PASS_THRESHOLD/ATS_BADGE_THRESHOLD
 // (src/config/constants.js), just re-typed three times independently.

@@ -27,7 +27,7 @@ function Chip({ children, tone = 'amber' }) {
     gray:  'bg-green-50 text-green-900 border-green-200',
   }
   return (
-    <span className={`inline-block text-[12.5px] font-semibold px-[11px] py-[3px] rounded-full border ${tones[tone]}`}>
+    <span className={`inline-block text-xs font-semibold px-2.5 py-0.5 rounded-full border ${tones[tone]}`}>
       {children}
     </span>
   )
@@ -68,8 +68,8 @@ export default function AtsDetailPanel({ scan, detail: detailProp, title = 'Why 
   if (!hasGaps && !hasContentStats && !hasMatched) return null
 
   return (
-    <div className="rounded-2xl border border-gray-200 bg-white p-[18px] shadow-[0_1px_2px_rgba(10,21,48,.04)]">
-      <h3 className="mb-1 font-display text-lg font-extrabold tracking-[-0.02em] text-ink">{title}</h3>
+    <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+      <h3 className="mb-1 text-lg font-semibold text-gray-900">{title}</h3>
 
       {!hasGaps && (
         <p className="text-sm text-gray-600 mt-2">

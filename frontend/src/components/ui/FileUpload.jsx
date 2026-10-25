@@ -102,15 +102,15 @@ export default function FileUpload({
         {file ? (
           <div data-testid="file-chip" data-file-dropzone="" {...dropProps}
             className={cn('flex items-center gap-2.5 rounded-xl border-[1.5px] px-3 py-2.5 text-sm transition-colors', drag ? 'border-blue-700 bg-blue-50' : 'border-green-700 bg-green-50')}>
-            <span aria-hidden="true" className="grid h-9 w-[30px] shrink-0 place-items-center rounded-[5px] border border-gray-300 bg-white text-[10px] font-extrabold text-blue-700">{ext}</span>
+            <span aria-hidden="true" className="grid h-9 w-[30px] shrink-0 place-items-center rounded-[5px] border border-gray-300 bg-white text-[10px] font-bold text-blue-700">{ext}</span>
             <span className="min-w-0 flex-1">
               <b className="block truncate text-gray-900">{file.name}</b>
               <small className="text-gray-500">{kb ? `${kb} \u00b7 ready to scan` : 'Ready to scan'}</small>
             </span>
             {!disabled && (
               <>
-                <button type="button" onClick={openPicker} className="text-[13px] text-blue-700 underline underline-offset-2">Replace</button>
-                <button type="button" onClick={() => { setError(''); wantsFocus.current = true; commit(null); announce('File removed') }} className="text-[13px] text-blue-700 underline underline-offset-2">Remove file</button>
+                <button type="button" onClick={openPicker} className="text-sm text-blue-700 underline underline-offset-2">Replace</button>
+                <button type="button" onClick={() => { setError(''); wantsFocus.current = true; commit(null); announce('File removed') }} className="text-sm text-blue-700 underline underline-offset-2">Remove file</button>
               </>
             )}
             {hidden}
@@ -125,7 +125,7 @@ export default function FileUpload({
             className={cn('rounded-xl border-2 border-dashed px-3.5 py-5 text-center text-sm text-gray-600 transition-colors focus:outline-none focus-visible:ring-[3px] focus-visible:ring-blue-200',
               disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer', drag ? 'border-blue-700 bg-blue-50' : 'border-gray-300 bg-white hover:border-blue-700 hover:bg-blue-50')}
           >
-            <b className="mb-0.5 block text-[15px] text-ink">{prompt}, or <span className="text-blue-700">browse</span></b>
+            <b className="mb-0.5 block text-sm text-gray-900">{prompt}, or <span className="text-blue-700">browse</span></b>
             <small className="text-gray-500">{typesText}, max {maxMB}MB</small>
             {hidden}
           </div>

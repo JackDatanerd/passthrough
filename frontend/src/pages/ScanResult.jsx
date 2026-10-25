@@ -33,6 +33,7 @@ import { statusLabel, formatDate } from '../lib/utils'
 import { scanHeading, scanSource } from '../lib/scanDisplay'
 import ScanStrip from '../components/scan/ScanStrip'
 import CopyButton from '../components/ui/CopyButton'
+import ButtonLink from '../components/ui/ButtonLink'
 import { ATS_BADGE_THRESHOLD, MAX_FIX_RETRIES } from '../lib/scoreThresholds'
 import { getAnonScanToken, addAnonScanToken, removeAnonScanToken } from '../lib/anonScans'
 import { clearDraftIfSent, loadBrainDumpDraft } from '../lib/brainDumpDraft'
@@ -945,26 +946,26 @@ export default function ScanResult() {
             {current === 'score' && (
               <section data-testid="tab-score" aria-label="Score" className="flex flex-col gap-6">
                 {delivered && (
-                  <div className="flex flex-wrap items-center gap-3 rounded-xl border border-green-300 bg-green-100 px-3.5 py-[11px] text-sm" role="status">
+                  <div className="flex flex-wrap items-center gap-3 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800" role="status">
                     <span aria-hidden="true">✓</span>
                     <span><b className="text-green-900">Your fixed resume scores {scan.fixAtsScore ?? '—'}.</b> It's ready{scan.verificationUrl ? ', with your Verified link' : ''}.</span>
-                    <Link to={`/scan/${id}/resume${search}`} className="ml-auto rounded-[9px] border border-blue-700 bg-blue-700 px-3.5 py-2 text-[13.5px] font-semibold text-white hover:bg-blue-800">Open it</Link>
+                    <ButtonLink to={`/scan/${id}/resume${search}`} size="sm" className="ml-auto">Open it</ButtonLink>
                   </div>
                 )}
                 {!user && (
-                  <div className="flex flex-wrap items-center gap-3 rounded-xl border border-blue-200 bg-blue-50 px-3.5 py-[11px] text-sm text-blue-900" data-testid="anon-banner">
+                  <div className="flex flex-wrap items-center gap-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800" data-testid="anon-banner">
                     <span><b>Without an account this result is kept for 24 hours.</b>{(() => {
                       const ms = scan.anonExpiresAt ? Date.parse(scan.anonExpiresAt) - Date.now() : NaN
                       if (!Number.isFinite(ms) || ms <= 0) return ' Create a free account to keep it, and your fix.'
                       const h = Math.floor(ms / 3600000), m = Math.ceil((ms % 3600000) / 60000)
                       return <> Deleted in about {h >= 1 ? `${h} hour${h === 1 ? '' : 's'}` : `${m} minute${m === 1 ? '' : 's'}`}. Create a free account to keep it, and your fix.</>
                     })()}</span>
-                    <Link to={`/register?next=${encodeURIComponent(here)}`} className="ml-auto inline-block rounded-[9px] border border-blue-700 bg-blue-700 px-3.5 py-2 text-[13.5px] font-semibold text-white hover:bg-blue-800">Create free account</Link>
+                    <ButtonLink to={`/register?next=${encodeURIComponent(here)}`} size="sm" className="ml-auto">Create free account</ButtonLink>
                   </div>
                 )}
                 <div className="grid gap-6 lg:grid-cols-[1.05fr_.95fr] lg:items-start">
                   <div className="contents lg:flex lg:flex-col lg:gap-6 lg:min-w-0">
-                    <div className="order-1"><ScoreSummary score={scan.atsScore} passed={scan.passed} /></div>
+                    <div className="order-1"><ScoreSummary score={scan.atsScore} passed={scan.passed} provisional={!!scan.atsDetail?.scoredWithoutAi && !scan.fixPurchased} /></div>
                     <div className="order-3 min-w-0"><PointsLost scan={scan} seeAllTo={`/scan/${id}/why${search}`} /></div>
                   </div>
                   <div className="order-2 flex flex-col gap-4 min-w-0">
@@ -1038,10 +1039,10 @@ export default function ScanResult() {
                 )}
                 <FixBanner welcomeOffer={welcomeActive} scan={scan} provisional={!!scan.atsDetail?.scoredWithoutAi} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} referralCode={referralCode} onApplyReferralCode={handleApplyReferralCode} payLoading={payLoading} payingTier={payingTier} onCheckFormatted={handleCheckFormatted} checkingFormatted={checkingFormatted} checkFormattedError={checkFormattedError}>
                   {!user && gate && (
-                    <div role="alert" data-testid="buy-gate" className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[13.5px] text-amber-900">
+                    <div role="alert" data-testid="buy-gate" className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
                       <b>Create a free account to pay.</b> It takes a minute, and we bring you straight back to this result with your score and offer waiting.
                       <div className="mt-2 flex flex-wrap items-center gap-3">
-                        <Link to={`/register?next=${encodeURIComponent(here)}`} className="inline-block rounded-[10px] bg-blue-700 px-4 py-2 font-bold text-white shadow-[0_3px_0_#1e3a8a] hover:bg-blue-800">Create account and continue <span aria-hidden="true">{'\u2192'}</span></Link>
+                        <ButtonLink to={`/register?next=${encodeURIComponent(here)}`}>Create account and continue <span aria-hidden="true">{'\u2192'}</span></ButtonLink>
                         <Link to={`/login?next=${encodeURIComponent(here)}`} className="underline underline-offset-2">I already have one. Sign in</Link>
                       </div>
                     </div>
@@ -1050,7 +1051,7 @@ export default function ScanResult() {
               </>
             )}
                     {purchased && (
-                      <div className="bg-white rounded-2xl border border-gray-200 shadow-[0_1px_2px_rgba(10,21,48,.04)] p-[18px]">
+                      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
                         <h3 className="font-semibold text-gray-900">{delivered ? "You've got the fix" : 'Your fix is on its way'}</h3>
                         <p className="mt-1 text-sm text-gray-600">{delivered ? 'Your rewrite, files and Verified link are in the next tabs.' : 'It is being written now. Open Your resume to follow it.'}</p>
                         <Link to={`/scan/${id}/resume${search}`} className="mt-3 inline-block text-sm font-semibold text-blue-700 underline underline-offset-2">Go to Your resume →</Link>
@@ -1063,9 +1064,9 @@ export default function ScanResult() {
               </div>
             )}
             {user && scan.userId && user.id === scan.userId && (
-              <div className="rounded-2xl border border-gray-200 bg-white p-[18px] shadow-[0_1px_2px_rgba(10,21,48,.04)]">
-                <p className="text-[13.5px] text-gray-600">
-                  <b className="text-ink">Applying somewhere else?</b>{' '}
+              <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+                <p className="text-sm text-gray-600">
+                  <b className="text-gray-900">Applying somewhere else?</b>{' '}
                   <Link to={`/scan?from=${scan.id}`} className="font-bold text-blue-700 underline underline-offset-2 hover:text-blue-800">
                     Scan this same resume against another job
                   </Link>
@@ -1102,12 +1103,12 @@ export default function ScanResult() {
             {current === 'why' && (
               <section data-testid="tab-why" aria-label="Why" className="flex flex-col gap-4">
                 {purchased && (
-                  <p className="text-[13px] text-gray-500">This is your original scan. Your fixed resume is on <Link to={tabPath('resume')} className="font-semibold text-blue-700 underline underline-offset-2">Your resume</Link>.</p>
+                  <p className="text-sm text-gray-500">This is your original scan. Your fixed resume is on <Link to={tabPath('resume')} className="font-semibold text-blue-700 underline underline-offset-2">Your resume</Link>.</p>
                 )}
                 <div className="grid gap-4 lg:grid-cols-[1.05fr_.95fr] lg:items-start">
                   <div className="flex min-w-0 flex-col gap-4">
-                    <div className="rounded-2xl border border-gray-200 bg-white p-[18px] shadow-[0_1px_2px_rgba(10,21,48,.04)]">
-                      <h2 className="mb-2.5 font-display text-lg font-extrabold tracking-[-0.02em] text-ink">{purchased ? 'Your original scan, by category' : 'Score by category'}</h2>
+                    <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+                      <h2 className="mb-2.5 text-lg font-semibold text-gray-900">{purchased ? 'Your original scan, by category' : 'Score by category'}</h2>
                       <CategoryScores scan={scan} />
                     </div>
                     <PointsLost scan={scan} all />
@@ -1129,7 +1130,7 @@ export default function ScanResult() {
                 {canBuy && (
                   <div className="sticky bottom-0 -mx-4 px-4 py-3 bg-white/95 backdrop-blur border-t border-gray-200 flex flex-wrap items-center gap-3">
                     <p className="flex-1 min-w-[10rem] text-sm text-gray-600"><b className="text-gray-900">Fixable issues, and a rewrite aimed at them.</b> You've seen the full breakdown free.</p>
-                    <Link to={tabPath('score')} className="inline-block bg-blue-700 text-white font-bold px-4 py-2.5 rounded-[10px] shadow-[0_3px_0_#1e3a8a] hover:bg-blue-800 transition-colors">See the fix →</Link>
+                    <ButtonLink to={tabPath('score')}>See the fix →</ButtonLink>
                   </div>
                 )}
               </section>
@@ -1180,7 +1181,7 @@ export default function ScanResult() {
                     <div className="grid gap-4 lg:grid-cols-[1.05fr_.95fr] lg:items-start">
                       <div className="flex min-w-0 flex-col gap-4">
             {scan.status === 'FIX_DELIVERED' && (
-              <div className="rounded-2xl border border-gray-200 bg-white p-[18px] shadow-[0_1px_2px_rgba(10,21,48,.04)]">
+              <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
                 <DeliveredSummary scan={scan} />
                 {scan.fixAtsScore >= ATS_BADGE_THRESHOLD ? (
                   <>
@@ -1376,10 +1377,10 @@ export default function ScanResult() {
                       </div>
                       <div className="flex min-w-0 flex-col gap-4">
                     {isOwner && (
-                      <div className="rounded-2xl border border-gray-200 bg-white p-[18px] shadow-[0_1px_2px_rgba(10,21,48,.04)]" data-testid="resume-next">
-                        <h3 className="mb-2 font-display text-lg font-extrabold tracking-[-0.02em] text-ink">Next</h3>
+                      <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm" data-testid="resume-next">
+                        <h3 className="mb-2 text-lg font-semibold text-gray-900">Next</h3>
                         <p className="mb-3 text-sm text-gray-600">Your resume is ready. Your Verified link and cover letter are one tab over.</p>
-                        <Link to={`/scan/${id}/apply${search}`} className="block w-full rounded-[10px] bg-blue-700 px-4 py-3 text-center font-bold text-white shadow-[0_3px_0_#1e3a8a] hover:bg-blue-800">Go to Apply <span aria-hidden="true">{'\u2192'}</span></Link>
+                        <ButtonLink to={`/scan/${id}/apply${search}`} size="lg" className="w-full">Go to Apply <span aria-hidden="true">{'\u2192'}</span></ButtonLink>
                       </div>
                     )}
             {scan.status === 'FIX_DELIVERED' && user && scan.userId && user.id === scan.userId &&
@@ -1409,21 +1410,21 @@ export default function ScanResult() {
             <div className="grid gap-4 lg:grid-cols-[1.05fr_.95fr] lg:items-start">
               <div className="flex min-w-0 flex-col gap-4">
             {delivered && !scan.verificationUrl && scan.fixTier !== 'FIX_PLAIN' && typeof scan.fixAtsScore === 'number' && scan.fixAtsScore < ATS_BADGE_THRESHOLD && (
-              <div className="rounded-2xl border border-gray-200 bg-white p-[18px] shadow-[0_1px_2px_rgba(10,21,48,.04)]" data-testid="verified-locked">
-                <h3 className="mb-2 font-display text-lg font-extrabold tracking-[-0.02em] text-ink">Verified link: earned at {ATS_BADGE_THRESHOLD}</h3>
+              <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm" data-testid="verified-locked">
+                <h3 className="mb-2 text-lg font-semibold text-gray-900">Verified link: earned at {ATS_BADGE_THRESHOLD}</h3>
                 <p className="mb-2.5 text-sm text-gray-700">Your resume scores <b>{scan.fixAtsScore}</b>, {ATS_BADGE_THRESHOLD - scan.fixAtsScore} point{ATS_BADGE_THRESHOLD - scan.fixAtsScore === 1 ? '' : 's'} away. It opens here on its own once the score reaches {ATS_BADGE_THRESHOLD}.</p>
-                <ul className="mb-3 list-disc pl-[18px] text-[13.5px] text-gray-600"><li>A link and badge employers can check</li><li>A QR code for a printed resume</li></ul>
-                <Link to={`/scan/${id}/resume${search}`} className="inline-block rounded-[10px] bg-blue-700 px-4 py-2.5 font-bold text-white shadow-[0_3px_0_#1e3a8a] hover:bg-blue-800">Back to Your resume</Link>
+                <ul className="mb-3 list-disc pl-[18px] text-sm text-gray-600"><li>A link and badge employers can check</li><li>A QR code for a printed resume</li></ul>
+                <ButtonLink to={`/scan/${id}/resume${search}`}>Back to Your resume</ButtonLink>
               </div>
             )}
             {scan.verificationUrl && scan.verificationStatus !== 'REVOKED' && (
-              <div className="rounded-2xl border border-gray-200 bg-white p-[18px] shadow-[0_1px_2px_rgba(10,21,48,.04)]" data-testid="verified-link-card">
-                <h3 className="mb-2.5 font-display text-lg font-extrabold tracking-[-0.02em] text-ink">Your Verified link</h3>
-                <div className="flex items-center gap-2 rounded-[10px] border border-gray-200 bg-gray-50 px-2.5 py-2 text-[13.5px]">
-                  <a href={scan.verificationUrl} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate font-mono text-ink-2 underline-offset-2 hover:underline">{scan.verificationUrl.replace(/^https?:\/\//, '')}</a>
-                  <CopyButton variant="link" text={() => scan.verificationUrl} label="Copy" copiedLabel="Copied" className="rounded-[9px] border border-gray-300 bg-white px-3 py-1.5 text-[13.5px] font-semibold text-gray-700 hover:bg-gray-50" />
+              <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm" data-testid="verified-link-card">
+                <h3 className="mb-2.5 text-lg font-semibold text-gray-900">Your Verified link</h3>
+                <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm">
+                  <a href={scan.verificationUrl} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate font-mono text-gray-700 underline-offset-2 hover:underline">{scan.verificationUrl.replace(/^https?:\/\//, '')}</a>
+                  <CopyButton variant="link" text={() => scan.verificationUrl} label="Copy" copiedLabel="Copied" className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50" />
                 </div>
-                <p className="mt-2.5 text-[13px] text-gray-500">
+                <p className="mt-2.5 text-sm text-gray-500">
                   Put it in your application email, your signature or your LinkedIn. Employers can check it's the same resume.
                   {typeof scan.verificationViews === 'number' && scan.verificationViews > 0 && <> Viewed {scan.verificationViews} time{scan.verificationViews === 1 ? '' : 's'}.</>}
                   {typeof scan.verificationDownloads === 'number' && scan.verificationDownloads > 0 && <> File downloaded {scan.verificationDownloads} time{scan.verificationDownloads === 1 ? '' : 's'}.</>}
@@ -1431,8 +1432,8 @@ export default function ScanResult() {
               </div>
             )}
             {scan.verificationUrl && (
-              <details open className="rounded-2xl border border-gray-200 bg-white p-[18px] shadow-[0_1px_2px_rgba(10,21,48,.04)]" data-testid="sharing-tools">
-                <summary className="cursor-pointer font-display text-lg font-extrabold tracking-[-0.02em] text-ink">What people with the link can see</summary>
+              <details open className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm" data-testid="sharing-tools">
+                <summary className="cursor-pointer text-lg font-semibold text-gray-900">What people with the link can see</summary>
                 <div className="mt-3">
                 {/* Public document visibility — off by default (see
                     0007_verify_document_visibility.sql). The verification
@@ -1443,7 +1444,7 @@ export default function ScanResult() {
                     instead of an email attachment. */}
                 {true && (
                   <div>
-                    <p className="text-xs font-medium text-ink mb-2">
+                    <p className="text-xs font-medium text-gray-900 mb-2">
                       Let anyone with your verification link also download the file itself
                     </p>
                     {visibilityError && (
@@ -1478,7 +1479,7 @@ export default function ScanResult() {
                         that currently reads "revoked". */}
                     {scan.verificationStatus !== 'REVOKED' && (
                       <div className="mt-4 pt-4 border-t border-gray-200">
-                        <p className="text-xs font-medium text-ink mb-2">
+                        <p className="text-xs font-medium text-gray-900 mb-2">
                           Embed your live badge
                         </p>
                         <div className="flex items-center gap-3 flex-wrap">
@@ -1510,7 +1511,7 @@ export default function ScanResult() {
                             className="w-16 h-16 border border-gray-200 bg-white"
                           />
                           <div className="text-xs text-gray-500 max-w-md">
-                            <p className="font-medium text-ink">QR code for a printed resume</p>
+                            <p className="font-medium text-gray-900">QR code for a printed resume</p>
                             <p className="mt-0.5">
                               Scans to this page. Save it and place it beside your name in a Word or Canva layout, or on a business card.{' '}
                               <a href={badgeUrls().qrPng} target="_blank" rel="noopener noreferrer"
@@ -1546,10 +1547,10 @@ export default function ScanResult() {
               <CoverLetterPanel scan={scan} onUpdated={updated => setScan(prev => ({ ...prev, ...updated }))} />
             )}
             {user && scan.userId && user.id === scan.userId && (
-              <div className="rounded-2xl border border-gray-200 bg-white p-[18px] shadow-[0_1px_2px_rgba(10,21,48,.04)]">
-                <h3 className="mb-1.5 font-display text-lg font-extrabold tracking-[-0.02em] text-ink">Applying somewhere else?</h3>
+              <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+                <h3 className="mb-1.5 text-lg font-semibold text-gray-900">Applying somewhere else?</h3>
                 <p className="mb-2.5 text-sm text-gray-600">Score this same resume against another job, no re-upload.</p>
-                <Link to={`/scan?from=${scan.id}`} className="inline-block rounded-[9px] border border-gray-300 bg-white px-3.5 py-2 text-[13.5px] font-semibold text-gray-700 hover:bg-gray-50">Scan against another job</Link>
+                <ButtonLink to={`/scan?from=${scan.id}`} variant="secondary" size="sm">Scan against another job</ButtonLink>
               </div>
             )}
             {!rewriting && user && scan.originalResumeData && (
