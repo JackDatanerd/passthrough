@@ -286,7 +286,11 @@ async function createScan(ctx) {
     // job instead of the original upload. Only the structured data is reused - no file is re-parsed.
     const wantDelivered = String(fields.rescanVersion || '') === 'delivered'
     const deliveredData = wantDelivered && source.status === 'FIX_DELIVERED' && source.fixPurchased
-      ? (source.rewrittenResumeData || source.userEditedResumeData || null) : null
+      ? (source.rewrittenResumeData || source.userEditedResumeData
+        // SCAN/ATS (bug, reproduced): a credential-only (Badge) delivery has no rewrite, and an untouched one has no owner
+        // edit either - its delivered file IS originalResumeData (generateBadge delivers it verbatim). The recent-scans
+        // picker offers "use the improved version" for every delivered paid scan, so choosing one of these was a 400.
+        || (source.fixTier === 'BADGE' ? source.originalResumeData : null) || null) : null
     if (wantDelivered && !deliveredData)
       return ctx.json({ success: false, message: 'That scan has no improved version to reuse.' }, 400)
     if (wantDelivered && !(await purchaseIsLive(supabase, source)))

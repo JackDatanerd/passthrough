@@ -105,8 +105,99 @@ const PROTECTED_TOKENS = new Set([...Object.keys(CANONICAL_DISPLAY), ...SHORT_KE
 // and its trailing blanks once, and each replacement hands it back untouched.
 const LIST_PREV = String.raw`(^|[,;:/(|•·*\-])([ \t]*)`
 
+
+// SCAN/ATS (bug, reproduced): the same word spelled differently never matched, so a resume was told a skill was missing
+// that it plainly had. Three families, all normalised to ONE spelling on both sides (resume and posting) before tokens are
+// compared, exactly like the tech aliases below:
+//   - version suffixes: a posting asking for "HTML5, CSS3, Python 3" and a resume saying "HTML, CSS, Python" (keyword 49 vs 56
+//     for identical skills, with html5 / css3 reported missing);
+//   - US / UK spelling: "organisation" / "organization", "analyse" / "analyze", "behaviour", "programme", "licence",
+//     "centre" ... (a UK or East African posting against a US-spelled resume, or the reverse);
+//   - hyphenated / spaced / joined compounds: "front-end" / "frontend", "e-mail" / "email", "health care" / "healthcare".
+// Every rule is a literal word list, never a general suffix swap ("advise", "promise" and "exercise" are -ise in both).
+const IZE_STEMS = 'organis|optimis|prioritis|minimis|maximis|customis|standardis|finalis|summaris|categoris|utilis|realis|recognis|specialis|visualis|modernis|centralis|digitis|personalis|authoris|capitalis|emphasis|mobilis|normalis|localis|monetis|harmonis|stabilis|formalis|generalis|socialis|itemis|containeris|virtualis|commercialis|operationalis|rationalis|revitalis|sensitis|subsidis|characteris|familiaris|materialis|memoris|neutralis|scrutinis|legalis|randomis|sanitis|serialis|tokenis|synthesis|sympathis|equalis|industrialis|internationalis|globalis|hospitalis|jeopardis|apologis|criticis|energis|fertilis|ionis|moisturis|pasteuris|patronis|plagiaris|polaris|popularis|publicis|revolutionis|signalis|standardis|stigmatis|symbolis|theoris|trivialis|unionis|urbanis'
+const US_SPELLING_RULES = [
+  [new RegExp(`\\b(${IZE_STEMS})(e|ed|es|ing|er|ers|able|ation|ations|ational|ationally)\\b`, 'gi'), (m, stem, suf) => stem.slice(0, -2) + 'iz' + suf],
+  [/\banalys(e|ed|ing|er|ers)\b/gi, (m, suf) => 'analyz' + suf],
+  [/\bpractis(e|ed|es|ing)\b/gi, (m, suf) => 'practic' + suf],
+  [/\b(behavio|colo|labo|favo|hono|neighbo|endeavo|flavo|humo|rumo|harbo|vapo|armo|savo|odo|rigo)ur(s|ed|ing|al|ally|able|ite|ites|er|ers|ful)?\b/gi, (m, b, suf) => b + 'r' + (suf || '')],
+  [/\b(cent|theat|met|lit|fib|calib)re(s|d)?\b/gi, (m, b, suf) => b + 'er' + (suf || '')],
+  [/\bcatalogue(s|d)?\b/gi, (m, suf) => 'catalog' + (suf || '')],
+  [/\bcataloguing\b/gi, 'cataloging'],
+  [/\banalogue(s)?\b/gi, (m, suf) => 'analog' + (suf || '')],
+  [/\b(licen|defen|offen)ce(s|d)?\b/gi, (m, b, suf) => b + 'se' + (suf || '')],
+  [/\blicencing\b/gi, 'licensing'],
+  [/\b(model|label|travel|cancel|counsel|signal|channel|fuel|level|total|pencil|tunnel|dial|libel|quarrel|rival|marshal|panel|shovel|swivel|trowel|unravel)l(ed|ing|er|ers)\b/gi, (m, b, suf) => b + suf],
+  [/\bfulfil\b/gi, 'fulfill'],
+  [/\bfulfilment\b/gi, 'fulfillment'],
+  [/\benrolment(s)?\b/gi, (m, suf) => 'enrollment' + (suf || '')],
+  [/\binstalment(s)?\b/gi, (m, suf) => 'installment' + (suf || '')],
+  [/\bskilful(ly)?\b/gi, (m, suf) => 'skillful' + (suf || '')],
+  [/\bjudgement(s)?\b/gi, (m, suf) => 'judgment' + (suf || '')],
+  [/\bprogramme(s)?\b/gi, (m, suf) => 'program' + (suf || '')],
+  [/\baluminium\b/gi, 'aluminum'],
+  [/\bartefact(s)?\b/gi, (m, suf) => 'artifact' + (suf || '')],
+  [/\bscepti(c|cal|cism)\b/gi, (m, suf) => 'skepti' + suf],
+  [/\bmaths\b/gi, 'math'],
+  [/\bwhilst\b/gi, 'while'],
+  [/\bageing\b/gi, 'aging'],
+  [/\bmanoeuvr(e|ed|es|ing)\b/gi, (m, suf) => 'maneuver' + (suf === 'e' ? '' : suf)],
+  [/\b(paed)iatric/gi, 'pediatric'],
+  [/\borthopaedic/gi, 'orthopedic'],
+  [/\banaesthe/gi, 'anesthe'],
+  [/\bgynaecolog/gi, 'gynecolog'],
+  [/\bhaemat/gi, 'hemat'],
+  [/\bhaemo/gi, 'hemo'],
+  [/\boedema\b/gi, 'edema'],
+]
+const COMPOUND_RULES = [
+  // version suffixes: the same technology, a version later
+  [/\bhtml\s?5\b/gi, 'html'],
+  [/\bcss\s?3\b/gi, 'css'],
+  [/\bpython\s?[23](?:\.\d+)*\b/gi, 'python'],
+  [/\boauth\s?2(?:\.0)?\b/gi, 'oauth'],
+  [/\bangular[\s-]?\d{1,2}(?:\.\d+)*\b/gi, 'angular'],
+  [/\bvue[\s-]?[23]\b/gi, 'vue'],
+  [/\bjava\s?(?:8|11|17|21)\b/gi, 'java'],
+  [/\bphp\s?[5-8](?:\.\d+)*\b/gi, 'php'],
+  // spelled-out / joined / hyphenated compounds
+  [/\bfront[\s-]+end\b/gi, 'frontend'],
+  [/\bback[\s-]+end\b/gi, 'backend'],
+  [/\bfull[\s-]+stack\b/gi, 'fullstack'],
+  [/\be[\s-]?commerce\b/gi, 'ecommerce'],
+  [/\be[\s-]?learning\b/gi, 'elearning'],
+  [/\be-mails?\b/gi, m => (/s$/i.test(m) ? 'emails' : 'email')],
+  [/\bhealth[\s-]+care\b/gi, 'healthcare'],
+  [/\bnon[\s-]+profit\b/gi, 'nonprofit'],
+  [/\breal[\s-]+time\b/gi, 'realtime'],
+  [/\bopen[\s-]+source\b/gi, 'opensource'],
+  [/\bmulti[\s-]+tenant/gi, 'multitenant'],
+  [/\bmulti[\s-]+threading\b/gi, 'multithreading'],
+  [/\bwork[\s-]+flow(s?)\b/gi, (m, s) => 'workflow' + s],
+  [/\bmicro[\s-]+service(s?)\b/gi, (m, s) => 'microservice' + s],
+  [/\bcyber[\s-]+security\b/gi, 'cybersecurity'],
+  [/\bwi[\s-]+fi\b/gi, 'wifi'],
+  [/\bon[\s-]+boarding\b/gi, 'onboarding'],
+  [/\blive[\s-]+stream/gi, 'livestream'],
+  [/\bpower[\s-]+bi\b/gi, 'powerbi'],
+  [/\bspring[\s-]+boot\b/gi, 'springboot'],
+  [/\btailwind[\s-]+css\b/gi, 'tailwindcss'],
+  [/\bquick[\s-]+books\b/gi, 'quickbooks'],
+  [/\bdev[\s-]+ops\b/gi, 'devops'],
+]
+function toUsSpelling(text) {
+  let t = String(text ?? '')
+  for (const [re, rep] of US_SPELLING_RULES) t = t.replace(re, rep)
+  return t
+}
+function canonicalCompounds(text) {
+  let t = String(text ?? '')
+  for (const [re, rep] of COMPOUND_RULES) t = t.replace(re, rep)
+  return t
+}
+
 function normalizeTechTerms(text) {
-  return decodeHtmlEntities(String(text ?? ''))
+  return canonicalCompounds(toUsSpelling(decodeHtmlEntities(String(text ?? ''))))
     // Aliases people use interchangeably (round 5, G1): normalised to ONE spelling on both sides, so a resume saying
     // "Postgres" / "k8s" / "TS" / "AWS" credits a JD asking for PostgreSQL / Kubernetes / TypeScript / Amazon Web
     // Services (and the reverse). Before this the same skills scored keyword 40 spelled out and 20 as written by humans.
@@ -291,10 +382,13 @@ const BOILER_PHRASES = /\b(?:about\s+us|about\s+the\s+company|about\s+our\s+comp
 // boilerplate zone and silently demote everything after it (flattened URL text has no line breaks).
 const BOILER_CAPS    = /(?:^|[.!?]\s+|(?<!\s)\s{2,})(?:Benefits|Perks|Compensation|Our Culture|Our Team)(?:\s+(?:and|&)\s+(?:Perks|Benefits))?(?=\s*[:\n]|\s+[A-Z])/
 const BOILER_PROPER  = /\bAbout\s+(?!the\b|this\b|you\b|your\b)[A-Z][\w&.'’-]*(?:\s+[A-Z][\w&.'’-]*){0,3}/
-const REQ_PHRASES    = /\b(?:what\s+you(?:'|’)?ll\s+(?:do|be\s+doing|work\s+on|bring|need)|what\s+you\s+will\s+(?:do|bring|need)|what\s+you\s+bring|what\s+we(?:'|’)?re\s+looking\s+for|key\s+responsibilities|your\s+responsibilities|your\s+role|about\s+the\s+(?:role|job|position)|day[-\s]to[-\s]day|who\s+you\s+are|must[-\s]haves?|nice[-\s]to[-\s]haves?|minimum\s+qualifications|preferred\s+qualifications|basic\s+qualifications|required\s+skills|technical\s+skills|skills\s+(?:and|&)\s+experience)\b/i
+const REQ_PHRASES    = /\b(?:what\s+you(?:'|’)?ll\s+(?:do|be\s+doing|work\s+on|bring|need)|what\s+you\s+will\s+(?:do|bring|need)|what\s+you\s+bring|what\s+we(?:'|’)?re\s+looking\s+for|key\s+responsibilities|your\s+responsibilities|your\s+role|about\s+the\s+(?:role|job|position)|day[-\s]to[-\s]day|who\s+you\s+are|must[-\s]haves?|nice[-\s]to[-\s]haves?|minimum\s+qualifications|preferred\s+qualifications|basic\s+qualifications|required\s+skills|technical\s+skills|skills\s+(?:and|&)\s+experience|job\s+requirements?|key\s+requirements?|minimum\s+requirements?|basic\s+requirements?|required\s+qualifications?|desired\s+qualifications?|ideal\s+candidate|primary\s+responsibilities|job\s+responsibilities|core\s+competencies|desired\s+skills|preferred\s+skills)\b/i
 // One-word headings only count when they stand alone on their own (short) line.
 const BOILER_LINE = /^(?:benefits|perks|compensation|equal opportunity|diversity|about us|about the company|culture|our culture|our team)\b/i
-const REQ_LINE    = /^(?:requirements?|qualifications?|responsibilities|skills|the role|the job|duties|essential|desirable|preferred|experience required|you will|you(?:'|’)ll)\b/i
+// SCAN/ATS (bug, reproduced): the LAST heading wins, so a requirements section under a heading this list did not know
+// ("Job Requirements", "Your Profile", "Ideal Candidate", "Minimum Requirements", "Primary Responsibilities" ...) stayed in
+// the "About <Company>" boilerplate zone at a sixth of the weight, and company words outranked the skills in the keyword list.
+const REQ_LINE    = /^(?:requirements?|qualifications?|responsibilities|skills|the role|the job|duties|essential|desirable|preferred|experience required|you will|you(?:'|’)ll|(?:job|position|role|key|minimum|basic|preferred|required|desired|essential|technical|additional|general|candidate|principal|primary|main)\s+(?:requirements?|qualifications?|responsibilities|skills|duties|experience|competencies)|(?:your|the)\s+(?:profile|skills|background|experience|mission|ideal candidate)|ideal candidate|candidate profile|who we(?:'|’)re looking for|who we are looking for|core competencies|key (?:skills|competencies|duties|responsibilities)|you have|you bring|what you have|education\s*(?:&|and)\s*experience|experience\s*(?:&|and)\s*skills|knowledge,?\s*skills|knowledge\s*(?:&|and)\s*skills|job description|role overview|the (?:opportunity|position)|in this role|tech stack|our stack|what success looks like|bonus points|extra credit)\b/i
 
 function splitJdZones(text) {
   const src = String(text || '')
@@ -460,7 +554,7 @@ function fitJobDescription(text, max) {
 //      a pasted posting shares dozens.
 //   3. HIDDEN TEXT. The ingest layer dropped white/tiny/off-page/"hidden" text and counted it; trying it is penalised.
 const SKILLS_HEADING_RE  = /(?:^| )(?:skills|technical skills|core competencies|competencies|expertise|technologies|tools|tech stack|competences|competencias|habilidades|aptitudes|kenntnisse|fahigkeiten|fertigkeiten)(?: |$)/
-const OTHER_HEADING_RE   = /(?:^| )(?:experience|work history|employment history|employment|career history|professional background|internships?|professional experience|education|academic background|summary|professional summary|objective|profile|projects|personal projects|certifications?|certificates|awards|languages|volunteer(?:ing)?|publications|interests|references|coursework|relevant coursework|activities|leadership|training|professional development|additional information|honors|honours|licenses|licences|achievements|accomplishments|experiencia|formacion|educacion|resumen|perfil|berufserfahrung|ausbildung|zusammenfassung|formation|parcours professionnel|emploi)(?: |$)/
+const OTHER_HEADING_RE   = /(?:^| )(?:experience|work history|employment history|employment|career history|professional background|internships?|professional experience|education|academic background|summary|professional summary|objective|profile|projects|personal projects|certifications?|certificates|awards|languages|volunteer(?:ing)?|publications|interests|references|coursework|relevant coursework|activities|leadership|training|professional development|additional information|honors|honours|licenses|licences|achievements|accomplishments|experiencia|formacion|educacion|resumen|perfil|berufserfahrung|ausbildung|zusammenfassung|formation|parcours professionnel|emploi|educational|academic qualifications|academic history|academic record|academics|qualifications|professional history|positions held|job history|career|about me|personal statement|overview|introduction|highlights|trainings?|schooling)(?: |$)/
 const foldHeading = l => l.normalize('NFD').replace(/\p{M}+/gu, '').toLowerCase().replace(/[^a-z& ]+/g, ' ').replace(/\s+/g, ' ').trim()
 // SCAN/ATS ROUND 6 (bug): the two heading regexes above match ANYWHERE in a line, so a short unpunctuated bullet such
 // as "Built internal tools" read as a Skills heading and every bullet after it became "skills-only" (measured on a real
@@ -707,7 +801,11 @@ const ACTION_VERBS = new Set([
   // base form, so they're listed explicitly rather than relying on -ed)
   'sold','brought','taught','sought','bought','caught','chose','dealt',
   'felt','knew','spent','stood','understood','went','met','sat','spoke',
-  'wrote','drove','ran','began','held','kept','set','cut','grew'
+  'wrote','drove','ran','began','held','kept','set','cut','grew',
+  // SCAN/ATS (fresh pass): strong, unambiguous verbs a resume routinely opens with that the list lacked.
+  'rebuilt','redesigned','refactored','solved','proposed','unified','installed','promoted',
+  'obtained','doubled','tripled','halved','slashed','raised','owned',
+  'customized','finalized','mapped','triaged','localized','onboarded','hosted','moderated',
 ])
 
 // Precomputed once at module load, not per-bullet-check — stemmed lookup
@@ -804,9 +902,16 @@ function scoreSections(resumeText) {
   const required = [
     // English first, then the common section words of French / Spanish / Portuguese / German
     // resumes (diacritics are folded away before matching, so "Expérience" is "experience").
-    { name: 'Experience', patterns: ['experience','work history','employment history','employment','career history','professional background','internship','internships','experiencia','experiencias','berufserfahrung','erfahrung','parcours professionnel','emploi','emplois'] },
-    { name: 'Education',  patterns: ['education','academic background','formation','formations','formacion','educacion','formacao','educacao','ausbildung','bildung','studium','parcours academique'] },
-    { name: 'Skills',     patterns: ['skills','technical skills','core competencies','expertise','technologies','tools','tech stack','proficiencies','technical proficiencies','programming languages','competences','competencias','habilidades','aptitudes','kenntnisse','fahigkeiten','fertigkeiten'] },
+    { name: 'Experience', patterns: ['experience','work history','employment history','employment','career history','professional background','internship','internships','experiencia','experiencias','berufserfahrung','erfahrung','parcours professionnel','emploi','emplois',
+      // SCAN/ATS (bug, reproduced): headings real resumes use that read as a missing Experience section (-21 points, and the
+      // rewrite was told to add one). Bare words are anchored (^...$) so "Career Objective" is not an Experience section.
+      'professional history','positions held','job history','employment record','work record','^career$','^work$'] },
+    { name: 'Education',  patterns: ['education','academic background','formation','formations','formacion','educacion','formacao','educacao','ausbildung','bildung','studium','parcours academique',
+      // "Educational Background" / "Academic Qualifications" / "Qualifications" are everyday headings (UK, East Africa, India).
+      // "Qualifications" alone is Education; "Summary of Qualifications" is anchored out of it and stays a Summary.
+      'educational','academic qualifications','academic history','academic record','academic credentials','academics','degrees','training','trainings','schooling','^qualifications$'] },
+    { name: 'Skills',     patterns: ['skills','technical skills','core competencies','expertise','technologies','tools','tech stack','proficiencies','technical proficiencies','programming languages','competences','competencias','habilidades','aptitudes','kenntnisse','fahigkeiten','fertigkeiten',
+      'competencies','strengths','^abilities$','^capabilities$','technical summary','^software$'] },
     { name: 'Contact',    patterns: null },
   ]
   // Certifications was previously weighted equally with Summary as one of
@@ -819,7 +924,8 @@ function scoreSections(resumeText) {
   // this 15-point loss wasn't even visible to the user. Certifications is
   // still tracked below for informational purposes, just no longer
   // penalized numerically.
-  const summaryPatterns  = ['summary','objective','profile','profil','perfil','resumen','objectif','objetivo','sintese','zusammenfassung','kurzprofil']
+  const summaryPatterns  = ['summary','objective','profile','profil','perfil','resumen','objectif','objetivo','sintese','zusammenfassung','kurzprofil',
+    'about me','^about$','personal statement','overview','introduction','^bio$','biography','highlights','core qualifications','key qualifications']
   const certPatterns     = ['certification','certifications','certificates','licenses','licences','awards']
   // AUDIT FIX (section audit — "generate a resume from scratch"): Projects
   // is new to the schema (see claude.service.js) and, like Certifications,
@@ -1083,7 +1189,7 @@ function scoreContent(resumeText) {
   const total   = bullets.length || 1
   const actionCount = bullets.filter(b => {
     const words = b.trim().replace(BULLET_LINE, '').trim().toLowerCase().split(/\s+/)
-    return words.length > 0 && ACTION_VERB_STEMS.has(stem(words[0]))
+    return words.length > 0 && ACTION_VERB_STEMS.has(stem(toUsSpelling(words[0])))
   }).length
   // SCAN/ATS ROUND 4: the action-verb list is English. Section detection is multilingual, so a French or Spanish
   // resume was recognised as a resume and then scored ~0 on Content for not starting bullets with English verbs
@@ -1210,13 +1316,20 @@ const OTHER_PERSON_CLAUSE = /\b(?:report(?:s|ing)?(?:\s+directly)?\s+to|(?:work(
 // introduced by minimum / at least / requires. The first "N years" anywhere used
 // to win, so "Founded 25 years ago ... requires 3 years" made a mid role senior
 // and "2-5 years" made a mid role junior.
-const YEARS_RE = /(\d{1,2})\s*\+?\s*(?:(?:-|\u2013|to)\s*(\d{1,2})\s*\+?\s*)?years?\b/g
+const YEARS_RE = /(\d{1,2})\s*(?:\+|or\s+more)?\s*(?:(?:-|\u2013|to)\s*(\d{1,2})\s*\+?\s*)?(?:years?|yrs?)\b/g
+// SCAN/ATS (bug, reproduced): "five (5) years", "at least three years" and "one to two years" were not read at all (only digits
+// were), so the posting's level fell back to 'mid'. Spelled-out numbers are turned into digits, but only where years follow.
+const YEAR_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, fifteen: 15, twenty: 20 }
+const YEAR_WORD_RE = new RegExp(`\\b(${Object.keys(YEAR_WORDS).join('|')})\\b(?:\\s*\\(\\s*\\d{1,2}\\s*\\))?(?=\\s*(?:\\+|-|\\u2013|to\\s+(?:\\d{1,2}|${Object.keys(YEAR_WORDS).join('|')})|or\\s+more)?\\s*(?:years?|yrs?)\\b)`, 'g')
 function requiredYears(lower) {
+  lower = String(lower || '').replace(YEAR_WORD_RE, w => String(YEAR_WORDS[w.match(/[a-z]+/)[0]]))
   for (const m of lower.matchAll(YEARS_RE)) {
-    const after  = lower.slice(m.index + m[0].length, m.index + m[0].length + 60)
+    // Only the clause the figure sits in: "15 years of history. Need 3 years experience" must not credit the first figure with the second's wording.
+    const after  = lower.slice(m.index + m[0].length, m.index + m[0].length + 60).split(/[.;\n]/)[0]
     const before = lower.slice(Math.max(0, m.index - 30), m.index)
     if (/^\s*(?:ago|old|in business|of age|since)\b/.test(after)) continue
     if (/\b(?:founded|established|for over|for more than|over the (?:past|last))\s*(?:the\s*)?$/.test(before)) continue
+    if (/\b(?:less than|fewer than|up to|under|no more than|maximum of|max\.?)\s*$/.test(before)) continue   // an upper bound is not a requirement
     if (!/experience|exp\b|background|hands.on|proven|track record|working|professional|industry/.test(after) &&
         !/(?:minimum|min\.?|at least|requires?|required)\s*(?:of\s*)?$/.test(before)) continue
     const lo = parseInt(m[1], 10)

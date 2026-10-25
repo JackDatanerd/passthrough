@@ -146,6 +146,10 @@ describe('frontend - the provisional score is shown and re-checkable', () => {
     expect(sr).toMatch(/scan\.atsDetail\?\.scoredWithoutAi && !scan\.fixPurchased/)
     expect(sr).toMatch(/api\.post\(`\/scan\/\$\{id\}\/rescore-ai/)
     expect(sr).toMatch(/provisional=\{!!scan\.atsDetail\?\.scoredWithoutAi\}/)
-    expect(fb).toMatch(/provisional\s*\?\s*'Your score is provisional'/)
+    // One provisional notice now (ScanResult's amber card + ScoreSummary's "Your score so far" headline); FixBanner's job is to
+    // stop claiming a rejection / a points gap while the score is provisional.
+    expect(sr).toContain('This score is provisional')
+    expect(read('frontend/src/components/scan/ScoreSummary.jsx')).toMatch(/provisional \? 'Your score so far'/)
+    expect(fb).toMatch(/!eligible && !provisional && gap > 0/)
   })
 })

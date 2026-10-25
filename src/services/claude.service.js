@@ -1683,7 +1683,27 @@ function decodeStyleAttrEntities(v) {
 // below never matched that spelling. Comments carry nothing a static resume needs, so they are removed first (an unclosed
 // one runs to the end of its block, as in a browser) and every filter then judges the text the browser will tokenize.
 const stripCssComments = css => css.replace(/\/\*[\s\S]*?(?:\*\/|$)/g, '')
+// SCAN/ATS (bug, reproduced): the javascript:/data: filter below only matched a quoted value that STARTS with the literal
+// scheme, so `href=javascript:alert(1)` (unquoted), `java<TAB>script:`, `jav&#x61;script:`, `javascript&colon;` and a leading
+// control character all walked through (a fidelity check reads http(s) links only, so nothing downstream caught them either).
+// A browser decodes character references and drops tabs / newlines / leading control characters before it reads the scheme, so
+// the value is judged the same way here: whatever the attribute is quoted with, decoded, de-whitespaced, then compared.
+const NAMED_REFS = { colon: ':', tab: '\t', newline: '\n', lpar: '(', rpar: ')', sol: '/', period: '.', quot: '"', apos: "'", amp: '&', lt: '<', gt: '>' }
+function decodeAttrValue(v) {
+  return String(v)
+    .replace(/&#x([0-9a-f]+);?/gi, (m, h) => { const n = parseInt(h, 16); return n > 0x10ffff ? '' : String.fromCodePoint(n) })
+    .replace(/&#(\d+);?/g, (m, d) => { const n = parseInt(d, 10); return n > 0x10ffff ? '' : String.fromCodePoint(n) })
+    .replace(/&([a-z]+);/gi, (m, n) => (Object.prototype.hasOwnProperty.call(NAMED_REFS, n.toLowerCase()) ? NAMED_REFS[n.toLowerCase()] : m))
+}
+const DANGEROUS_SCHEME = /^(?:javascript|data|vbscript):/i
+const isDangerousUrlValue = v => DANGEROUS_SCHEME.test(decodeAttrValue(v).replace(/[\u0000-\u0020\u007f-\u009f\u00ad\u200b-\u200f\u2028\u2029\ufeff]+/g, ''))
+const URL_ATTR = /(\b(?:href|src|xlink:href|data|poster|background|formaction|action)\s*=\s*)(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi
+function neutralizeScriptUrls(html) {
+  return html.replace(/<[a-zA-Z](?:"[^"]*"|'[^']*'|[^>"'])*>/g, tag =>
+    tag.replace(URL_ATTR, (m, lead, dq, sq, bare) => (isDangerousUrlValue(dq ?? sq ?? bare ?? '') ? `${lead}"#"` : m)))
+}
 function sanitizeGeneratedHtml(html) {
+  html = neutralizeScriptUrls(String(html ?? ''))
   html = html
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, blk => stripCssComments(decodeCssEscapes(blk)))
     .replace(/\bstyle\s*=\s*"([^"]*)"/gi, (m, v) => `style="${stripCssComments(decodeCssEscapes(decodeStyleAttrEntities(v)))}"`)
@@ -1705,7 +1725,7 @@ function sanitizeGeneratedHtml(html) {
   out = out.replace(/<(img|iframe|object|embed|applet|frame|video|audio|source|track|base|input|use|feImage)\b[^>]*\/?>/gi, '')
   // Attributes that fetch or phone home with no script: srcset/poster (images), ping (beacon on
   // click), formaction, and SVG's xlink:href. None has a role in a static resume.
-  out = out.replace(/[\s/](?:srcset|imagesrcset|poster|ping|formaction|xlink:href)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+  out = out.replace(/[\s/](?:srcset|imagesrcset|poster|ping|formaction|xlink:href|action)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
   // image-set("http://…" 1x) takes a bare STRING, not url(…), so the url() filter below never
   // sees it — yet it triggers a fetch like any background image.
   out = out.replace(/(?:-webkit-)?image-set\s*\([^)]*\)/gi, 'none')

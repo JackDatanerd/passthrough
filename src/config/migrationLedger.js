@@ -41,6 +41,7 @@ const LEDGER_NAMES = {
   114: '0114_tax_id_sealed',
   115: '0115_partners_section4_round38',
   116: '0116_partners_section4_round39',
+  117: '0117_partners_section4_round40',
 }
 
 module.exports = { LEDGER_NAMES }

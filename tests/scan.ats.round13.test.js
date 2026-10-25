@@ -21,7 +21,8 @@ describe('B1 - rescanVersion survives the upload middleware', () => {
     expect(store.formFields.rescanVersion).toBe('delivered')
   })
   it('the form field the frontend sends is the one the controller reads', () => {
-    expect(fs.readFileSync('frontend/src/components/scan/ScanForm.jsx', 'utf8')).toContain("'rescanVersion'")
+    // The form was rebuilt around useScanForm.js, which now builds the FormData the controller reads.
+    expect(fs.readFileSync('frontend/src/components/scan/useScanForm.js', 'utf8')).toContain("'rescanVersion'")
     expect(fs.readFileSync('src/middleware/upload.js', 'utf8')).toMatch(/rescanVersion:\s+textField\('rescanVersion'/)
   })
 })

@@ -260,9 +260,19 @@ function docxXmlToLines(xml, ctx = {}) {
     // A tab STOP definition (<w:tabs><w:tab w:val="right" w:pos="..."/></w:tabs> in the paragraph properties) is layout,
     // not content: it matched the same pattern as a tab character and put a phantom leading tab on every paragraph that
     // has a right-aligned date (the commonest Word resume layout), so only tabs inside runs are converted.
-    const withBreaks = p.replace(/<w:tabs>[\s\S]*?<\/w:tabs>/g, '').replace(/<w:tab\b[^>]*\/>/g, '\t').replace(/<w:(br|cr)\b[^>]*\/>/g, '\n')
+    // SCAN/ATS (bug, reproduced): three more run elements carry content as EMPTY elements, not <w:t> text, and were silently
+    // dropped. A non-breaking hyphen (Ctrl+Shift+-, common in phone numbers and date ranges) turned "2019-2021" into
+    // "20192021" and "555-123-4567" into "5551234567"; an alignment tab (<w:ptab/>, right-aligned dates in newer Word
+    // layouts) glued "Acme Corp" onto its date; and a symbol-font bullet (<w:sym Wingdings F0A7>) vanished, so the line was
+    // no longer a bullet. Each is now read as the character it renders as.
+    const BULLET_SYM = /^F0(?:B7|A7|D8|76|6E|71|9F|FC|E0)$/i
+    const withBreaks = p.replace(/<w:tabs>[\s\S]*?<\/w:tabs>/g, '')
+      .replace(/<w:tab\b[^>]*\/>/g, '\t').replace(/<w:ptab\b[^>]*\/>/g, '\t')
+      .replace(/<w:noBreakHyphen\b[^>]*\/>/g, '\u2011')
+      .replace(/<w:sym\b[^>]*\bw:char="([0-9A-Fa-f]+)"[^>]*\/>/g, (_, ch) => (BULLET_SYM.test(ch) ? '\u2022' : ''))
+      .replace(/<w:(br|cr)\b[^>]*\/>/g, '\n')
     const parts = []
-    for (const m of withBreaks.matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>|[\t\n]/g)) {
+    for (const m of withBreaks.matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>|[\t\n\u2011\u2022]/g)) {
       parts.push(m[1] !== undefined ? m[1] : m[0])
     }
     // AUDIT FIX (Auth/Scan round): entity decoding ran &amp; FIRST, so the
@@ -274,6 +284,7 @@ function docxXmlToLines(xml, ctx = {}) {
       .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
       .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
       .replace(/&amp;/g, '&')
+      .replace(/\u2011/g, '-')   // a non-breaking hyphen is a hyphen to every date / phone / keyword rule downstream
     // AUDIT FIX (Auth/Scan round) — the single biggest scoring defect found:
     // a Word bullet or numbered item is NOT text. The marker lives in
     // numbering.xml and the paragraph only carries <w:numPr> (or a List*
