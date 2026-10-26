@@ -9,6 +9,7 @@ import { ReferralCodeEntry, PricingFailedNotice } from '../ui/ReferralCodeEntry'
 import NewTag from '../ui/NewTag'
 import { formatMonthDay } from '../../lib/utils'
 import { coverLetterText } from '../../lib/coverLetterOffer'
+import HumanRewriteOption from './HumanRewriteOption'
 
 // A typical professional resume writer's fee, in cents (USD only - see showWriterCompare). Used as the
 // reference point on the offer; change it here if the market figure you stand behind changes.
@@ -245,6 +246,8 @@ export default function FixBanner({
 
       {isBadge && <Alt lead="Want it rewritten too?" tier="FIX" label="Fix & verify" testid="alt-fix" />}
       <Alt lead="Just the rewrite, no Verified?" tier="FIX_PLAIN" label="Fix only" testid="alt-plain" />
+
+      <HumanRewriteOption />   {/* Experts Phase 0A demand test: renders nothing unless the server flag is on */}
 
       {showWriterCompare && (
         <div className="mt-3 flex flex-wrap gap-x-3.5 gap-y-1 border-t border-gray-200 pt-2.5 text-xs text-gray-500" data-testid="writer-compare" aria-label="How it compares">

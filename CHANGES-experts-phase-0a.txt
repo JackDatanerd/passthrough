@@ -1,0 +1,40 @@
+Passthrough Experts, Phase 0A: the Human rewrite demand test (fake door). Migration 0119.
+Base commit: ae07e09 (26 Oct 2026, 13:34 +03:00). Waitlist only: no payment, no deposit, no job table, no expert realm.
+
+WHAT WAS BUILT
+ A1 A "Human rewrite" button on the offer card (FixBanner), as a small secondary block under the AI Fix and "Fix only" lines. It never replaces the AI Fix. Renders nothing unless the flag is on.
+ A2 A modal: honest copy (opening soon, not available yet, joining is free, no payment is taken, prices are the expected launch price), the ladder (Human polish; Human rewrite 7-day / 48-hour / 24-hour), a cover letter add-on, the one-sentence privacy line. No preselected tier, no "most popular", no countdown, no scarcity, no live claim.
+ A3 Three price variants from product spec 16.1 (USD): low $49/$79/$99/$129 +$25; base $59/$89/$119/$149 +$29; high $69/$99/$139/$179 +$39. The server derives the variant from a random visitor id kept in the browser, so a browser sees the same prices every visit. The browser never sends a variant or a price.
+ A4 Events (table human_demand_events): button_shown, button_clicked, tier_selected, cover_letter_toggled, modal_dismissed from the browser; waitlist_submitted written by the server only when a NEW waitlist row is created. Columns: event, visitor id, price variant, tier, cover letter yes/no, time. Unknown keys are rejected, so no resume text, scan contents or contact detail can be stored.
+ A5 Waitlist (table human_demand_waitlist): one row per person and tier. Signed in = user id only (account email not copied). No account = email, lower-cased, with the email box ticked. Also: cover letter interest, price variant, quoted prices, contact consent, visitor id. Re-joining the same tier is idempotent (ON CONFLICT DO NOTHING; only cover letter interest and consent are refreshed).
+ A6 Routes (all 404 unless HUMAN_DEMAND_ENABLED=true): GET /api/human-demand/config, POST /api/human-demand/events, POST /api/human-demand/waitlist. Per-IP limits: 60/10 min, 120/hour, 10/hour. Input validated with zod (strict).
+ A7 Flag: Worker variable HUMAN_DEMAND_ENABLED, on only for the exact string "true". Default off.
+ A8 Results: docs/experts/phase-0a-results.sql (7 read-only queries: funnel, tier mix, cover letter attach, toggles, dismissals, two sanity checks). No admin UI, no CSV route.
+ A9 Migration 0119: two create table, indexes, row level security on with no policy, revoke all from anon/authenticated, ledger row, schema_version upsert. No function added (nothing to revoke execute on). Nothing existing is altered or dropped (the migration test proves it).
+
+EXISTING FILES TOUCHED
+ frontend/src/components/scan/FixBanner.jsx   one import + one JSX line mounting <HumanRewriteOption />
+ src/index.js                                 one require + one app.route('/api/human-demand', ...)
+ src/config/constants.js                      EXPECTED_SCHEMA_VERSION 118 -> 119
+ src/config/migrationLedger.js                ledger line for 119
+ Behaviour change with the flag OFF: one extra GET /api/human-demand/config per tab session on the offer card, answered 404 and remembered for the session. It counts toward the general per-IP limit. Nothing else.
+
+NEW FILES
+ supabase/migrations/0119_human_demand_test.sql; src/lib/humanDemand.js; src/middleware/humanDemandLimits.js; src/controllers/human-demand.controller.js; src/routes/human-demand.routes.js; frontend/src/lib/humanDemand.js; frontend/src/components/scan/HumanRewriteOption.jsx; docs/experts/phase-0a-results.sql; docs/experts/STATUS.md; this file.
+ Tests: tests/humanDemand.controller.test.js, tests/humanDemand.routes.test.js, tests/migrations.0119.pglite.test.js, frontend/tests/components/humanRewriteOption.test.jsx.
+
+TESTED
+ 52 new tests pass. Whole frontend suite: only the 7 PartnerApply failures that already fail on the base. Baseline (untouched base): 7 failed / 8421 passed / 1 todo. Details in docs/experts/STATUS.md.
+
+DECISIONS TO CONFIRM (STATUS.md has the full list)
+ Two tables despite engineering spec section 19 ("Migrations: none"); privacy line wording (6.1 has no single sentence); pass bars are not set anywhere (section 23); no 18+ tick on the waitlist; 24-hour tier shown although 6.1 says only when coverage supports it.
+
+KNOWN GAPS
+ No self-service removal from the waitlist; visitor emails not verified; variant is per browser, not per person; scrub_account_data not extended (existing function; signed-in rows hold only the user id); USD only; no bot check beyond rate limits; the backend suite was not re-run after the frontend-only fix; nothing run against a live database, real browser, deployment or your analytics.
+
+UNRELATED BUG SEEN, NOT FIXED
+ frontend/tests/pages/PartnerApply.test.jsx: 7 tests fail on the base ("default.get is not a function", PartnerApply.jsx:34). The test's api mock has no get since Partners round 41.
+
+MANUAL STEPS
+ 1. Apply migration 0119 to the database BEFORE deploying the Worker (the health check expects schema 119).
+ 2. Deploy. Turn the flag on only after the checks in STATUS.md / the gate summary: set HUMAN_DEMAND_ENABLED=true as a Worker variable.

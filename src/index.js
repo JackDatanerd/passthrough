@@ -38,6 +38,7 @@ const outcomesRoutes    = require('./routes/outcomes.routes')
 const profileRoutes      = require('./routes/profile.routes')
 const partnersRoutes     = require('./routes/partners.routes')
 const adminRoutes        = require('./routes/admin.routes')
+const humanDemandRoutes  = require('./routes/human-demand.routes')   // Experts Phase 0A demand test; 404 unless HUMAN_DEMAND_ENABLED=true
 
 const { getSupabase } = require('./config/supabase')
 const emailService = require('./services/email.service')
@@ -119,6 +120,7 @@ app.route('/api/client-errors',  clientErrorRoutes)   // the SPA reporting a bro
 app.route('/api/outcomes',       outcomesRoutes)
 app.route('/api/partners',       partnersRoutes)
 app.route('/api/admin',          adminRoutes)
+app.route('/api/human-demand',   humanDemandRoutes)   // flag-gated inside the router: 404 while the flag is off
 
 // ── 5. Error handler ──────────────────────────────────────────────────────────
 app.onError(errorHandler)

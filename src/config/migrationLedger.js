@@ -43,6 +43,7 @@ const LEDGER_NAMES = {
   116: '0116_partners_section4_round39',
   117: '0117_partners_section4_round40',
   118: '0118_database_round6',
+  119: '0119_human_demand_test',
 }
 
 module.exports = { LEDGER_NAMES }
