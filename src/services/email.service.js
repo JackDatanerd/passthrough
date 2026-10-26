@@ -81,6 +81,8 @@ const RECIPIENT_LIMITS = {
   // Round 6: the applicant acknowledgment goes to an address typed into a public form, so it is capped per
   // recipient — a third party's address can't be mailbombed through repeated applications.
   partner_application_received: { max: 2, windowSeconds: 24 * 3600 },
+  // Round 41: the payout-details reminder is sent by the hourly sweep, at most once per closed cycle per partner; this is the backstop.
+  partner_payout_details_reminder: { max: 2, windowSeconds: 7 * 24 * 3600 },
   // Separate budget for the partner's own "email me my link" button (see quotaKey in send()).
   partner_payout_link_self: { max: 4, windowSeconds: 3600, refundOnFailure: 8 },
   // Round 7: the public "I lost my link" form mails an address typed by anyone, so it is capped per recipient.
@@ -530,6 +532,15 @@ async function sendPartnerPayoutDetailsRequest(env, supabase, email, name, payou
 // both readers). Goes through send() like every other partner email here, so
 // it inherits the per-recipient throttle, plain-text alternative, and
 // awaited email_logs write from the Section 9/10 hardening above.
+// Partners round 41 (G1): money is payable but the partner has no payout details, so nothing can be sent. Carries the (read-only)
+// dashboard link, whose "Email me a link to add them" button issues the payout link; it deliberately does not mint a payout link
+// itself, which would silently kill a link the partner may already be using. Not an always-send template: suppression applies.
+async function sendPartnerPayoutDetailsReminder(env, supabase, email, name, amountCents, currency, dashboardUrl) {
+  return send(env, supabase, email, 'Your Passthrough commission is waiting \u2014 add your payout details', 'partner_payout_details_reminder', {
+    NAME: name, AMOUNT: fmtMoney(amountCents, currency), DASHBOARD_URL: dashboardUrl
+  })
+}
+
 async function sendPartnerEmailChanged(env, supabase, to, name, oldEmail, newEmail) {
   return send(env, supabase, to, 'Your Passthrough partner account email was changed', 'partner_email_changed', {
     NAME: name, OLD_EMAIL: oldEmail, NEW_EMAIL: newEmail
@@ -1121,6 +1132,6 @@ module.exports = {
   sendPartnerPayoutDetailsRequest, sendPartnerApplicationReceived, sendPayoutSent, sendReferralCodeCreated,
   sendPayoutDetailsChanged, sendPartnerLinkRegenerated, sendPartnerEmailChanged, sendPartnerConversionEarned,
   sendPartnerStatusChanged, sendPartnerCodeChanged, sendPartnerRateChanged, sendPartnerCommissionReversed, sendPartnerSaleMoved,
-  sendPartnerBalanceAdjusted, sendPartnerTermsUpdate, sendPartnerApplicationRejected,
+  sendPartnerBalanceAdjusted, sendPartnerPayoutDetailsReminder, sendPartnerTermsUpdate, sendPartnerApplicationRejected,
   sendPartnerDashboardLinkRegenerated, sendPartnerPayoutVoided, sendPartnerLinksRecovery
 }

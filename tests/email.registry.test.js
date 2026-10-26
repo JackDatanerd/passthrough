@@ -43,6 +43,7 @@ const CALLS = {
   sendPartnerLinksRecovery: ['p@x.y', 'P', 'https://d'],
   sendPartnerBalanceAdjusted: ['p@x.y', 'P', -500, 'USD', 'Self-referral via a second account', 'https://d'],
   sendPartnerTermsUpdate: ['p@x.y', 'P', '2026-10', 'https://t', 'https://d'],
+  sendPartnerPayoutDetailsReminder: ['p@x.y', 'P', 4500, 'KES', 'https://d'],
   sendPartnerDashboardLinkRegenerated: ['p@x.y', 'P', 'https://d'], sendPartnerPayoutVoided: ['p@x.y', 'P', 500, 'USD', 'Entered against the wrong cycle.'],
   sendEmployerLeadRejoin: ['l@x.y', { rejoinUrl: 'https://j', removeUrl: 'https://r', unsubscribeUrl: 'https://u' }],
   sendEmployerLeadAck: ['l@x.y', 'Lee', 'Design', { confirmUrl: 'https://c', removeUrl: 'https://r', prefsUrl: 'https://p', unsubscribeUrl: 'https://u' }],

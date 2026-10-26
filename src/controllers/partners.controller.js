@@ -168,14 +168,21 @@ const isCreditRow = l => !!l.reverses_ledger_id || l.kind === 'ADJUSTMENT'
 function buildCodeStats(ledgerRows, codes) {
   const rows = ledgerRows || []
   const reversed = new Set(rows.filter(l => l.reverses_ledger_id).map(l => l.reverses_ledger_id))
+  // Round 41 (bug): a partial refund is an ADJUSTMENT row, and the ledger constraint (kind_shape) forbids it carrying a code, so it never
+  // reached any code's earnings: a code that had refunded part of a sale still showed the full commission, on the partner dashboard and
+  // in admin. It now counts against the code of the sale it adjusts (adjusts_ledger_id). A manual adjustment adjusts no sale and, as
+  // before, belongs to no code. An adjustment is money only: it is never a conversion.
+  const codeOfSale = new Map()
+  for (const l of rows) if (l.referral_code_id) codeOfSale.set(l.id, l.referral_code_id)
   const out = {}
   for (const code of codes || []) out[code.id] = { conversions: 0, grossCents: 0, commissionCents: 0 }
   for (const l of rows) {
-    const b = out[l.referral_code_id]
+    const codeId = l.referral_code_id || (l.adjusts_ledger_id ? codeOfSale.get(l.adjusts_ledger_id) : null)
+    const b = out[codeId]
     if (!b) continue
-    b.grossCents += l.gross_amount_cents
+    b.grossCents += l.gross_amount_cents || 0
     b.commissionCents += l.commission_amount_cents
-    if (!l.reverses_ledger_id && !reversed.has(l.id)) b.conversions += 1
+    if (l.kind !== 'ADJUSTMENT' && !l.reverses_ledger_id && !reversed.has(l.id)) b.conversions += 1
   }
   return out
 }
@@ -708,7 +715,7 @@ async function loadUnpaidLedgerByPartner(supabase) {
 // owner gets ONE alert: how many partners are ready, the total, and how much is still held or lacks payout details.
 // No names or addresses in the message (the alert history is erased partner-by-partner on removal).
 async function sweepPayoutDue(env, supabase) {
-  const out = { sent: false, ready: 0, readyCents: 0 }
+  const out = { sent: false, ready: 0, readyCents: 0, waiting: 0, waitingCents: 0 }
   try {
     // Without the KV the once-per-cycle marker cannot be kept and the hourly sweep would alert every hour: stay quiet.
     if (!env || !env.OWNER_ALERT_EMAIL || !env.RATE_LIMIT_KV) return out
@@ -725,12 +732,13 @@ async function sweepPayoutDue(env, supabase) {
       if (!prev || typeof prev.readyCents !== 'number') return out     // marker from before follow-ups: nothing more to do
     }
 
-    const partners = await loadAllPartners(supabase, t => t.select('id, email, payout_method'))
+    const partners = await loadAllPartners(supabase, t => t.select('id, email, payout_method, payout_details_submitted_at, terms_version'))
     const live = (partners || []).filter(p => !isRemovedEmail(p.email))
     const ledgerByPartner = await loadUnpaidLedgerByPartner(supabase)
     const holdDays = holdDaysFor(env), minPayout = minPayoutFor(env)
-    let ready = 0, readyCents = 0, noDetails = 0, noDetailsCents = 0, heldCents = 0
+    let ready = 0, readyCents = 0, noDetails = 0, noDetailsCents = 0, heldCents = 0, waiting = 0, waitingCents = 0
     const cur0 = c.activeCurrency(env)
+    const holdHours = payoutDetailsHoldHoursFor(env), termsGate = payoutRequiresCurrentTerms(env)
     for (const p of live) {
       const ledger = ledgerByPartner.get(p.id) || []
       const r = payoutReadiness(ledger, holdDays, minPayout)
@@ -739,9 +747,15 @@ async function sweepPayoutDue(env, supabase) {
       // A payout can only settle one currency: the payout-run export leaves such a partner out, so the alert does too.
       if (new Set(ledger.map(l => String(l.currency || cur0).toUpperCase())).size > 1) continue
       if (!p.payout_method) { noDetails++; noDetailsCents += r.readyToPayCents; continue }
+      // Round 41 (bug): a partner whose payout details changed inside the hold window, or who is behind on the terms while
+      // PAYOUT_REQUIRES_CURRENT_TERMS is on, was counted "ready to pay"; Run payouts then refused them until the admin confirmed.
+      // They are counted apart now, and join "ready" (a follow-up alert) once the hold ends or the terms are accepted.
+      if (payoutHoldUntilOf(p.payout_details_submitted_at, holdHours) || (termsGate && p.terms_version !== PARTNER_TERMS_VERSION)) {
+        waiting++; waitingCents += r.readyToPayCents; continue
+      }
       ready++; readyCents += r.readyToPayCents
     }
-    out.ready = ready; out.readyCents = readyCents
+    out.ready = ready; out.readyCents = readyCents; out.waiting = waiting; out.waitingCents = waitingCents
     const cur = c.activeCurrency(env)
     if (prev) {
       if (readyCents > prev.readyCents) {
@@ -749,6 +763,7 @@ async function sweepPayoutDue(env, supabase) {
           `Since the last alert for cycle ${closed.label}, more commission became payable (a hold expired or a partner added payout details).\n` +
           `ready to pay now: ${ready} partner(s), ${(readyCents / 100).toFixed(2)} ${cur} (was ${(prev.readyCents / 100).toFixed(2)} ${cur} at the last check)\n` +
           (noDetails ? `ready but no payout details yet: ${noDetails} partner(s), ${(noDetailsCents / 100).toFixed(2)} ${cur}\n` : '') +
+          (waiting ? `payable but waiting (payout details changed recently, or the current terms are not accepted): ${waiting} partner(s), ${(waitingCents / 100).toFixed(2)} ${cur}\n` : '') +
           `Open Admin -> Partners -> Run payouts.`, { dedupeKey: `${closed.key}:more:${readyCents}` })
         if (more !== false) {
           out.sent = true
@@ -766,6 +781,7 @@ async function sweepPayoutDue(env, supabase) {
         `Cycle ${closed.label} has closed.\n` +
         `ready to pay: ${ready} partner(s), ${(readyCents / 100).toFixed(2)} ${cur}\n` +
         (noDetails ? `ready but no payout details yet: ${noDetails} partner(s), ${(noDetailsCents / 100).toFixed(2)} ${cur}\n` : '') +
+        (waiting ? `payable but waiting (payout details changed recently, or the current terms are not accepted): ${waiting} partner(s), ${(waitingCents / 100).toFixed(2)} ${cur}\n` : '') +
         (heldCents ? `still held (hold window / open dispute): ${(heldCents / 100).toFixed(2)} ${cur}\n` : '') +
         `Open Admin -> Partners -> Run payouts.`, { dedupeKey: closed.key })
       out.sent = alertResult !== false
@@ -776,6 +792,44 @@ async function sweepPayoutDue(env, supabase) {
       await referralService.keyMark(env, checkedKey, 6 * 3600)
     }
   } catch (err) { console.error('sweepPayoutDue:', err.message) }
+  return out
+}
+
+// Partners round 41 (feature gap): a partner whose commission is payable but who never added payout details used to hear NOTHING:
+// the owner was alerted (sweepPayoutDue) and the dashboard shows a banner, but a partner who does not open the dashboard simply never
+// got paid. Once per closed cycle each such ACTIVE partner now gets one email pointing at the dashboard, whose "Email me a link to add
+// them" button issues the payout link. Independent of OWNER_ALERT_EMAIL; needs the KV so it can never repeat hourly. Never throws.
+const DETAILS_REMINDER_MAX_PER_RUN = 20
+async function sweepPayoutDetailsReminders(env, supabase) {
+  const out = { sent: 0, skipped: 0 }
+  try {
+    if (!env || !env.RATE_LIMIT_KV || !env.FRONTEND_URL) return out
+    const closed = recentCycles(2)[1]
+    // The pass reads every partner and the whole unpaid ledger, so a finished pass is remembered for 6 hours (like sweepPayoutDue's).
+    const checkedKey = `partner-details-reminder-checked:${closed.key}`
+    if (await referralService.keySeen(env, checkedKey)) return out
+    const partners = await loadAllPartners(supabase, t => t.select('id, name, email, status, payout_method, dashboard_token, dashboard_token_version').eq('status', 'ACTIVE').is('payout_method', null))
+    const candidates = (partners || []).filter(p => p.email && !isRemovedEmail(p.email) && p.status === 'ACTIVE' && !p.payout_method)
+    if (!candidates.length) return out
+    const ledgerByPartner = await loadUnpaidLedgerByPartner(supabase)
+    const holdDays = holdDaysFor(env), minPayout = minPayoutFor(env), cur = c.activeCurrency(env)
+    let attempts = 0
+    for (const p of candidates) {
+      if (attempts >= DETAILS_REMINDER_MAX_PER_RUN) break
+      const ledger = ledgerByPartner.get(p.id) || []
+      const r = payoutReadiness(ledger, holdDays, minPayout)
+      if (r.readyToPayCents <= 0) continue
+      if (new Set(ledger.map(l => String(l.currency || cur).toUpperCase())).size > 1) continue   // one payout settles one currency
+      const sentKey = `partner-details-reminder:${p.id}:${closed.key}`
+      const tryKey = `partner-details-reminder-try:${p.id}:${closed.key}`
+      if (await referralService.keySeen(env, sentKey) || await referralService.keySeen(env, tryKey)) { out.skipped++; continue }
+      attempts++
+      const ok = await emailService.sendPartnerPayoutDetailsReminder(env, supabase, p.email, p.name, r.readyToPayCents, cur, await partnerLinks.dashboardUrlOf(env, p)).catch(() => false)
+      if (ok !== false) { out.sent++; await referralService.keyMark(env, sentKey, 20 * 24 * 3600) }
+      else await referralService.keyMark(env, tryKey, 12 * 3600)   // suppressed / throttled / provider down: not hourly, retried later in the cycle
+    }
+    if (attempts < DETAILS_REMINDER_MAX_PER_RUN) await referralService.keyMark(env, checkedKey, 6 * 3600)   // cap reached: the next run continues
+  } catch (err) { console.error('sweepPayoutDetailsReminders:', err.message) }
   return out
 }
 
@@ -794,7 +848,11 @@ async function adminPayoutRunExport(ctx) {
     if (r.readyToPayCents <= 0) continue
     if (new Set(ledger.map(l => String(l.currency || currency).toUpperCase())).size > 1) continue
     rows.push({ id: row.id, name: row.name, email: row.email, payoutMethod: row.payout_method, payoutDetails: row.payout_details || {},
-      payoutDetailsSubmittedAt: row.payout_details_submitted_at, taxCountry: row.tax_country ?? null, taxId: (await fieldCrypto.openTaxId(ctx.env, row.tax_id)) || null,
+      payoutDetailsSubmittedAt: row.payout_details_submitted_at,
+      // Round 41: the server states what Run payouts would refuse without an admin confirmation, so no consumer has to recompute it.
+      detailsHoldUntil: payoutHoldUntilOf(row.payout_details_submitted_at, payoutDetailsHoldHoursFor(ctx.env)),
+      termsCurrent: row.terms_version === PARTNER_TERMS_VERSION,
+      taxCountry: row.tax_country ?? null, taxId: (await fieldCrypto.openTaxId(ctx.env, row.tax_id)) || null,
       readyToPayCents: r.readyToPayCents, currency })
   }
   await logAdminAction(ctx, supabase, 'partner.payout_run_exported', 'partner', null, { partners: rows.length })
@@ -893,7 +951,7 @@ async function adminGetPartner(ctx) {
   if (!row) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
 
   const ledger = await loadLedgerForPartner(supabase, partnerId,
-    'id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, currency, payout_id, reverses_ledger_id, reversal_reason, kind, adjustment_reason, usage_counted, attribution_source, attribution_sub, created_at, payments(status, paystack_ref)')
+    'id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, currency, payout_id, reverses_ledger_id, adjusts_ledger_id, reversal_reason, kind, adjustment_reason, usage_counted, attribution_source, attribution_sub, created_at, payments(status, paystack_ref)')
   row.commission_ledger = ledger
   const camel = partnerRowToCamel(row)
   // Round 27 (gap): this view used to hand any admin session the FULL account number and tax ID (and every payout's full
@@ -2079,11 +2137,14 @@ function conversionRowOf(row, codeTextById) {
 function buildCycleTrend(ledgerRows, count = 6) {
   const cycles = recentCycles(count).reverse()
   const byKey = new Map(cycles.map(cy => [cy.key, { key: cy.key, label: cy.label, isCurrent: cy.isCurrent, commissionCents: 0, sales: 0 }]))
+  // Round 41 (bug): a sale that was later refunded still counted as a sale in its cycle, so the chart could say "5 sales" for a cycle
+  // whose card (and the Conversions total) said 3. A reversed sale is not a sale; its commission and its reversal still net in the money.
+  const reversed = new Set((ledgerRows || []).filter(l => l.reverses_ledger_id).map(l => l.reverses_ledger_id))
   for (const l of ledgerRows || []) {
     const b = byKey.get(cycleKey(l.created_at))
     if (!b) continue
     b.commissionCents += l.commission_amount_cents
-    if (l.kind !== 'ADJUSTMENT' && !l.reverses_ledger_id) b.sales += 1
+    if (l.kind !== 'ADJUSTMENT' && !l.reverses_ledger_id && !reversed.has(l.id)) b.sales += 1
   }
   return cycles.map(cy => byKey.get(cy.key))
 }
@@ -2152,7 +2213,7 @@ async function getPartnerDashboard(ctx) {
   if (!partner) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)
   // Round 27: the ledger is read in keyset pages (see loadLedgerForPartner), not embedded in the partner query.
   partner.commission_ledger = await loadLedgerForPartner(supabase, partner.id,
-    'id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, reverses_ledger_id, reversal_reason, kind, adjustment_reason, attribution_source, attribution_sub, created_at, payments(status)')
+    'id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, reverses_ledger_id, adjusts_ledger_id, reversal_reason, kind, adjustment_reason, attribution_source, attribution_sub, created_at, payments(status)')
 
   const ledger = partner.commission_ledger || []
   const codes  = partner.referral_codes || []
@@ -2539,7 +2600,13 @@ const REAPPLY_COOLDOWN_DAYS = 30
 async function applyAsPartner(ctx) {
   const body = applicationSchema.parse(await ctx.req.json())
   if (body.company) return ctx.json(APPLY_OK)   // honeypot tripped — pretend success
-  if (body.termsVersion !== undefined && body.termsVersion !== PARTNER_TERMS_VERSION)
+  // Round 41 (bug): the version was optional, and an application without one skipped this check yet was stamped with the CURRENT version
+  // as accepted. The form swallowed a failed /program fetch and sent none, so an applicant could "accept" terms the page never loaded.
+  // It is required now; the form blocks submit until it has the version (and an older cached form is told to reload).
+  if (body.termsVersion === undefined)
+    return ctx.json({ success: false, code: 'TERMS_VERSION_REQUIRED', currentTermsVersion: PARTNER_TERMS_VERSION,
+      message: 'Reload this page to read the current partner terms, then apply.' }, 409)
+  if (body.termsVersion !== PARTNER_TERMS_VERSION)
     return ctx.json({ success: false, code: 'TERMS_VERSION_CHANGED', currentTermsVersion: PARTNER_TERMS_VERSION,
       message: 'The partner terms were updated while this page was open. Reload to read the current version, then apply.' }, 409)
 
@@ -3914,7 +3981,7 @@ async function adminTaxSummary(ctx) {
 
 module.exports = {
   adminListTermsAcceptances,
-  buildCyclesSummary, buildCycleTrend, buildAttributionMix, buildSubMix, sweepPayoutDue,
+  buildCyclesSummary, buildCycleTrend, buildCodeStats, buildAttributionMix, buildSubMix, sweepPayoutDue, sweepPayoutDetailsReminders,
   adminCreatePartner, adminUpdatePartner, adminListPartners, adminGetPartner,
   adminResendPayoutLink, adminRegeneratePayoutLink, adminGetPartnerLinks, adminRecordPayout,
   adminCreateReferralCode, adminUpdateReferralCode, adminVoidPayout, adminRecordPayoutBatch,

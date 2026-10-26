@@ -216,7 +216,7 @@ describe('partner applications', () => {
       },
     }) }
   }
-  const body = { name: 'Ann', email: 'ann@x.co', audience: 'newsletter', acceptTerms: true }
+  const body = { name: 'Ann', email: 'ann@x.co', audience: 'newsletter', termsVersion: '2026-10b', acceptTerms: true }
   it('stores a valid application and alerts the owner', async () => {
     t = setupApp()
     const r = await t.mod.applyAsPartner(ctxOf({}, { body }))

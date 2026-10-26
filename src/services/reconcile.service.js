@@ -226,6 +226,8 @@ async function sweepStalePendingPayments(env, supabase, { now = Date.now() } = {
   try { await referralService.sweepExpiringCodes?.(supabase, env) } catch (_) {}
   // Round 11: one owner alert per closed payout cycle ("N partners are ready to be paid"). Never throws.
   try { await require('../controllers/partners.controller').sweepPayoutDue(env, supabase) } catch (_) {}
+  // Round 41: the partners themselves hear (once per closed cycle) that commission is waiting on their payout details. Never throws.
+  try { await require('../controllers/partners.controller').sweepPayoutDetailsReminders(env, supabase) } catch (_) {}
 
   result.checked = stale?.length || 0
   if (!result.checked) return result

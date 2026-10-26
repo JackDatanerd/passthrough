@@ -208,9 +208,11 @@ describe('G3/G4 — trend and attribution mix', () => {
       { id: 'a', created_at: now, commission_amount_cents: 1000, kind: 'SALE' },
       { id: 'b', created_at: now, commission_amount_cents: -400, kind: 'SALE', reverses_ledger_id: 'a' },
       { id: 'c', created_at: now, commission_amount_cents: 100, kind: 'ADJUSTMENT' },
+      { id: 'd', created_at: now, commission_amount_cents: 500, kind: 'SALE' },
     ], 4)
     expect(trend).toHaveLength(4)
-    expect(trend[3]).toMatchObject({ isCurrent: true, commissionCents: 700, sales: 1 })
+    // Round 41: a sale that was later reversed ('a') is not a sale, so the cycle says 1 (the surviving 'd'), like the Conversions total.
+    expect(trend[3]).toMatchObject({ isCurrent: true, commissionCents: 1200, sales: 1 })
     expect(trend[0].commissionCents).toBe(0)
   })
   it('buildAttributionMix skips refunded sales, reversals and adjustments; old rows are "unknown"', async () => {

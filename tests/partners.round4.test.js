@@ -346,7 +346,7 @@ describe('G2/G3/B7 — applications: approve with rate + first code, reject with
   })
   it('a rejected applicant re-applying inside the cooldown is told OK but nothing is created or alerted', async () => {
     app({ recentReject: true })
-    const res = await t.mod.applyAsPartner(ctxOf({ name: 'Ann', email: 'ann@x.co', audience: 'newsletter', acceptTerms: true }))
+    const res = await t.mod.applyAsPartner(ctxOf({ name: 'Ann', email: 'ann@x.co', audience: 'newsletter', termsVersion: '2026-10b', acceptTerms: true }))
     expect(res.status).toBe(200)
     expect(t.st.inserted).toBeUndefined()
     expect(t.st.alerts).toEqual([])

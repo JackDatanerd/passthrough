@@ -310,7 +310,7 @@ describe('program terms', () => {
     const res = await t.mod.getProgramTerms(ctxOf({ env: { COMMISSION_HOLD_DAYS: '14', COMMISSION_MIN_PAYOUT_CENTS: '2000', PAYSTACK_CURRENCY: 'KES' } }))
     expect(res.body.data).toMatchObject({ termsVersion: '2026-10b', holdDays: 14, minPayoutCents: 2000, currency: 'KES', payoutDetailsHoldHours: 48, reapplyCooldownDays: 30 })
   })
-  const app = { name: 'Ann', email: 'ann@x.co', audience: 'newsletter' }
+  const app = { name: 'Ann', email: 'ann@x.co', audience: 'newsletter', termsVersion: '2026-10b' }
   const appSetup = o => setup({ partnersSelect: () => ({ data: [], error: null }), other: (q, st) => {
     if (q.table === 'partner_applications' && q.op === 'insert') { st.appInserts = (st.appInserts || []).concat([q.values]); return { data: null, error: o?.insertError || null } }
     return undefined

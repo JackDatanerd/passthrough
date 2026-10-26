@@ -425,12 +425,24 @@ async function recordConversionInner(supabase, payment, env, opts = {}) {
     // Round 27 (gap): the rate the partner had when the buyer CHECKED OUT, not whatever it is when this row is finally written.
     // A rate change in between (or a reconcile retry days later) used to pay the new rate on an old sale. Payments made before
     // migration 0107 carry no stamp, and a database that predates it has no column: both fall back to the current rate.
+    // Round 41 (bug): the read's error used to be dropped, so a transient failure here silently fell back to the partner's CURRENT rate
+    // and paid it with no retry and no alert. Only "the column does not exist" (a database that predates 0107) may fall back now; any other
+    // failure refuses the write, which pages the owner and leaves the sale for the reconcile retry, which re-reads the stamp.
     let stampedRate = null
     if (payment.id) {
+      let stampRes
       try {
-        const { data: stamp } = await supabase.from('payments').select('referral_commission_rate').eq('id', payment.id).maybeSingle()
-        if (stamp && stamp.referral_commission_rate != null) stampedRate = Number(stamp.referral_commission_rate)
-      } catch (_) { /* column missing: use the current rate */ }
+        stampRes = await withOneRetry(() => supabase.from('payments').select('referral_commission_rate').eq('id', payment.id).maybeSingle())
+      } catch (err) {
+        stampRes = { data: null, error: { message: err && err.message ? err.message : String(err) } }
+      }
+      if (stampRes.error) {
+        const e = stampRes.error
+        const columnMissing = e.code === '42703' || /referral_commission_rate/i.test(String(e.message || '')) && /does not exist|could not find|schema cache/i.test(String(e.message || ''))
+        if (!columnMissing) return { ok: false, recorded: false, reason: 'rate-stamp-lookup', error: String(e.message || e) }
+      } else if (stampRes.data && stampRes.data.referral_commission_rate != null) {
+        stampedRate = Number(stampRes.data.referral_commission_rate)
+      }
     }
     const rateSource = stampedRate != null && Number.isFinite(stampedRate) ? stampedRate : partner.commission_rate
     const commissionRate = rateSource == null ? NaN : Number(rateSource)

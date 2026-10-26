@@ -267,7 +267,7 @@ describe('bug 3 / G5 — delivery is reported, not assumed', () => {
 })
 
 describe('G2 — apply form challenge', () => {
-  const app = { name: 'Ann', email: 'ann@x.co', audience: 'Career coaches with 5k followers', acceptTerms: true }
+  const app = { name: 'Ann', email: 'ann@x.co', audience: 'Career coaches with 5k followers', termsVersion: '2026-10b', acceptTerms: true }
   it('is refused without a valid Turnstile token when a secret is configured, and never stored', async () => {
     t = setup({ partner: null })
     const res = await t.mod.applyAsPartner(ctxOf({ body: app, env: { TURNSTILE_SECRET_KEY: 's' } }))

@@ -105,7 +105,7 @@ describe('applyAsPartner answers before its mails (round 16)', () => {
     const never = () => new Promise(() => {})
     const calls = []
     t = load({ noPartner: true, alert: (...a) => { calls.push('alert'); return never() }, received: (...a) => { calls.push('received'); return never() } })
-    const body = { name: 'Ann', email: 'ann@x.co', acceptTerms: true }
+    const body = { name: 'Ann', email: 'ann@x.co', termsVersion: '2026-10b', acceptTerms: true }
     const done = await Promise.race([
       t.mod.applyAsPartner(ctxOf({ body })).then(() => 'answered'),
       new Promise(r => setTimeout(() => r('timeout'), 1500))

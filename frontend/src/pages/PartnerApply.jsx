@@ -27,13 +27,16 @@ export default function PartnerApply() {
   const [accepted, setAccepted] = useState(false)
   const [sent, setSent] = useState(false)
   // Partners round 38: the terms version current when this page loaded. Sent with the application so the server can refuse (409) if the terms
-  // changed in between, instead of recording acceptance of text the applicant never saw. Unknown (request failed) -> not sent, as before.
+  // changed in between, instead of recording acceptance of text the applicant never saw.
+  // Round 41 (bug): a failed fetch used to be swallowed and the application sent WITHOUT a version, which skipped that check. The version is
+  // required now: submit re-fetches it once if the page load missed it, and stops with a clear message if it still cannot be read.
   const [termsVersion, setTermsVersion] = useState(null)
+  const fetchTermsVersion = () => api.get('/partners/program')
+    .then(res => res?.data?.data?.termsVersion || res?.data?.termsVersion || null)
+    .catch(() => null)
   useEffect(() => {
     let alive = true
-    try {
-      api.get('/partners/program').then(res => { if (alive) setTermsVersion(res?.data?.data?.termsVersion || res?.data?.termsVersion || null) }).catch(() => {})
-    } catch (_) { /* no version known: the server records the current one, as before */ }
+    fetchTermsVersion().then(v => { if (alive && v) setTermsVersion(v) })
     return () => { alive = false }
   }, [])
   // Cloudflare Turnstile (opt-in: renders nothing and demands nothing unless the site key is set).
@@ -54,10 +57,19 @@ export default function PartnerApply() {
       await showError('Please complete the security check below.')
       return
     }
+    let version = termsVersion
+    if (!version) {
+      version = await fetchTermsVersion()
+      if (version) setTermsVersion(version)
+    }
+    if (!version) {
+      await showError('We couldn\u2019t load the current partner terms. Please check your connection, reload the page and try again.')
+      return
+    }
     try {
       await execute(() => api.post('/partners/apply', {
         name: name.trim(), email: email.trim(), acceptTerms: true,
-        ...(termsVersion ? { termsVersion } : {}),
+        termsVersion: version,
         ...(website.trim() ? { website: website.trim() } : {}),
         ...(audience.trim() ? { audience: audience.trim() } : {}),
         ...(message.trim() ? { message: message.trim() } : {}),

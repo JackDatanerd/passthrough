@@ -915,7 +915,9 @@ export default function PartnerDashboard() {
 
               {/* Round 6: the figures the admin side has always had. What the next payout run will actually pay, and any
                   refund credit that will net against it, instead of making the partner add up the cycle rows below. */}
-              {data.readyToPayCents > 0 && (
+              {/* Round 41 (bug): this said "ready to be paid in the next payout run" right under "we can't pay you" (no payout details) or
+                  under the "payout on hold" notice. It is shown only when the next run can actually pay it. */}
+              {data.readyToPayCents > 0 && data.hasPayoutDetails && !data.payoutHoldUntil && (
                 <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-900" data-testid="ready-to-pay">
                   <span className="font-semibold">{fmtCents(data.readyToPayCents, data.currency)}</span> is ready to be paid in the next payout run.
                 </div>

@@ -8,6 +8,6 @@ module.exports = [
   'partner_application_received', 'partner_application_rejected', 'partner_balance_adjusted',
   'partner_commission_reversed', 'partner_conversion_earned', 'partner_dashboard_link_regenerated',
   'partner_email_changed', 'partner_link_regenerated', 'partner_links_recovery', 'partner_links_self_reset',
-  'partner_payout_details_changed', 'partner_payout_details_request', 'partner_status_changed',
+  'partner_payout_details_changed', 'partner_payout_details_reminder', 'partner_payout_details_request', 'partner_status_changed',
   'partner_terms_update', 'payout_sent', 'referral_code_created'
 ]
