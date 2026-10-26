@@ -7,9 +7,10 @@
 //      these are what visitors see, so they must be TRUE or removed. Set a value to null to hide that
 //      stat's claim instead of showing a number.
 //
-//   2. SAMPLE_HOT — a design placeholder. It is shown ONLY while no field has enough reports, and while
-//      shown the page labels it as sample numbers so it can never pass as real. (Customer stories have no
-//      placeholder: the Stories section shows approved, live stories only and is hidden until there are some.)
+//   2. SAMPLE_STORIES / SAMPLE_HOT — design placeholders. They are shown ONLY while the database has no
+//      approved stories / no field with enough reports, and while shown the page tags them "Sample" so
+//      they can never pass as real. Replace them with real, consented ones, or empty the arrays to
+//      hide the sections until real data arrives.
 //
 //   3. BEFORE_AFTER — an illustration, labelled "Illustrative example" on the page. Keep the four
 //      category names: they are the product's real score categories (CategoryScores.jsx).
@@ -21,7 +22,7 @@ export const STATS_FALLBACK = { resumesScanned: 25000, interviewRatePct: 66 }
 
 // Below this many live scans the live count is not used (a small true number reads as a weak claim and
 // the fallback above is the operator's own figure). Above it, the live count always wins.
-export const MIN_LIVE_SCANS = 10
+export const MIN_LIVE_SCANS = 1000
 
 export const ATS_NAMES = ['Workday', 'Greenhouse', 'iCIMS', 'Taleo', 'Lever', 'SuccessFactors']
 
@@ -41,6 +42,31 @@ export const BEFORE_AFTER = {
     keywords: ['stakeholder management', 'roadmap', 'A/B testing', 'SQL'],
   },
 }
+
+// Shape matches GET /api/stats `stories[]` exactly, so real and sample render through the same code.
+export const SAMPLE_STORIES = [
+  {
+    id: 'sample-1', displayName: 'Amara O.', roleCategory: 'software_engineering', scoreBefore: 48, scoreAfter: 88,
+    interviewCount: null, interviewAfterDays: 6, credentialCode: null,
+    quote: 'Forty applications, zero replies. After the fix, I heard back from the first role I sent it to.',
+    story: "I'd been applying for two months and assumed the market was just brutal. My resume was a beautiful two-column template from a free design tool. The scan showed the robot read it as one jumbled block: my email was invisible and half my skills never got parsed.\n\nI rebuilt it in a clean single column, let Passthrough tighten the weak bullets, and got to 88 with a Verified link. I put the link in my application email. The recruiter told me later it's why she opened my file first.",
+    moral: 'The robot reads text, not taste.',
+  },
+  {
+    id: 'sample-2', displayName: 'Daniel M.', roleCategory: 'healthcare', scoreBefore: 55, scoreAfter: 91,
+    interviewCount: 3, interviewAfterDays: 14, credentialCode: null,
+    quote: 'I changed careers. Passthrough translated my experience into the language the job posts use.',
+    story: 'Ten years in logistics, applying to hospital operations. My resume was true, but none of the words matched. The keyword gap list read like a translation guide.\n\nAfter the rewrite I put the verification badge in my email signature. Two of my three interviews brought it up before I did.',
+    moral: "Claims are cheap. Receipts aren't.",
+  },
+  {
+    id: 'sample-3', displayName: 'Dana R.', roleCategory: 'operations', scoreBefore: 79, scoreAfter: 84,
+    interviewCount: null, interviewAfterDays: 21, credentialCode: null, tag: 'Verified link earned',
+    quote: "I didn't have a resume. I had a notes app.",
+    story: "After four years at home with my kids I had no resume: volunteering, a few freelance invoices, half a certificate, all scattered in my phone. I pasted everything into “start from scratch” with a project coordinator posting.\n\nPassthrough turned the mess into sections a robot could read. The first scan was 79, a pass but short of the credential. Two retries later it was 84, with a link I put on every application. I'd braced for the gap to be the first thing anyone saw. It was one line.",
+    moral: "You don't need a better history. You need your real one, translated.",
+  },
+]
 
 // Shape matches GET /api/stats `hotCategories[7|30]`.
 export const SAMPLE_HOT = {
