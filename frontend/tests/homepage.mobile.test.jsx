@@ -210,15 +210,24 @@ describe('sticky scan bar (phones)', () => {
   })
 })
 
+// The Stories section only renders for live stories (there is no placeholder story any more), so these two tests serve one.
+const LIVE_STORY = { id: 'x1', displayName: 'Real R.', roleCategory: 'sales', scoreBefore: 44, scoreAfter: 90, interviewCount: 2, interviewAfterDays: 4, quote: 'It worked.', story: 'I applied.\n\nThen the fix.', moral: null, credentialCode: null }
+function serveLiveStory() {
+  const base = api.get.getMockImplementation()
+  api.get.mockImplementation(async (url) => (url === '/stats' ? { data: { data: { stories: [LIVE_STORY] } } } : base(url)))
+}
+
 describe('smaller touch details', () => {
   it('only the first three pull-quotes show on phones', async () => {
-    renderHome(); await ready()
+    serveLiveStory(); renderHome(); await ready()
+    await screen.findByText('Real R.')
     const figs = within(document.getElementById('stories')).getAllByRole('figure', { hidden: true })
     expect(figs).toHaveLength(6)
     expect(figs.map(f => /hidden sm:block/.test(f.className))).toEqual([false, false, false, true, true, true])
   })
   it('"Read my story" is a 44px target', async () => {
-    renderHome(); await ready()
+    serveLiveStory(); renderHome(); await ready()
+    await screen.findByText('Real R.')
     for (const s of document.querySelectorAll('#stories summary')) expect(s.className).toMatch(/min-h-\[44px\]/)
   })
   it('the "live" dot respects reduced motion', async () => {

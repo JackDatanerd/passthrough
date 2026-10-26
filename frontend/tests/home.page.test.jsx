@@ -175,16 +175,16 @@ describe('pricing section', () => {
 })
 
 describe('placeholders never pass as real', () => {
-  it('when the stats call fails the page still renders from the fallbacks — and samples are tagged "Sample"', async () => {
+  it('when the stats call fails the page still renders from the fallbacks — the hot list is labelled sample, and there is no placeholder story', async () => {
     statsData = new Error('down')
     renderHome()
     expect(await screen.findByText(/25,000\+ resumes scanned/)).toBeInTheDocument()
-    // The 3 sample stories carry a per-card tag. The hot-categories list no longer does (its tag is commented out in HotCategories.jsx);
-    // it is labelled by the footnote asserted just below instead.
-    expect(screen.getAllByText('Sample').length).toBeGreaterThanOrEqual(3)
+    // Stories have no placeholder any more: with nothing live the section is simply absent, so no "Sample" tag can appear.
+    expect(document.getElementById('stories')).toBeNull()
+    expect(screen.queryByText('Sample')).toBeNull()
+    expect(screen.queryByText(/Stories are shared by customers with their permission/)).toBeNull()
+    // The hot-categories list is labelled by its footnote.
     expect(screen.getByText(/Sample numbers shown until enough real reports come in/)).toBeInTheDocument()
-    expect(screen.getByText(/Stories are shared by customers with their permission/)).toBeInTheDocument()
-    expect(screen.queryByText(/if the badge doesn't open, the story doesn't run/)).toBeNull()
   })
   it('live stories carry no Sample tag, link the real credential, and make the "live badge" promise only when it is true', async () => {
     renderHome()

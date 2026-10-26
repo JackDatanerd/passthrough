@@ -4,12 +4,11 @@ import { avatarColour, initialOf, paragraphs } from '../../lib/homeFormat'
 import { PULL_QUOTES, QUOTES_ARE_SAMPLE } from '../../lib/homeContent'
 
 function interviewTag(s) {
-  if (s.tag) return s.tag   // sample content only; real stories never carry one
   if (s.interviewCount > 1) return `${s.interviewCount} interviews`
   return 'Interview booked'
 }
 
-function Story({ s, isSample, badgeThreshold }) {
+function Story({ s, badgeThreshold }) {
   const body = paragraphs(s.story)
   const hasScores = Number.isFinite(s.scoreBefore) && Number.isFinite(s.scoreAfter)
   const timeline = []
@@ -19,9 +18,6 @@ function Story({ s, isSample, badgeThreshold }) {
 
   return (
     <article className="relative bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-      {isSample && (
-        <span className="absolute top-2.5 right-3 text-[11px] font-bold uppercase tracking-wide text-amber-800 bg-amber-50 border border-dashed border-amber-400 rounded px-1.5">Sample</span>
-      )}
       <div className="flex items-center gap-3 mb-3">
         <div aria-hidden="true" className={`w-10 h-10 rounded-full text-white font-bold flex items-center justify-center ${avatarColour(s.displayName)}`}>{initialOf(s.displayName)}</div>
         <div>
@@ -64,18 +60,13 @@ function Story({ s, isSample, badgeThreshold }) {
           <span aria-hidden="true" className="w-4 h-4 rounded-full bg-green-600 text-white text-[10px] flex items-center justify-center">✓</span>
           View {s.displayName.split(' ')[0]}&apos;s Verified credential
         </Link>
-      ) : isSample ? (
-        <span className="mt-3.5 inline-flex items-center gap-2 text-xs font-semibold text-gray-500 bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5">
-          <span aria-hidden="true" className="w-4 h-4 rounded-full bg-gray-400 text-white text-[10px] flex items-center justify-center">✓</span>
-          Verified credential link appears here
-        </span>
       ) : null}
     </article>
   )
 }
 
 export default function Stories({ stories, badgeThreshold }) {
-  const { list, isSample } = stories
+  const { list } = stories
   if (!list.length) return null
   const allLinked = list.every(s => !!s.credentialCode)
   return (
@@ -87,7 +78,7 @@ export default function Stories({ stories, badgeThreshold }) {
           <p className="text-gray-500">Open “my story” to read how it happened{allLinked ? ' — and the credential they sent employers' : ''}.</p>
         </div>
         <div className="grid md:grid-cols-3 gap-5 items-start">
-          {list.map(s => <Story key={s.id} s={s} isSample={isSample} badgeThreshold={badgeThreshold} />)}
+          {list.map(s => <Story key={s.id} s={s} badgeThreshold={badgeThreshold} />)}
         </div>
         <p className="text-center text-xs text-gray-500 mt-6">
           {allLinked

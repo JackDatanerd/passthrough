@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { mergeHomeData } from '../src/hooks/useHomeData'
 import { formatScanCount, splitScanCount, avatarColour, initialOf, paragraphs, monthYear } from '../src/lib/homeFormat'
-import { STATS_FALLBACK, SAMPLE_STORIES, MIN_LIVE_SCANS, buildFaq } from '../src/lib/homeContent'
+import { STATS_FALLBACK, MIN_LIVE_SCANS, buildFaq } from '../src/lib/homeContent'
 import { roleLabel } from '../src/lib/roleCategories'
 import { SAMPLE_HOT } from '../src/lib/homeContent'
 
@@ -50,7 +50,7 @@ describe('mergeHomeData — live wins, placeholders are flagged, nothing throws'
     const d = mergeHomeData(null)
     expect(d.scans).toEqual({ value: STATS_FALLBACK.resumesScanned, isFallback: true })
     expect(d.rate).toMatchObject({ pct: STATS_FALLBACK.interviewRatePct, isFallback: true, responses: null })
-    expect(d.stories).toEqual({ list: SAMPLE_STORIES, isSample: true })
+    expect(d.stories).toEqual({ list: [] })   // stories have no placeholder: nothing live = nothing to show
     expect(d.hot[7].isSample).toBe(true)
     expect(d.hot[7].rows[0]).toMatchObject({ category: 'software_engineering' })
   })
@@ -65,10 +65,11 @@ describe('mergeHomeData — live wins, placeholders are flagged, nothing throws'
   it('a null rate from the server (not enough answers) falls back to the editable figure, flagged', () => {
     expect(mergeHomeData({ stats: { interviewRatePct: null } }).rate.isFallback).toBe(true)
   })
-  it('live stories replace the samples entirely — real and sample are never mixed', () => {
+  it('stories are live-only: real ones pass through, and an empty or missing list stays empty', () => {
     const live = [{ id: 'a', displayName: 'Real R.', quote: 'q', story: 's' }]
-    expect(mergeHomeData({ stories: live }).stories).toEqual({ list: live, isSample: false })
-    expect(mergeHomeData({ stories: [] }).stories.isSample).toBe(true)
+    expect(mergeHomeData({ stories: live }).stories).toEqual({ list: live })
+    expect(mergeHomeData({ stories: [] }).stories).toEqual({ list: [] })
+    expect(mergeHomeData({ stories: 'nope' }).stories).toEqual({ list: [] })
   })
   it('hot categories: each window is live or sample independently', () => {
     const d = mergeHomeData({ hotCategories: { 7: [{ category: 'legal', interviews: 12, changePct: null }], 30: [], minReports: 10 } })

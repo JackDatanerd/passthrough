@@ -13,7 +13,7 @@ import PricingSection from '../src/components/home/PricingSection'
 import { _resetHomeDataCache } from '../src/hooks/useHomeData'
 import { setStoredReferralCode } from '../src/hooks/useReferralCapture'
 import { sha256Text } from '../src/lib/sha256'
-import { TAMPER_DEMO, PULL_QUOTES, QUOTES_ARE_SAMPLE, SAMPLE_STORIES } from '../src/lib/homeContent'
+import { TAMPER_DEMO, PULL_QUOTES, QUOTES_ARE_SAMPLE } from '../src/lib/homeContent'
 
 vi.mock('../src/lib/api', () => ({ default: { get: vi.fn(), post: vi.fn(), defaults: { baseURL: '/api' } }, getErrorMessage: (e, f) => f }))
 vi.mock('../src/components/layout/Footer', () => ({ default: () => <footer /> }))
@@ -260,13 +260,11 @@ describe('hot categories: field picker and flames', () => {
 })
 
 describe('stories and pull-quotes', () => {
-  it('the third sample story is Dana R., with its "Verified link earned" tag and closing line', async () => {
+  it('with no live stories there is no placeholder story: the section is not rendered at all', async () => {
     statsData = new Error('down'); renderHome(); await ready()
-    const dana = screen.getByText('Dana R.').closest('article')
-    expect(within(dana).getByText('Verified link earned')).toBeInTheDocument()
-    expect(within(dana).getByText(/I didn.t have a resume\. I had a notes app\./)).toBeInTheDocument()
-    expect(within(dana).getByText(/You don.t need a better history/)).toBeInTheDocument()
-    expect(SAMPLE_STORIES.map(s => s.displayName)).toEqual(['Amara O.', 'Daniel M.', 'Dana R.'])
+    expect(document.getElementById('stories')).toBeNull()
+    expect(screen.queryByText('Amara O.')).toBeNull()
+    expect(screen.queryByText('Dana R.')).toBeNull()
   })
   it('renders all six pull-quotes, and labels them as placeholders only while QUOTES_ARE_SAMPLE is true', async () => {
     renderHome(); await ready()

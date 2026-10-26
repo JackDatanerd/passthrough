@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import api from '../lib/api'
-import { STATS_FALLBACK, MIN_LIVE_SCANS, SAMPLE_STORIES, SAMPLE_HOT } from '../lib/homeContent'
+import { STATS_FALLBACK, MIN_LIVE_SCANS, SAMPLE_HOT } from '../lib/homeContent'
 
 // The homepage's evidence block: GET /api/stats, merged with the static fallbacks in homeContent.js.
 //
@@ -47,7 +47,7 @@ export function mergeHomeData(live) {
       : { pct: STATS_FALLBACK.interviewRatePct, responses: null, since: null, isFallback: true },
     minReports: live?.hotCategories?.minReports ?? 10,
     hot: { 7: hotFor(7), 30: hotFor(30) },
-    stories: liveStories.length ? { list: liveStories, isSample: false } : { list: SAMPLE_STORIES, isSample: true },
+    stories: { list: liveStories },   // live only — there is no placeholder story; an empty list hides the section
   }
 }
 
