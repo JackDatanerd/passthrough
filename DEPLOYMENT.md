@@ -663,7 +663,8 @@ mail to that address — the endpoint below does that automatically (hash record
 mail history cleared; same result as the person clicking Remove).
 
 1. In Resend: **Webhooks → Add endpoint**, URL `https://<your-api-domain>/api/webhooks/resend`,
-   events **`email.bounced`**, **`email.complained`**, **`email.failed`** and **`email.suppressed`** (other events are
+   events **`email.bounced`**, **`email.complained`**, **`email.failed`**, **`email.suppressed`** and
+   **`inbox.thread.created`** (the last one tells you a customer wrote to the support inbox — see "Support inbox" below) (other events are
    acknowledged and ignored; `email.failed` and `email.suppressed` page the owner, since a send that never left means mail
    to that address, possibly a registered account, is not being delivered).
    Also tick **`email.delivered`**: any verified event stamps "last Resend event" on Admin → Webhooks, which is the
@@ -681,6 +682,32 @@ mail history cleared; same result as the person clicking Remove).
 A transient bounce, and every other event type, is acknowledged and ignored. A permanent bounce is
 acted on only when the address is currently an employer lead; a complaint always suppresses it.
 Each action is written to the admin audit log as `lead.auto_suppressed` (no actor, address hash only).
+
+### Support inbox (Resend Inboxes)
+
+Customers are told to write to `support@usepassthrough.com`, and every customer email carries it as its **Reply-To**
+(the mail itself is sent from `hello@`), so a reply to a receipt, a reset notice or an employer email lands there.
+The mailbox is a **Resend Inbox** (Resend → Inboxes; in beta at the time of writing — response shapes may change).
+
+1. **Create the inboxes** in Resend → Inboxes: `support@usepassthrough.com` and `hello@usepassthrough.com`. Receiving needs the
+   domain's MX records on Resend, so do **not** also route the same domain through Cloudflare Email Routing.
+2. **Subscribe the webhook** to `inbox.thread.created` (previous section). The Worker then emails `OWNER_ALERT_EMAIL`, subject
+   `[Passthrough Support] <their subject>`, for the **first message of each new conversation**: who wrote, the subject, the
+   attachment count and a link to the thread. Follow-ups inside a thread, mail you wrote yourself, mail from our own addresses
+   and machines (mailer-daemon, no-reply, out-of-office replies) do not alert; the thread is in the Inbox either way. Limits:
+   3 notices per sender per hour and 30 per hour overall (the first one past the overall cap pages you once).
+3. **Reply from the Inbox** as `support@`. If that reply bounces, fails or draws a spam complaint you get a
+   `[Passthrough Alert]` email (the customer most likely never received it); open the email in Resend → Emails for the recipient.
+4. **Gmail filters** (Settings → Filters and blocked addresses), so alerts never sit in Spam or get lost:
+   subject contains `[Passthrough Support]` → *Never send it to Spam*, *Star it*, apply a label `Support`; and
+   subject contains `[Passthrough Alert]` → *Never send it to Spam*, apply a label `Alerts`.
+5. **Where to change the address**: `SUPPORT_EMAIL` in `wrangler.toml` (Worker: templates, payment messages, Reply-To) and
+   `VITE_SUPPORT_EMAIL` in the frontend build (pages) — or edit `frontend/src/lib/support.js`. A malformed value is ignored.
+6. `frontend/public/.well-known/security.txt` (RFC 9116) names `support@` as the security contact. Its `Expires` date must be
+   refreshed **at least once a year** (it is set a year from the date it was added).
+7. Admin → Webhooks shows "last support-inbox thread": it only proves the webhook is flowing, and "never" can simply mean
+   nobody has written yet — the go-live test below is what proves it works.
+8. `abuse@`, `security@` and `privacy@` are optional extra inboxes; add them only if your Resend plan allows more inboxes.
 
 ## 8. Go-Live Checklist
 
@@ -777,6 +804,11 @@ Each action is written to the admin audit log as `lead.auto_suppressed` (no acto
 
 ### Functional tests
 - [ ] Register → welcome + verify emails received (from Resend)
+- [ ] Support inbox: from a Gmail you do not own the domain for, email `support@usepassthrough.com`; it appears in Resend → Inboxes
+      **and** a `[Passthrough Support]` email reaches `OWNER_ALERT_EMAIL` within a minute (and not in Spam)
+- [ ] Reply to that message from the Inbox as `support@`; it arrives in the sender's inbox (not Spam)
+- [ ] Reply to a real app email (e.g. the welcome email): it lands in the `support@` Inbox (Reply-To), and a message to `hello@` also arrives
+- [ ] Resend webhook has **`inbox.thread.created`** ticked, and the Gmail filters above exist
 - [ ] Email verify link works
 - [ ] Upload a real resume + JD → score appears in <60s
 - [ ] Payment flow (test card: 4084 0840 8408 4081) → FIX_DELIVERED
@@ -1040,8 +1072,7 @@ Order matters; do these in sequence:
 
 1. **DNS / Cloudflare**: add `usepassthrough.com` to the same Cloudflare account (zone active).
 2. **Email first**: in Resend, add and verify `usepassthrough.com` (SPF, DKIM, and a DMARC record), and set up
-   inbound for `support@usepassthrough.com` and `hello@usepassthrough.com` (Cloudflare Email Routing or your
-   mailbox provider). Do not switch `EMAIL_FROM` until Resend shows the domain as verified, or every
+   inbound for `support@usepassthrough.com` and `hello@usepassthrough.com` as Resend Inboxes (section 7, "Support inbox"). Do not switch `EMAIL_FROM` until Resend shows the domain as verified, or every
    transactional email will bounce.
 3. **Frontend**: Pages project -> Custom domains -> add `usepassthrough.com` (and `www`). Rebuild with
    `VITE_API_URL` and `API_URL` = `https://api.usepassthrough.com/api`.
@@ -1077,7 +1108,7 @@ All optional plain `[vars]` values (none is a secret); each has a safe default.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `SUPPORT_EMAIL` | `support@usepassthrough.com` | Reply/contact address shown in transactional emails. |
+| `SUPPORT_EMAIL` | `support@usepassthrough.com` | Contact address in every email template and payment message, and the Reply-To on customer mail. Must be a mailbox that receives (section 7, "Support inbox"). The site's own pages read `VITE_SUPPORT_EMAIL` at build time instead. |
 | `REFERRAL_MIN_PRICE_PCT` | `10` | A partner custom price below this % of the standard price is refused. |
 | `REFERRAL_VELOCITY_ALERT` | `10` (`0` = off) | Owner is emailed once when one referral code converts this many times in an hour. |
 | `ARCHIVED_LEAD_PURGE_SUPPRESSES` | `false` | `true` makes the archived-lead purge add each purged address to the do-not-contact list. |

@@ -85,6 +85,7 @@ npx wrangler secret put PAYSTACK_SECRET_KEY
 # RATE_LIMIT_BYPASS_IPS=
 # Optional tuning (all have defaults; see DEPLOYMENT.md "Optional tuning variables").
 # SUPPORT_EMAIL=support@usepassthrough.com
+# (frontend build: VITE_SUPPORT_EMAIL overrides the address shown on the site; see frontend/src/lib/support.js)
 # REFERRAL_MIN_PRICE_PCT=10
 # REFERRAL_VELOCITY_ALERT=10
 # ARCHIVED_LEAD_PURGE_SUPPRESSES=false

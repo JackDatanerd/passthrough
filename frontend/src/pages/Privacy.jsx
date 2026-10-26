@@ -1,3 +1,4 @@
+import { SUPPORT_EMAIL, SUPPORT_MAILTO } from '../lib/support'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 
@@ -24,8 +25,8 @@ export default function Privacy() {
           <p>
             Passthrough is operated by Saltern Studio. For any privacy question or request,
             contact{' '}
-            <a href="mailto:support@usepassthrough.com" className="text-blue-600 underline">
-              support@usepassthrough.com
+            <a href={SUPPORT_MAILTO} className="text-blue-600 underline">
+              {SUPPORT_EMAIL}
             </a>.
           </p>
         </Section>
@@ -167,8 +168,8 @@ export default function Privacy() {
             If you have an account, you can do most of this yourself: “Download my data” and
             “Delete account” are in Settings, and each scan on your dashboard can be deleted.
             For anything else — including employer inquiries, or if you don't have an account — email{' '}
-            <a href="mailto:support@usepassthrough.com" className="text-blue-600 underline">
-              support@usepassthrough.com
+            <a href={SUPPORT_MAILTO} className="text-blue-600 underline">
+              {SUPPORT_EMAIL}
             </a>. We'll respond within a reasonable timeframe — if you're in a jurisdiction with a
             legally mandated response window (e.g. GDPR's 30 days), let us know and we'll honor it.
           </p>
@@ -200,8 +201,8 @@ export default function Privacy() {
         <Section title="11. Contact">
           <p>
             Privacy questions or requests:{' '}
-            <a href="mailto:support@usepassthrough.com" className="text-blue-600 underline">
-              support@usepassthrough.com
+            <a href={SUPPORT_MAILTO} className="text-blue-600 underline">
+              {SUPPORT_EMAIL}
             </a>
           </p>
         </Section>

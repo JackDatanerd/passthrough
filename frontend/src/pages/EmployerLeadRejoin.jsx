@@ -1,3 +1,4 @@
+import { SUPPORT_EMAIL } from '../lib/support'
 import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import api, { getErrorMessage } from '../lib/api'
@@ -19,7 +20,7 @@ const RESULT_COPY = {
   already:     { icon: '✓', tone: 'text-green-500', title: "You're already on the list",
     body: "You're already on the list — nothing more to do." },
   unavailable: { icon: '–', tone: 'text-gray-400', title: "Can't add this address",
-    body: "This address can't be added back from here. Contact support@usepassthrough.com." },
+    body: "This address can't be added back from here. Contact " + SUPPORT_EMAIL + "." },
 }
 
 export default function EmployerLeadRejoin() {

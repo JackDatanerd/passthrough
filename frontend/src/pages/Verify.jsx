@@ -1,3 +1,4 @@
+import { SUPPORT_EMAIL } from '../lib/support'
 import { useEffect, useState, useRef } from 'react'
 import { useParams, useLocation, Link } from 'react-router-dom'
 import api, { getErrorMessage } from '../lib/api'
@@ -18,7 +19,6 @@ import { RoleFields, LeadConsentNote, LEAD_SENT_MESSAGE } from '../components/le
 import TurnstileWidget, { TURNSTILE_ENABLED } from '../components/lead/TurnstileWidget'
 import useFileDropGuard from '../hooks/useFileDropGuard'
 
-const SUPPORT_EMAIL = 'support@usepassthrough.com'
 
 // ROUND-3 AUDIT (feature gap): a reader who suspects a page is fake, or a candidate whose page
 // is wrong, had no way to say so from here. Prefills the code so the report needs no typing.

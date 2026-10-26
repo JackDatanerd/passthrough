@@ -1326,3 +1326,15 @@ describe('round 9 — G1: a silent Paystack webhook pages the owner', () => {
     } finally { restore() }
   })
 })
+
+describe('support-inboxes round 1: health reports when a customer last started a support-inbox conversation', () => {
+  it('reads it from system_state, reads null when nobody has written, and never marks the Paystack side unavailable', async () => {
+    const m = pure()
+    try {
+      const at = new Date().toISOString()
+      const h = await m.mod.computeWebhookHealth(createWorld({ payments: [], webhook_events: [], system_state: [{ key: 'support_inbox', value: { last_thread_at: at } }] }).db)
+      expect(h).toMatchObject({ available: true, lastSupportThreadAt: at })
+      expect(await m.mod.computeWebhookHealth(createWorld({ payments: [], webhook_events: [] }).db)).toMatchObject({ available: true, lastSupportThreadAt: null })
+    } finally { m.restore() }
+  })
+})

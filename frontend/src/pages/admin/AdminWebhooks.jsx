@@ -271,7 +271,9 @@ export default function AdminWebhooks() {
           {' · '}last Resend event {health.lastResendEventAt ? formatDate(health.lastResendEventAt) : 'never'}
           {(!health.lastResendEventAt || Date.now() - Date.parse(health.lastResendEventAt) > 7 * 24 * 3600 * 1000) && (
             <span className="text-amber-700"> (with delivery events subscribed this means Resend is not reaching this app — check the endpoint URL and signing secret in Resend)</span>
-          )}.
+          )}
+          {/* Support-inboxes round 1: when a customer last started a conversation in the support inbox (visibility only). */}
+          {' · '}last support-inbox thread {health.lastSupportThreadAt ? formatDate(health.lastSupportThreadAt) : 'never'}.
         </div>
       )}
 

@@ -2374,6 +2374,13 @@ async function computeWebhookHealth(supabase, { now = Date.now() } = {}) {
     const { data } = await supabase.from('system_state').select('value').eq('key', 'resend_webhook').maybeSingle()
     out.lastResendEventAt = data?.value?.last_event_at || null
   } catch (_) { /* optional */ }
+  // Support-inboxes round 1: when a customer last started a conversation in the support inbox (stamped by
+  // resend-webhook.controller). Visibility only — "never" can simply mean nobody has written yet. Optional, like the stamp above.
+  out.lastSupportThreadAt = null
+  try {
+    const { data } = await supabase.from('system_state').select('value').eq('key', 'support_inbox').maybeSingle()
+    out.lastSupportThreadAt = data?.value?.last_thread_at || null
+  } catch (_) { /* optional */ }
   // Webhooks round 17 (G1): the newest refused delivery per provider (stamped by handlePaystack / handleResend), and which providers
   // have been refused since the last delivery they got through. Never throws; a missing row reads as "none".
   out.lastRejected = await rejections.readRejections(supabase)

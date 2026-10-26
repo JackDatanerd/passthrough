@@ -52,7 +52,7 @@ const CALLS = {
 describe('email templates — every sender renders through the real templates', () => {
   it('every exported send* function is covered by this table', () => {
     const { svc } = setup()
-    const senders = Object.keys(svc).filter(k => /^send[A-Z]/.test(k) && !['sendOwnerAlert', 'sendOwnerNotice'].includes(k))
+    const senders = Object.keys(svc).filter(k => /^send[A-Z]/.test(k) && !['sendOwnerAlert', 'sendOwnerNotice', 'sendSupportInboxNotice'].includes(k))   // owner-facing, no template
     expect(senders.filter(k => !(k in CALLS))).toEqual([])
   })
 

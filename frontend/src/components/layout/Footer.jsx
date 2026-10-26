@@ -1,3 +1,4 @@
+import { SUPPORT_MAILTO } from '../../lib/support'
 import { Link } from 'react-router-dom'
 
 export default function Footer() {
@@ -12,7 +13,7 @@ export default function Footer() {
           <Link to="/partner/apply" className="inline-block py-1.5 hover:text-gray-700 transition-colors">Partner program</Link>
           <Link to="/terms" className="inline-block py-1.5 hover:text-gray-700 transition-colors">Terms</Link>
           <Link to="/privacy" className="inline-block py-1.5 hover:text-gray-700 transition-colors">Privacy</Link>
-          <a href="mailto:support@usepassthrough.com" className="inline-block py-1.5 hover:text-gray-700 transition-colors">
+          <a href={SUPPORT_MAILTO} className="inline-block py-1.5 hover:text-gray-700 transition-colors">
             Support
           </a>
         </div>

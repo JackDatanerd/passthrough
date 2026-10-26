@@ -29,8 +29,12 @@ function retryAfterMs(res) {
 
 // `headers` (optional) are extra message headers, e.g. List-Unsubscribe / List-Unsubscribe-Post
 // (employer-lead acknowledgements, RFC 8058). Omitted entirely when empty.
-async function sendViaResend(env, { from, to, subject, html, text, headers }, { retryDelaysMs = DEFAULT_RETRY_DELAYS_MS } = {}) {
-  const idempotencyKey = crypto.randomUUID()
+// `replyTo` (optional) is the Reply-To address (support-inboxes round 1): customer mail is sent FROM the
+// no-reply-style sender but a reply must reach the support mailbox. Omitted when empty.
+// `idempotencyKey` (optional) pins the Idempotency-Key: a caller that can be re-run (a webhook that Svix redelivers)
+// passes a key derived from the thing being sent, so the re-run cannot send it twice. Default: one random key per call.
+async function sendViaResend(env, { from, to, subject, html, text, headers, replyTo, idempotencyKey: pinnedKey }, { retryDelaysMs = DEFAULT_RETRY_DELAYS_MS } = {}) {
+  const idempotencyKey = pinnedKey || crypto.randomUUID()
   let lastErr
 
   for (let attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
@@ -44,7 +48,7 @@ async function sendViaResend(env, { from, to, subject, html, text, headers }, { 
           'Content-Type':    'application/json',
           'Idempotency-Key': idempotencyKey
         },
-        body: JSON.stringify({ from, to, subject, html, ...(text ? { text } : {}), ...(headers && Object.keys(headers).length ? { headers } : {}) }),
+        body: JSON.stringify({ from, to, subject, html, ...(text ? { text } : {}), ...(replyTo ? { reply_to: replyTo } : {}), ...(headers && Object.keys(headers).length ? { headers } : {}) }),
         signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS)
       })
       // 2xx = Resend accepted the email. A body that isn't JSON must not turn that into a

@@ -95,6 +95,9 @@ PAYSTACK_CALLBACK_URL   = "https://usepassthrough.com/payment/success"
 AUTO_REFUND_DUPLICATES  = "true"
 ANTHROPIC_MODEL         = "claude-sonnet-4-6"
 EMAIL_FROM              = "Passthrough <hello@usepassthrough.com>"
+# The mailbox customers are told to write to AND the Reply-To on customer mail (support-inboxes round 1). It must be a
+# Resend Inbox that actually receives (DEPLOYMENT.md "Support inbox"). Server code reads it through src/lib/supportEmail.js.
+SUPPORT_EMAIL           = "support@usepassthrough.com"
 JWT_EXPIRES_IN_SECONDS  = "604800"   # 7 days, replaces JWT_EXPIRES_IN="7d"
 # Critical-failure alert destination (queue job crashes, webhook signature
 # mismatches) — see services/email.service.js's sendOwnerAlert. Change this

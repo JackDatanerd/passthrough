@@ -25,6 +25,7 @@ const { must } = require('../lib/db')
 const { maskEmail } = require('../lib/redact')
 const { webhookUrl, postAlertWebhook } = require('../lib/alertWebhook')
 const { isSuppressedFor } = require('../lib/emailSuppression')
+const { supportEmail, replyToFor } = require('../lib/supportEmail')
 
 // ── Per-recipient throttle ──────────────────────────────────────────────────
 // The per-IP limiters can't stop one address being mailed repeatedly (from many
@@ -221,6 +222,9 @@ function globalVars(env) {
   const currency = c.activeCurrency(env)
   return {
     FRONTEND_URL:    env.FRONTEND_URL,
+    // Support-inboxes round 1: every template gets the support address from ONE place (lib/supportEmail.js), so
+    // {{SUPPORT_EMAIL}} works in all of them and SUPPORT_EMAIL really is the setting it claims to be.
+    SUPPORT_EMAIL:   supportEmail(env),
     PRICE_FIX:       emailPrice('FIX', env, currency),
     PRICE_BADGE:     emailPrice('BADGE', env, currency),
     PRICE_FIX_PLAIN: emailPrice('FIX_PLAIN', env, currency),
@@ -267,7 +271,9 @@ async function send(env, supabase, to, subject, template, vars, opts = {}) {
     // existed, so that email silently never went out).
     try {
       const html = render(template, { ...globalVars(env), ...vars })
-      await sendViaResend(env, { from: env.EMAIL_FROM, to, subject, html, text: htmlToPlainText(html), headers: opts.headers })
+      // Support-inboxes round 1: a reply to ANY customer email ("reply to this email and we'll introduce you", a receipt, a
+      // reset notice) must reach the support mailbox, not the sender address. Owner alerts/notices below are not customer mail.
+      await sendViaResend(env, { from: env.EMAIL_FROM, to, subject, html, text: htmlToPlainText(html), headers: opts.headers, replyTo: replyToFor(env) })
     } catch (err) {
       status = 'failed'
       error  = err.message
@@ -374,8 +380,7 @@ async function sendEmailChangedOldAddress(env, supabase, oldEmail, name, newEmai
 async function sendEmailChangeCompleted(env, supabase, oldEmail, name, newEmail) {
   return send(env, supabase, oldEmail, 'Your Passthrough account email was changed', 'email_change_completed', {
     NAME:          name,
-    NEW_EMAIL:     newEmail,
-    SUPPORT_EMAIL: env.SUPPORT_EMAIL || 'support@usepassthrough.com'
+    NEW_EMAIL:     newEmail
   })
 }
 
@@ -1003,6 +1008,34 @@ async function sendOwnerNotice(env, subject, message) {
   return true
 }
 
+// Support-inboxes round 1: "a customer just wrote to the support inbox" — mailed to OWNER_ALERT_EMAIL (your Gmail).
+//
+// Deliberately NOT sendOwnerAlert, for the reason sendOwnerNotice gives: that path writes an alert_logs row, and this message
+// carries a customer's address and subject line. alert_logs is the record of critical failures and has no delete path, so
+// customer correspondence does not go in it (the same reason employer leads use sendOwnerNotice). It also skips
+// sendOwnerAlert's per-subject dedupe — the caller (resend-webhook.controller) has its own per-sender and global caps, at a
+// granularity that fits "how many customers wrote", not "how many identical subjects fired".
+//
+// The subject prefix "[Passthrough Support]" is what the Gmail filter in DEPLOYMENT.md §12 matches on.
+// Errors are NOT swallowed: the webhook answers 500 on a failed send so Resend redelivers it, rather than a customer's
+// message going unannounced. `idempotencyKey` (derived from the thread) makes that redelivery unable to send it twice.
+async function sendSupportInboxNotice(env, subject, message, { idempotencyKey } = {}) {
+  const to = env.OWNER_ALERT_EMAIL
+  if (!to) {
+    console.warn(`OWNER_ALERT_EMAIL is not set — support inbox notice not sent: ${subject}`)
+    return false
+  }
+  await sendViaResend(env, {
+    from: env.EMAIL_FROM,
+    to,
+    subject: `[Passthrough Support] ${subject}`,
+    html: `<pre style="font-family: monospace; white-space: pre-wrap; font-size: 13px;">${escapeHtml(message)}</pre>`,
+    text: String(message),
+    idempotencyKey
+  })
+  return true
+}
+
 // Acknowledgement to an employer who just joined the early-access list, doubling
 // as the address confirmation. Sent for a NEW lead and again when an
 // unconfirmed lead resubmits (see employer-leads.controller.js). The address on
@@ -1015,7 +1048,6 @@ async function sendEmployerLeadAck(env, supabase, email, name, fieldLabel, { con
   return send(env, supabase, email, 'Confirm your email for Passthrough early access', 'employer_lead_ack', {
     NAME:          name,
     FIELD_PHRASE:  fieldLabel ? ` in ${fieldLabel}` : '',
-    SUPPORT_EMAIL: env.SUPPORT_EMAIL || 'support@usepassthrough.com',
     CONFIRM_URL:   confirmUrl,
     REMOVE_URL:    removeUrl,
     PREFS_URL:     prefsUrl
@@ -1042,7 +1074,6 @@ async function sendEmployerCandidatesAvailable(env, supabase, email, name, field
     NAME:          name,
     FIELD:         fieldLabel,
     COUNT_PHRASE:  n === 1 ? 'there is 1 Verified candidate' : `there are ${n} Verified candidates`,
-    SUPPORT_EMAIL: env.SUPPORT_EMAIL || 'support@usepassthrough.com',
     REMOVE_URL:    removeUrl,
     PREFS_URL:     prefsUrl
   }, {
@@ -1064,7 +1095,6 @@ async function sendEmployerCandidatesAvailable(env, supabase, email, name, field
 async function sendEmployerLeadRejoin(env, supabase, email, { rejoinUrl, removeUrl, unsubscribeUrl, outcome } = {}) {
   if (!rejoinUrl || !removeUrl) throw new Error('sendEmployerLeadRejoin needs rejoinUrl and removeUrl')
   return send(env, supabase, email, 'Do you want to hear from Passthrough again?', 'employer_lead_rejoin', {
-    SUPPORT_EMAIL: env.SUPPORT_EMAIL || 'support@usepassthrough.com',
     REJOIN_URL:    rejoinUrl,
     REMOVE_URL:    removeUrl
   }, {
@@ -1087,7 +1117,7 @@ module.exports = {
   sendVerificationReported,
   sendPartnerLinksSelfReset, sendPartnerCodeLimitReached, sendPartnerCodeExpiring, sendPartnerTermsAccepted,
   sendPaymentReceipt, sendPaymentReversed,
-  sendOwnerAlert, sendOwnerNotice,
+  sendOwnerAlert, sendOwnerNotice, sendSupportInboxNotice,
   sendPartnerPayoutDetailsRequest, sendPartnerApplicationReceived, sendPayoutSent, sendReferralCodeCreated,
   sendPayoutDetailsChanged, sendPartnerLinkRegenerated, sendPartnerEmailChanged, sendPartnerConversionEarned,
   sendPartnerStatusChanged, sendPartnerCodeChanged, sendPartnerRateChanged, sendPartnerCommissionReversed, sendPartnerSaleMoved,

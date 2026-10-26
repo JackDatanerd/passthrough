@@ -14,6 +14,12 @@
 // the suppression list should not fill up with every candidate's mistyped address. Transient
 // bounces and every other event type are acknowledged and ignored.
 //
+// SUPPORT INBOX (support-inboxes round 1): `inbox.thread.created` — Resend Inboxes announces the FIRST email of a new
+// conversation in a support inbox — mails the owner ("[Passthrough Support] …", to OWNER_ALERT_EMAIL) with who wrote, the
+// subject and a link to the thread. Follow-ups inside an existing thread do not create a new thread, so they do not alert (by
+// design for now). Replies that you SEND from the support address and that bounce, fail or draw a complaint also page the
+// owner — otherwise a customer's answer silently never arrives. See processInboundThread / the support-reply block below.
+//
 // Secret: RESEND_WEBHOOK_SECRET (the `whsec_…` signing secret of the Resend webhook). Without it
 // the endpoint fails closed with a 500 and a loud log; Resend retries, so nothing is lost once the
 // secret is set.
@@ -25,8 +31,10 @@ const { performRemoval, EMPLOYER_MAIL_TEMPLATES } = require('./employer-leads.co
 const inbox = require('./webhooks.controller')
 const { recordSuppression, flagAccountBounce } = require('../lib/emailSuppression')
 const emailService = require('../services/email.service')
+const { bareAddress, supportEmail, fromAddress, ownMailboxes } = require('../lib/supportEmail')
+const { sha256 } = require('../lib/crypto')
 const { runInBackground } = require('../lib/background')
-const { hitQuota } = require('../middleware/rateLimiter')
+const { hitQuota, refundQuota } = require('../middleware/rateLimiter')
 const rejections = require('../lib/webhookRejections')
 const { stripNul } = require('../middleware/bodyLimit')
 const { readBodyCapped } = require('../lib/readBody')
@@ -38,7 +46,7 @@ const MAX_RECIPIENTS = 20
 // ROUND-7 (G1/G2): these are recorded in the webhook inbox (provider 'resend'). Delivered/opened/clicked and the
 // rest are acknowledged and dropped — they would only fill the table. email.failed / email.suppressed used to be
 // dropped too, which hid every delivery failure of security and payment mail (those are exempt from suppression).
-const RECORDED = new Set(['email.complained', 'email.bounced', 'email.failed', 'email.suppressed'])
+const RECORDED = new Set(['email.complained', 'email.bounced', 'email.failed', 'email.suppressed', 'inbox.thread.created'])
 
 // "Dana Whitfield <dana@acme.com>" or "dana@acme.com" → "dana@acme.com" (lowercased), else null.
 function normalizeRecipient(raw) {
@@ -85,13 +93,31 @@ const isPermanentBounce = (data) => String(data?.bounce?.type || '').toLowerCase
 
 // What the inbox keeps of a Resend event: enough to re-run it (type, recipients, bounce type) and nothing else —
 // not the subject, sender, tags or body.
-function minimalResendEvent(event) {
+function minimalResendEvent(event, env) {
   const d = event.data || {}
+  // Support-inboxes round 1: a new support thread needs who wrote and what about (to build the owner's notice) and nothing
+  // more — no body, no attachment names. Like every recipient-bearing payload here it is cleared once the event finishes.
+  if (event.type === 'inbox.thread.created') {
+    const em = d.email && typeof d.email === 'object' ? d.email : {}
+    const str = (v, n) => typeof v === 'string' ? v.slice(0, n) : undefined
+    const email = {
+      direction: em.direction === 'inbound' || em.direction === 'outbound' ? em.direction : undefined,
+      from: str(em.from, 320), subject: str(em.subject, 300), received_at: str(em.received_at, 40),
+      to: (Array.isArray(em.to) ? em.to : []).filter(x => typeof x === 'string').slice(0, MAX_RECIPIENTS).map(x => x.slice(0, 320)),
+      attachments: Array.isArray(em.attachments) ? em.attachments.length : 0
+    }
+    return stripNul({ type: event.type, created_at: typeof event.created_at === 'string' ? event.created_at : undefined,
+      data: { inbox_id: str(d.inbox_id, 64), thread_id: str(d.thread_id, 64), email_id: str(d.email_id, 64), email } })
+  }
   const data = { to: (Array.isArray(d.to) ? d.to : []).filter(x => typeof x === 'string').slice(0, MAX_RECIPIENTS) }
   if (typeof d.email_id === 'string') data.email_id = d.email_id
   if (d.bounce && typeof d.bounce.type === 'string') data.bounce = { type: d.bounce.type }
   const reason = d.failed?.reason
   if (typeof reason === 'string') data.failed = { reason: reason.slice(0, 200) }
+  // Support-inboxes round 1: keep the sender ONLY when it is one of our own mailboxes (not personal data) — that is how a
+  // bounce of a reply sent from the support address is told apart from bounced app mail once the payload is minimal.
+  const from = bareAddress(d.from)
+  if (from && env && ownMailboxes(env).has(from)) data.from = from
   // Round 24 (B2): NUL / lone surrogates would make the jsonb insert fail (see webhooks.controller redactEvent).
   return stripNul({ type: event.type, created_at: typeof event.created_at === 'string' ? event.created_at : undefined, data })
 }
@@ -121,14 +147,135 @@ async function clearResendPayload(supabase, id) {
   } catch (err) { console.error('Resend webhook_events payload clear failed:', err.message) }
 }
 
+// ── Support inbox (Resend Inboxes) ────────────────────────────────────────────────────────────────────────────────
+// SUPPORT-INBOXES ROUND 1 (feature gap): mail to support@ landed in a Resend Inbox that nobody was told about — the only way to
+// learn a customer had written was to open the dashboard. `inbox.thread.created` fires when the FIRST email of a thread lands
+// (inbound, or one you composed yourself); the owner gets one notice per new customer conversation.
+//
+// Guards, because the sender is a stranger and the notice goes to the owner's own inbox:
+//   • only INBOUND threads (a thread you start yourself is not a customer writing);
+//   • nothing from our own mailboxes (support@/hello@ writing to itself would be a loop), and nothing from obvious machines
+//     (mailer-daemon, no-reply, out-of-office replies) — those threads are still in the Inbox, just not announced;
+//   • at most INBOUND_SENDER_MAX notices per sender per hour and INBOUND_GLOBAL_MAX per hour overall, so a flood (or a bulk
+//     send whose recipients all auto-reply) cannot bury the owner or trip Resend's own limits. The first message past the
+//     global cap pages the owner ONCE, so a pause in notices is never silent.
+// A failed send throws: the delivery answers 500, Svix redelivers and the hourly re-drive re-runs it. The caps are handed back
+// on failure so the retry is not refused by its own earlier attempt, and the notice carries an idempotency key derived from the
+// thread, so a redelivery after a send that DID succeed cannot mail the owner twice.
+const INBOUND_SENDER_MAX = 3
+const INBOUND_GLOBAL_MAX = 30
+const INBOUND_WINDOW_SECONDS = 60 * 60
+const AUTOMATED_LOCALPART = /^(mailer-daemon|postmaster|no[-_.]?reply|do[-_.]?not[-_.]?reply|bounces?)([+_.-][^@]*)?$/i
+const AUTOMATED_SUBJECT = /^\s*(automatic reply|auto[- ]?reply|auto:|out of office|undeliverable|delivery status notification|mail delivery (failed|subsystem)|returned mail)/i
+const cleanLine = (v, n) => String(v ?? '').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n)
+
+// Proof of life for the support inbox (Admin → Webhooks shows it, computeWebhookHealth reads it). Best-effort, never
+// allowed to affect the answer.
+async function stampSupportInbox(supabase) {
+  try {
+    const at = new Date().toISOString()
+    const { error } = await supabase.from('system_state')
+      .upsert({ key: 'support_inbox', value: { last_thread_at: at }, updated_at: at }, { onConflict: 'key' })
+    if (error) throw error
+  } catch (err) {
+    console.error('Support inbox health stamp failed:', err && err.message)
+  }
+}
+
+// Link to the thread in Resend's dashboard (https://resend.com/inboxes/<inbox address>/<thread id>). Only well-formed parts
+// are used; anything else falls back to the inbox, then to the list of inboxes.
+function threadUrl(env, d, toAddrs) {
+  const support = supportEmail(env)
+  const domain = support.split('@')[1]
+  const own = ownMailboxes(env)
+  const inboxAddr = toAddrs.find(a => a.endsWith('@' + domain)) || toAddrs.find(a => own.has(a)) || support
+  const base = `https://resend.com/inboxes/${inboxAddr}`
+  return typeof d.thread_id === 'string' && /^[0-9a-f-]{8,64}$/i.test(d.thread_id) ? `${base}/${d.thread_id}` : base
+}
+
+async function processInboundThread(c, supabase, event) {
+  const env = c.env
+  const d = event.data || {}
+  const em = d.email && typeof d.email === 'object' ? d.email : {}
+  if (em.direction !== 'inbound') return { status: 'IGNORED', note: 'not an inbound thread', removed: 0 }
+  await stampSupportInbox(supabase)
+
+  const rawFrom = typeof em.from === 'string' ? em.from : ''
+  const sender = bareAddress(rawFrom)
+  if (sender && ownMailboxes(env).has(sender)) return { status: 'IGNORED', note: 'sent from our own mailbox', removed: 0 }
+  if ((sender && AUTOMATED_LOCALPART.test(sender.split('@')[0])) || AUTOMATED_SUBJECT.test(String(em.subject || '')))
+    return { status: 'IGNORED', note: 'automated message', removed: 0 }
+
+  const senderKey = `rl:support-inbox:sender:${(await sha256(sender || rawFrom.toLowerCase())).slice(0, 32)}`
+  const globalKey = 'rl:support-inbox:all'
+  if (!(await hitQuota(env, senderKey, INBOUND_SENDER_MAX, INBOUND_WINDOW_SECONDS)))
+    return { status: 'IGNORED', note: 'per-sender notice limit (the thread is in the Inbox)', removed: 0 }
+  if (!(await hitQuota(env, globalKey, INBOUND_GLOBAL_MAX, INBOUND_WINDOW_SECONDS))) {
+    await refundQuota(env, senderKey, INBOUND_WINDOW_SECONDS, 1)
+    await alertOnce(c, 'support-inbox-flood', 'Support inbox: new-thread notices paused',
+      `More than ${INBOUND_GLOBAL_MAX} new conversations reached the support inbox within an hour, so notices for further ones are paused until the hour is up. ` +
+      `The threads are all in the Resend Inbox (resend.com/inboxes) — check it directly. A burst like this is usually auto-replies to a bulk send or someone flooding the address.`)
+    return { status: 'IGNORED', note: 'global notice limit (the thread is in the Inbox)', removed: 0 }
+  }
+
+  const toAddrs = (Array.isArray(em.to) ? em.to : []).map(bareAddress).filter(Boolean)
+  const subject = cleanLine(em.subject, 200) || '(no subject)'
+  const attachments = Number.isFinite(em.attachments) ? em.attachments : (Array.isArray(em.attachments) ? em.attachments.length : 0)
+  const message = [
+    'A customer started a new conversation in the support inbox.',
+    '',
+    `From:        ${cleanLine(rawFrom, 320) || '(unknown sender)'}`,
+    `To:          ${toAddrs.join(', ') || '(unknown)'}`,
+    `Subject:     ${subject}`,
+    `Received:    ${cleanLine(em.received_at, 40) || '(unknown)'}`,
+    `Attachments: ${attachments}`,
+    '',
+    'Open the thread and reply from the Inbox:',
+    threadUrl(env, d, toAddrs),
+    '',
+    'All inboxes: https://resend.com/inboxes'
+  ].join('\n')
+
+  let sent
+  try {
+    sent = await emailService.sendSupportInboxNotice(env, subject, message, {
+      idempotencyKey: d.thread_id || d.email_id ? `support-thread/${cleanLine(d.thread_id || d.email_id, 80)}` : undefined
+    })
+  } catch (err) {
+    await refundQuota(env, senderKey, INBOUND_WINDOW_SECONDS, 1)
+    await refundQuota(env, globalKey, INBOUND_WINDOW_SECONDS, 1)
+    throw err
+  }
+  if (!sent) {
+    console.error('[CRITICAL] A customer wrote to the support inbox but OWNER_ALERT_EMAIL is not set — nobody was notified')
+    return { status: 'PROCESSED', note: 'OWNER_ALERT_EMAIL not set — owner NOT notified', removed: 0 }
+  }
+  return { status: 'PROCESSED', note: 'new thread — owner notified', removed: 0 }
+}
+
 // Runs one recorded event. Returns { status, note, removed }; THROWS on a database failure so the delivery
 // answers 500 and Svix retries (every step is safe to repeat).
 async function processResendEvent(c, supabase, event) {
   const type = event && event.type
+  if (type === 'inbox.thread.created') return processInboundThread(c, supabase, event)
   const d = event?.data || {}
   const recipients = [...new Set((Array.isArray(d.to) ? d.to : []).slice(0, MAX_RECIPIENTS).map(normalizeRecipient).filter(Boolean))]
   const complaint = type === 'email.complained'
   const permanentBounce = type === 'email.bounced' && isPermanentBounce(d)
+
+  // SUPPORT-INBOXES ROUND 1: a reply you sent FROM the support address (typed in the Resend Inbox) that bounces, fails or draws a
+  // complaint never reaches the customer — and nothing tells you, because only account and employer-lead addresses were ever
+  // reported. App mail is sent from EMAIL_FROM and keeps its own handling below; this is only for the support address. The
+  // alert names the Resend email id, not the recipient (alert_logs keeps no customer addresses); the dashboard has the rest.
+  const supportAddr = supportEmail(c.env)
+  if (supportAddr !== fromAddress(c.env) && bareAddress(d.from) === supportAddr
+      && (complaint || permanentBounce || type === 'email.failed' || type === 'email.suppressed')) {
+    await alertOnce(c, `support-reply-undeliverable:${typeof d.email_id === 'string' ? d.email_id.slice(0, 64) : type}`,
+      'A reply sent from the support address was not delivered',
+      `A message sent from ${supportAddr} (Resend email id: ${typeof d.email_id === 'string' ? d.email_id : 'unknown'}) triggered ${type}` +
+      `${isPermanentBounce(d) ? ' (permanent bounce)' : ''}. The customer most likely did NOT receive it. ` +
+      `Open it in the Resend dashboard (Emails) to see the recipient and the reason, then contact them another way.`)
+  }
 
   // G2: an address that cannot be reached is worth knowing about when it belongs to an ACCOUNT — verification,
   // reset, sign-in and receipt mail still goes out to it (suppression exempts them) and will keep failing.
@@ -245,7 +392,7 @@ async function handleResend(c) {
   const svixId = c.req.header('svix-id')
   let row
   try {
-    row = await inbox.recordEvent(supabase, { provider: 'resend', eventKey: svixId, eventType: event.type, reference: null, payload: minimalResendEvent(event) })
+    row = await inbox.recordEvent(supabase, { provider: 'resend', eventKey: svixId, eventType: event.type, reference: null, payload: minimalResendEvent(event, c.env) })
   } catch (err) {
     console.error('Resend webhook_events insert failed:', err.message)
     await alertOnce(c, 'resend-inbox-write-failed', 'Resend webhook could not be recorded — Resend will retry',
@@ -264,7 +411,9 @@ async function handleResend(c) {
     if (!row.attempts || row.attempts <= 1)
       await alertOnce(c, 'resend-processing-failed', 'Resend webhook processing failed — Resend will retry',
         `event: ${event.type}\nerror: ${err.message}\n\nAnswered 500, so Resend redelivers and the hourly re-drive also re-runs it (Admin → Webhooks, provider: resend). ` +
-        `Until it succeeds the address is not suppressed.`)
+        (event.type === 'inbox.thread.created'
+          ? `Until it succeeds you are NOT told about this new support conversation — it is still in the Resend Inbox (resend.com/inboxes).`
+          : `Until it succeeds the address is not suppressed.`))
     throw err
   }
   // B1 (round 8): clear the recipient-bearing payload only once the status write has landed. If it was lost,
@@ -275,4 +424,4 @@ async function handleResend(c) {
   return c.json({ success: true, removed: outcome.removed })
 }
 
-module.exports = { handleResend, processResendEvent, clearResendPayload, minimalResendEvent, normalizeRecipient }
+module.exports = { handleResend, processResendEvent, processInboundThread, clearResendPayload, minimalResendEvent, normalizeRecipient }

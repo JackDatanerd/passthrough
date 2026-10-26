@@ -1,0 +1,7 @@
+# Security contact for Passthrough (RFC 9116). Report a vulnerability to the address below;
+# please do not include real customer data. Refresh the Expires date at least once a year
+# (DEPLOYMENT.md, "Support inbox").
+Contact: mailto:support@usepassthrough.com
+Expires: 2027-10-25T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://usepassthrough.com/.well-known/security.txt

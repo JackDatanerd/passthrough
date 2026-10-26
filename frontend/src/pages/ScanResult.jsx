@@ -1,3 +1,4 @@
+import { SUPPORT_EMAIL } from '../lib/support'
 import { useEffect, useState, useRef } from 'react'
 import { useParams, useSearchParams, useLocation, Link, Navigate, useNavigate } from 'react-router-dom'
 import { buildBadgeEmbeds } from '../lib/badgeEmbed'
@@ -525,7 +526,7 @@ export default function ScanResult() {
                 setPaymentOutcome({ tone: 'amber', text: "You'd already paid for this resume, so that payment bought nothing extra and your resume is unaffected. " +
                   (vres.data.data.refund === 'QUEUED'
                     ? "We've started refunding the extra payment to your original payment method — it can take a few business days to appear."
-                    : "We couldn't start the refund automatically, but we've been alerted and will refund it. You can also email support@usepassthrough.com with reference " + reference + '.') })
+                    : "We couldn't start the refund automatically, but we've been alerted and will refund it. You can also email " + SUPPORT_EMAIL + " with reference " + reference + '.') })
               }
             } catch (verifyErr) {
               // Most failures are still swallowed — the webhook will confirm the payment independently

@@ -1,3 +1,4 @@
+import { SUPPORT_EMAIL, SUPPORT_MAILTO } from '../lib/support'
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import api from '../lib/api'
@@ -141,7 +142,7 @@ export default function PartnerTerms() {
         </Section>
 
         <p className="text-sm text-gray-500">
-          Questions? Contact <a href="mailto:support@usepassthrough.com" className="text-blue-700 hover:underline">support@usepassthrough.com</a>.
+          Questions? Contact <a href={SUPPORT_MAILTO} className="text-blue-700 hover:underline">{SUPPORT_EMAIL}</a>.
         </p>
       </main>
       <Footer />

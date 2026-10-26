@@ -59,3 +59,25 @@ describe('sendViaResend', () => {
     expect(JSON.parse(calls[0].init.body)).not.toHaveProperty('text')
   })
 })
+
+describe('sendViaResend — Reply-To and a pinned idempotency key (support-inboxes round 1)', () => {
+  it('sends reply_to when given, and omits the field entirely when not', async () => {
+    script(resp(200, '{"id":"r1"}'), resp(200, '{"id":"r2"}'))
+    await sendViaResend(env, { ...msg, replyTo: 'support@usepassthrough.com' }, FAST)
+    await sendViaResend(env, msg, FAST)
+    expect(JSON.parse(calls[0].init.body).reply_to).toBe('support@usepassthrough.com')
+    expect('reply_to' in JSON.parse(calls[1].init.body)).toBe(false)
+    expect('replyTo' in JSON.parse(calls[0].init.body)).toBe(false)        // Resend's field name, not ours
+  })
+  it('uses a caller-supplied idempotency key on every attempt, and never puts it in the body', async () => {
+    script(resp(500), resp(200, '{"id":"p1"}'))
+    await sendViaResend(env, { ...msg, idempotencyKey: 'support-thread/abc' }, FAST)
+    expect(calls.map(c => c.init.headers['Idempotency-Key'])).toEqual(['support-thread/abc', 'support-thread/abc'])
+    expect(JSON.parse(calls[0].init.body)).not.toHaveProperty('idempotencyKey')
+  })
+  it('still generates a fresh random key per call when none is supplied', async () => {
+    script(resp(200, '{}'), resp(200, '{}'))
+    await sendViaResend(env, msg, FAST); await sendViaResend(env, msg, FAST)
+    expect(calls[0].init.headers['Idempotency-Key']).not.toBe(calls[1].init.headers['Idempotency-Key'])
+  })
+})

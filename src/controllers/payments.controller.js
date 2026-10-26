@@ -18,6 +18,7 @@ const c = require('../config/constants')
 const { getSupabase } = require('../config/supabase')
 const cryptoLib = require('../lib/crypto')
 const { normalizeSub } = require('../lib/referralSub')
+const { supportEmail } = require('../lib/supportEmail')
 const { scanRowToCamel } = require('../lib/mappers')
 const paystackService = require('../services/paystack.service')
 const emailService = require('../services/email.service')
@@ -69,16 +70,17 @@ function inFlightResponse(c2, what) {
 const DELIVERING_OUTCOMES = new Set(['FULFILLED', 'REENQUEUED', 'ALREADY_FULFILLED', 'DUPLICATE'])
 
 function alreadyPaidResponse(c2, result, payment) {
+  const support = supportEmail(c2 && c2.env)   // support-inboxes round 1: one source for the address (lib/supportEmail.js)
   const outcome = result.outcome
   const needsSupport = !DELIVERING_OUTCOMES.has(outcome)
   const ref = payment.paystack_ref
   let message
   if (outcome === 'MISMATCH')
-    message = `An earlier payment for this resume was received, but its amount differs from what was expected, so it is being checked by hand. You do not need to pay again — email support@usepassthrough.com with reference ${ref} if you hear nothing.`
+    message = `An earlier payment for this resume was received, but its amount differs from what was expected, so it is being checked by hand. You do not need to pay again — email ${support} with reference ${ref} if you hear nothing.`
   else if (outcome === 'DUPLICATE')
     message = 'An earlier payment for this resume already went through and your resume was delivered by it. The extra payment is being refunded automatically, so there is no need to pay again.'
   else if (needsSupport)
-    message = `An earlier payment for this resume was received but is not being delivered (it has been refunded or is under review). If you were not refunded, email support@usepassthrough.com with reference ${ref}.`
+    message = `An earlier payment for this resume was received but is not being delivered (it has been refunded or is under review). If you were not refunded, email ${support} with reference ${ref}.`
   else
     message = 'An earlier payment for this resume actually went through — it is being delivered now, so there is no need to pay again.'
   return c2.json({ success: false, alreadyPaid: true, outcome, needsSupport, message,
@@ -840,16 +842,17 @@ async function verifyPayment(c2) {
     return c2.json({ success: true, data: { scanId: paymentRow.scan_id, refunded: true } })
   const NOT_DELIVERED = ['SCAN_MISSING', 'NO_SCAN', 'ACCOUNT_DELETED', 'UNKNOWN_REFERENCE', 'IGNORED_STATUS']
   if (NOT_DELIVERED.includes(result.outcome)) {
+    const support = supportEmail(c2.env)   // support-inboxes round 1
     const reversed = result.outcome === 'IGNORED_STATUS'
     // Round 8: these payments now refund themselves; tell the buyer when that is on its way.
     const st = result.autoRefund && result.autoRefund.status
     const refunding = st === 'QUEUED' || st === 'IN_PROGRESS'
     return c2.json({ success: false, needsSupport: true, outcome: result.outcome,
       message: reversed
-        ? `This payment is marked ${result.status || 'refunded/disputed'}, so nothing was delivered. If that looks wrong, email support@usepassthrough.com with reference ${reference}.`
+        ? `This payment is marked ${result.status || 'refunded/disputed'}, so nothing was delivered. If that looks wrong, email ${support} with reference ${reference}.`
         : refunding
-          ? `We received your payment but couldn't attach it to a resume, so nothing was generated. We've started refunding it to your original payment method — it can take a few business days to appear. Questions? Email support@usepassthrough.com with reference ${reference}.`
-          : `We received your payment but couldn't attach it to a resume, so nothing was generated yet. We've been notified and will sort it out — you can also email support@usepassthrough.com with reference ${reference}.`
+          ? `We received your payment but couldn't attach it to a resume, so nothing was generated. We've started refunding it to your original payment method — it can take a few business days to appear. Questions? Email ${support} with reference ${reference}.`
+          : `We received your payment but couldn't attach it to a resume, so nothing was generated yet. We've been notified and will sort it out — you can also email ${support} with reference ${reference}.`
     }, 409)
   }
   // PAYMENTS & PRICING ROUND 6 (feature gap): the buyer who paid twice used to see the same "Payment

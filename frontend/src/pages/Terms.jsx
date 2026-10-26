@@ -1,3 +1,4 @@
+import { SUPPORT_EMAIL, SUPPORT_MAILTO } from '../lib/support'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 
@@ -115,8 +116,8 @@ export default function Terms() {
             refunds automatically where we can; if one cannot be started automatically we will do
             it by hand. Your bank may take several business days to show a refund. For anything
             else that went wrong on our end, contact{' '}
-            <a href="mailto:support@usepassthrough.com" className="text-blue-600 underline">
-              support@usepassthrough.com
+            <a href={SUPPORT_MAILTO} className="text-blue-600 underline">
+              {SUPPORT_EMAIL}
             </a>{' '}
             with your payment reference and we'll make it right.
           </p>
@@ -211,8 +212,8 @@ export default function Terms() {
         <Section title="13. Contact">
           <p>
             Questions about these terms:{' '}
-            <a href="mailto:support@usepassthrough.com" className="text-blue-600 underline">
-              support@usepassthrough.com
+            <a href={SUPPORT_MAILTO} className="text-blue-600 underline">
+              {SUPPORT_EMAIL}
             </a>
           </p>
         </Section>

@@ -1,3 +1,4 @@
+import { SUPPORT_EMAIL, SUPPORT_MAILTO } from '../lib/support'
 import { useContext, useState } from 'react'
 import { Link } from 'react-router-dom'
 import Navbar from '../components/layout/Navbar'
@@ -230,7 +231,7 @@ export default function Pricing() {
               {pricing.autoRefundUndeliverable && (
                 <li>Paid but we couldn't deliver (the resume or account no longer exists)? That payment is refunded automatically too.</li>
               )}
-              <li>Anything else, email <a href="mailto:support@usepassthrough.com" className="text-blue-700 hover:underline">support@usepassthrough.com</a> with your payment reference.</li>
+              <li>Anything else, email <a href={SUPPORT_MAILTO} className="text-blue-700 hover:underline">{SUPPORT_EMAIL}</a> with your payment reference.</li>
             </ul>
           </div>
         )}
