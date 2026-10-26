@@ -1,0 +1,21 @@
+SCAN/ATS - ambiguous foreign stop words (bug)
+
+BUG
+- src/services/ats.service.js stop-listed Spanish/French/Portuguese/German/Italian/Swahili function words unconditionally. Several are
+  also English words or tech terms: die, pour, nas, dos, los, las, com, con, sin, son, den, fur, est, des, ces, ses, uno, para, mas, ser,
+  sera, dal, als, pia, nos, tra. In an English posting they were dropped, so "Die Casting Operator" never asked for "die", a sysadmin
+  posting never asked for NAS or DOS, a concrete-pour or barista posting never asked for "pour", and a resume with or without them
+  scored identically on keywords. The file's own comment says such words are deliberately not in the list.
+
+FIX
+- Those words moved to AMBIGUOUS_FOREIGN_STOP. They are stop words only when the posting itself is not English (postingIsForeign on the
+  posting text), which is the only place they are function words. extractKeywords and extractWeightedKeywords take the test per posting.
+- NON_ENGLISH_STOP is unchanged, so looksEnglish (which counts foreign function words) behaves exactly as before.
+
+NOTE
+- "Not English" is decided by postingIsForeign: at least 3 unambiguous foreign function words and 3% of the text. looksEnglish was tried
+  first and rejected: it calls a posting under 60 words, or one diluted by English tech terms, English (tests/scan.ats.round9 caught it).
+
+TESTS
+- tests/ats.ambiguousStopWords.test.js (4): English/tech terms survive in both extractors; a die casting posting asks for "die casting";
+  NAS changes the keyword score; a French posting still filters "pour". Three of the four fail without the fix.

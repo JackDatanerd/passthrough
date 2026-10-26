@@ -307,12 +307,30 @@ const NON_ENGLISH_STOP = `
   kwa kama pia hii huu hiyo huo yetu wetu yako wako ambayo ambao ambaye kuwa kwamba lakini sana hadi kutoka katika wao yeye sisi wewe mimi
   pamoja baada kabla wakati kila hapa mahitaji majukumu nafasi kampuni uzoefu ujuzi
 `
-for (const w of NON_ENGLISH_STOP.split(/\s+/).filter(Boolean)) STOP_WORDS.add(w)
+// Foreign function words that are ALSO English words or tech terms (die casting, a concrete pour, NAS storage, DOS scripting,
+// COM interop, LOS in a hospital, DES encryption...). Stop-listed unconditionally they vanished from every English posting: a
+// resume with "die casting" or "NAS" earned nothing for it and one without lost nothing. They are now stop words only when the
+// posting itself is written in another language (see stopFor / postingIsForeign), which is the only place they are function words.
+const AMBIGUOUS_FOREIGN_STOP = new Set(`die pour dos nas los las com con sin son den fur est des ces ses uno para mas ser sera dal als pia nos tra`.split(/\s+/))
+for (const w of NON_ENGLISH_STOP.split(/\s+/).filter(Boolean)) if (!AMBIGUOUS_FOREIGN_STOP.has(w)) STOP_WORDS.add(w)
 // Accented spellings of the same words ("más", "será", "über", "für", "équipe") are the same word to a reader; fold them
 // out so a posting typed with accents is filtered like one typed without.
 const foldAccents = w => w.normalize('NFD').replace(/\p{M}+/gu, '')
 STOP_WORDS.add('über')     // not folded: "uber" is also a company name
 const isStop = w => STOP_WORDS.has(w) || (/[^\x00-\x7f]/.test(w) && STOP_WORDS.has(foldAccents(w)))
+// The stop test for ONE posting: the always-stop list, plus the ambiguous foreign words when the posting is not English.
+// Is THIS posting written in another language? Judged only by the unambiguous foreign function words (the ambiguous ones prove nothing):
+// at least three of them, and a real share of the text, so one stray "pour" or a Spanish place name in an English posting never flips it,
+// while even a short Spanish or French posting does. (looksEnglish is not used: it calls a posting English below 60 words, or when
+// English tech terms dilute the foreign share, which is exactly when these words must still be filtered.)
+function postingIsForeign(text) {
+  const words = String(text || '').toLowerCase().match(/[a-z\u00c0-\u024f]+/g) || []
+  if (words.length < 5) return false
+  let hits = 0
+  for (const w of words) if (FOREIGN_FUNCTION_WORDS.has(foldAccents(w)) && !AMBIGUOUS_FOREIGN_STOP.has(foldAccents(w))) hits++
+  return hits >= 3 && hits / words.length >= 0.03
+}
+const stopFor = nonEnglish => w => isStop(w) || (nonEnglish && AMBIGUOUS_FOREIGN_STOP.has(foldAccents(w)))
 
 const JS_FRAMEWORKS = { node: 'Node.js', next: 'Next.js', vue: 'Vue.js', react: 'React.js', express: 'Express.js', nuxt: 'Nuxt.js', angular: 'Angular.js', ember: 'Ember.js', d3: 'D3.js', three: 'Three.js' }
 function displayKeyword(kw) {
@@ -327,6 +345,7 @@ function displayKeyword(kw) {
 // extraction would split into two separate, less meaningful words.
 function extractKeywords(text) {
   const freq = {}
+  const isStop = stopFor(postingIsForeign(text))
   for (const seg of tokenizeSegments(text)) {
     for (const w of seg) {
       if (keepToken(w) && !isStop(w)) freq[w] = (freq[w] || 0) + 1
@@ -467,6 +486,7 @@ function techBonus(token, caps) {
 // Weighted candidate pool: word/phrase -> { weight, order }. extractKeywords() (raw counts) is kept
 // for callers that want plain frequency; scoring uses this.
 function extractWeightedKeywords(text) {
+  const isStop = stopFor(postingIsForeign(text))
   const zones = splitJdZones(text)
   const caps = skillShapedTokens(text)
   const pool = new Map()
