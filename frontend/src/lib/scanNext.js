@@ -77,7 +77,7 @@ export function scanNeed(scan, now = Date.now()) {
 // Scanned → Fixed → Verified, each 'done' | 'now' | 'todo'.
 export function stages(scan, now = Date.now()) {
   const need = scanNeed(scan, now)
-  if (need === 'error') return ['todo', 'todo', 'todo']
+  if (need === 'error') return scan.fixPurchased ? ['done', 'todo', 'todo'] : ['todo', 'todo', 'todo']   // a paid fix that failed: the scan itself finished
   if (['PENDING', 'SCANNING'].includes(scan.status)) return ['now', 'todo', 'todo']
   const fixed = scan.status === 'FIX_DELIVERED' ? 'done' : ['FIX_PURCHASED', 'FIX_GENERATING'].includes(scan.status) ? 'now' : 'todo'
   return ['done', fixed, isVerified(scan) ? 'done' : 'todo']
@@ -99,7 +99,7 @@ export function scanMessage(scan, now = Date.now()) {
   const n = displayScore(scan)
   switch (need) {
     case 'wait':
-      if (scan.status === 'FIX_PURCHASED') return { tone: 'b', label: 'Payment received', text: 'Starting your fix.' }
+      if (scan.status === 'FIX_PURCHASED') return { tone: 'b', label: 'Payment received', text: scan.fixTier === 'BADGE' ? 'Starting your verification.' : 'Starting your fix.' }
       if (scan.status === 'FIX_GENERATING') return scan.fixTier === 'BADGE'
         ? { tone: 'b', label: 'Verifying', text: `Score ${scan.atsScore ?? ''}. You can leave this page; we email you when your link is ready.` }
         : { tone: 'b', label: 'Writing your fix', text: `Original score ${scan.atsScore ?? '—'}. You can leave this page; we email you when it is ready.` }
@@ -109,6 +109,7 @@ export function scanMessage(scan, now = Date.now()) {
     case 'error':
       return { tone: 'r', label: "Didn't finish", text: 'Open it to see what happened.' }
     case 'share':
+      if (scan.fixTier === 'BADGE') return { tone: 'g', label: '\u2713 Verified', text: `Score ${scan.fixAtsScore}. Employers can open your link.` }
       return { tone: 'g', label: '✓ Verified', text: `${scan.atsScore ?? '—'} → ${scan.fixAtsScore}. Employers can open your link.` }
     case 'retryfix': {
       const left = retriesLeft(scan)
@@ -116,6 +117,12 @@ export function scanMessage(scan, now = Date.now()) {
     }
     case 'download': {
       if (scan.verificationStatus === 'REVOKED') return { tone: 'r', label: 'Verification removed', text: 'Your public link no longer works.' }
+      // A credential-only delivery fixes nothing: it either issued the link or it did not, and there are no retries to speak of.
+      if (scan.fixTier === 'BADGE') {
+        return n != null && n < ATS_BADGE_THRESHOLD
+          ? { tone: 'a', label: 'Credential not issued', text: `The formatted file scored ${n}, under ${ATS_BADGE_THRESHOLD}. A free fix credit is on your account.` }
+          : { tone: 'g', label: 'Files ready', text: `Score ${n}.` }
+      }
       const gain = `${scan.atsScore ?? '—'} → ${n}`
       if (n != null && n < ATS_BADGE_THRESHOLD)
         return { tone: 'a', label: 'Fix delivered', text: `${gain}, ${pl(pointsTo(scan, ATS_BADGE_THRESHOLD))} short of ${ATS_BADGE_THRESHOLD}. No retries left; a free fix credit covers your next fix.` }

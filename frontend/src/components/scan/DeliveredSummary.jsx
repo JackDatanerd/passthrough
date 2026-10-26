@@ -12,6 +12,7 @@ export default function DeliveredSummary({ scan }) {
   if (typeof after !== 'number') return null
   const live = liveProgress(scan.fixProgress, scan.fixRetryCount)
   const scores = live && Array.isArray(live.scores) ? live.scores.filter(n => typeof n === 'number') : []
+  const plain = scan.fixTier === 'FIX_PLAIN'            // a plain fix has no credential, so no credential line to be "past"
   const gap = ATS_BADGE_THRESHOLD - after
   const delta = typeof before === 'number' ? after - before : null
   // A paid retry keeps the earlier result when none of this round's attempts beat it; say so, or the ladder would
@@ -21,9 +22,9 @@ export default function DeliveredSummary({ scan }) {
   return (
     <div className="mb-4" data-testid="delivered-summary">
       <p className="text-sm text-gray-700">
-        {gap > 0
+        {gap > 0 && !plain
           ? <><strong>{after}</strong> out of 100, {gap} point{gap === 1 ? '' : 's'} from the {ATS_BADGE_THRESHOLD}.</>
-          : <><strong>{after}</strong> out of 100, past the {ATS_BADGE_THRESHOLD} line.</>}
+          : <><strong>{after}</strong> out of 100{plain ? '.' : <>, past the {ATS_BADGE_THRESHOLD} line.</>}</>}
         {delta !== null && delta > 0 && <> Up {delta} from {before}.</>}
       </p>
       <ScoreRoad before={before} after={after} />

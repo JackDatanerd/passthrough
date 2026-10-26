@@ -61,7 +61,7 @@ export default function DeliveredResumeEditor({ scan, onSaved }) {
           <h3 className="font-semibold text-gray-900">Edit your delivered resume</h3>
           <p className="text-sm text-gray-500 mt-0.5">
             Fix a typo, add a number, or drop something for one application. Saving rebuilds both files
-            {plain ? '' : ' and re-checks your score — your verification link stays the same, and anyone holding an earlier copy is told it is an earlier version'}.
+            {plain || !scan.verificationUrl ? '' : ' and re-checks your score — your verification link stays the same, and anyone holding an earlier copy is told it is an earlier version'}.
           </p>
         </div>
         {!editing && <Button variant="secondary" size="sm" onClick={start}>Edit resume</Button>}

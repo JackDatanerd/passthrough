@@ -116,7 +116,8 @@ describe('ScanResult — once the fix is delivered: four steps', () => {
     setup(delivered, '/scan/s1/score')
     expect(await screen.findByTestId('score-summary')).toBeInTheDocument()
     expect(screen.getByText(/Your fixed resume scores 88/)).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Open it' })).toHaveAttribute('href', '/scan/s1/resume')
+    expect(screen.queryByRole('link', { name: 'Open it' })).toBeNull()                                  // one pointer, not two
+    expect(screen.getByRole('link', { name: /Go to Your resume/ })).toHaveAttribute('href', '/scan/s1/resume')
     expect(screen.queryByTestId('fix-banner')).toBeNull()
     expect(screen.getByText(/You've got the fix/)).toBeInTheDocument()
   })

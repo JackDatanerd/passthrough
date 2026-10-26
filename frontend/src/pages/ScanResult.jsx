@@ -795,10 +795,17 @@ export default function ScanResult() {
   if (!scan) {
     return (
       <PageShell>
-        <div className="flex items-center justify-center py-24 px-4">
-          <div className="text-center">
-            <p className="text-gray-600 mb-4">Scan not found or access denied.</p>
-            <Link to="/scan" className="text-blue-600 hover:underline text-sm">Start a new scan</Link>
+        <div className="mx-auto max-w-md py-20 px-4 text-center" data-testid="scan-unavailable">
+          <h1 className="text-xl font-bold text-gray-900">This result isn't available</h1>
+          <p className="mt-2 text-sm text-gray-600">
+            A result from a visit without an account is kept for 24 hours, so it may have expired. It may also have been deleted, or belong to a different account.
+            {!user && ' If it was yours, sign in with the account that ran it.'}
+          </p>
+          <div className="mt-5 flex flex-wrap justify-center gap-3">
+            {user
+              ? <ButtonLink to="/dashboard" variant="secondary">Go to my scans</ButtonLink>
+              : <ButtonLink to={`/login?next=${encodeURIComponent(`${pathname}${search}`)}`} variant="secondary">Sign in</ButtonLink>}
+            <ButtonLink to="/scan">Start a new scan</ButtonLink>
           </div>
         </div>
       </PageShell>
@@ -821,6 +828,21 @@ export default function ScanResult() {
   // ── Tabs ─────────────────────────────────────────────────────────────────────────────────────────
   const resultsReady = RESULTS_READY.includes(scan.status)
   const purchased = rewriting || delivered
+  const hasLink = !!scan.verificationUrl && scan.verificationStatus !== 'REVOKED' && credentialEarned(scan)
+  // The state of a verification page the owner (or Passthrough) has switched off. Both tabs that talk about the link say so.
+  const unpublishedNote = scan.verificationUrl && scan.verificationStatus === 'REVOKED' ? (
+    <p data-testid="unpublished-note" className="text-sm text-gray-700 bg-gray-100 border border-gray-200 rounded-md px-3 py-2">
+      Your verification page is currently unpublished.
+      {scan.verificationRevokedReason === 'OWNER' ? (
+        <button type="button" onClick={handleTogglePublished} disabled={publishLoading}
+          className="ml-2 underline underline-offset-2 hover:text-gray-900 disabled:opacity-50">
+          Republish
+        </button>
+      ) : (
+        ' It was taken down by Passthrough and cannot be republished from here. Contact support if this seems wrong.'
+      )}
+    </p>
+  ) : null
   const earnedApply = delivered || (rewriting && (deliveredSeen || scan.fixRetryCount > 0))
   const tabs = !resultsReady ? [] : [
     { key: 'score', label: 'Score' },
@@ -956,7 +978,6 @@ export default function ScanResult() {
                       : credentialEarned(scan)
                         ? <span><b className="text-green-900">Your Verified resume is ready.</b> Your score of {scan.fixAtsScore} now carries a link employers can check.</span>
                         : <span><b className="text-green-900">Your files are ready.</b> The formatted file scored {scan.fixAtsScore ?? '—'}, under the {ATS_BADGE_THRESHOLD} the credential needs.</span>}
-                    <ButtonLink to={`/scan/${id}/resume${search}`} size="sm" className="ml-auto">Open it</ButtonLink>
                   </div>
                 )}
                 {!user && (
@@ -972,7 +993,7 @@ export default function ScanResult() {
                 )}
                 <div className="grid gap-6 lg:grid-cols-[1.05fr_.95fr] lg:items-start">
                   <div className="contents lg:flex lg:flex-col lg:gap-6 lg:min-w-0">
-                    <div className="order-1"><ScoreSummary score={scan.atsScore} passed={scan.passed} provisional={!!scan.atsDetail?.scoredWithoutAi && !scan.fixPurchased} /></div>
+                    <div className="order-1"><ScoreSummary score={scan.atsScore} passed={scan.passed} provisional={!!scan.atsDetail?.scoredWithoutAi && !scan.fixPurchased} original={purchased ? { after: delivered ? scan.fixAtsScore : null, rewrote: rewrites(scan.fixTier) } : null} /></div>
                     <div className="order-3 min-w-0"><PointsLost scan={scan} seeAllTo={`/scan/${id}/why${search}`} /></div>
                   </div>
                   <div className="order-2 flex flex-col gap-4 min-w-0">
@@ -1059,8 +1080,10 @@ export default function ScanResult() {
             )}
                     {purchased && (
                       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-                        <h3 className="font-semibold text-gray-900">{delivered ? "You've got the fix" : 'Your fix is on its way'}</h3>
-                        <p className="mt-1 text-sm text-gray-600">{delivered ? 'Your rewrite, files and Verified link are in the next tabs.' : 'It is being written now. Open Your resume to follow it.'}</p>
+                        <h3 className="font-semibold text-gray-900">{!delivered ? (rewrites(scan.fixTier) ? 'Your fix is on its way' : 'Your credential is on its way') : rewrites(scan.fixTier) ? "You've got the fix" : credentialEarned(scan) ? "You're verified" : 'Your files are ready'}</h3>
+                        <p className="mt-1 text-sm text-gray-600">{!delivered
+                          ? (rewrites(scan.fixTier) ? 'It is being written now. Open Your resume to follow it.' : 'It is being checked now. Open Your resume to follow it.')
+                          : `${rewrites(scan.fixTier) ? 'Your rewrite and files' : 'Your files'}${hasLink ? ' and Verified link are' : ' are'} in the next tabs.`}</p>
                         <Link to={`/scan/${id}/resume${search}`} className="mt-3 inline-block text-sm font-semibold text-blue-700 underline underline-offset-2">Go to Your resume →</Link>
                       </div>
                     )}
@@ -1148,6 +1171,7 @@ export default function ScanResult() {
             {/* ── YOUR RESUME: written, scored and delivered ── */}
             {current === 'resume' && (
               <section data-testid="tab-resume" aria-label="Your resume" className="flex flex-col gap-6">
+                <h2 className="sr-only">Your resume</h2>
             {rewriting && (
               <div className="flex flex-col gap-4" data-testid="rewriting-focus">
                 <div>
@@ -1293,7 +1317,7 @@ export default function ScanResult() {
                     <p className="text-sm font-medium text-blue-900">Upgrade this resume to the full Fix</p>
                     <p className="text-sm text-blue-800 mt-0.5">
                       Use one of your free fix credits to have this same resume rewritten for this job — no new scan and no charge.
-                      Your verification link stays the same.
+                      If the rewrite clears {ATS_BADGE_THRESHOLD}, your Verified link is issued.
                     </p>
                     <Alert className="mt-2">{upgradeError}</Alert>
                     <Button onClick={handleUpgradeToFix} loading={upgradeLoading} variant="secondary" className="mt-2">
@@ -1305,19 +1329,7 @@ export default function ScanResult() {
                     an owner could not unpublish it (refund/abuse/second thoughts),
                     and a scan below the badge threshold got a live public page
                     with no visibility into that from here at all. */}
-                {scan.verificationUrl && scan.verificationStatus === 'REVOKED' ? (
-                  <p className="text-sm text-gray-700 bg-gray-100 border border-gray-200 rounded px-3 py-2 mb-4">
-                    Your verification page is currently unpublished.
-                    {scan.verificationRevokedReason === 'OWNER' ? (
-                      <button onClick={handleTogglePublished} disabled={publishLoading}
-                        className="ml-2 underline underline-offset-2 hover:text-gray-900 disabled:opacity-50">
-                        Republish
-                      </button>
-                    ) : (
-                      ' It was taken down by Passthrough and cannot be republished from here — contact support if this seems wrong.'
-                    )}
-                  </p>
-                ) : scan.fixAtsScore >= ATS_BADGE_THRESHOLD && scan.verificationUrl && (
+                {unpublishedNote ? <div className="mb-4">{unpublishedNote}</div> : scan.fixAtsScore >= ATS_BADGE_THRESHOLD && scan.verificationUrl && (
                   <p className="text-sm text-green-800 mb-4">
                     Verification URL:{' '}
                     <a href={scan.verificationUrl} target="_blank" rel="noreferrer"
@@ -1392,7 +1404,7 @@ export default function ScanResult() {
                     {isOwner && (
                       <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm" data-testid="resume-next">
                         <h3 className="mb-2 text-lg font-semibold text-gray-900">Next</h3>
-                        <p className="mb-3 text-sm text-gray-600">Your resume is ready. Your Verified link and cover letter are one tab over.</p>
+                        <p className="mb-3 text-sm text-gray-600">{hasLink ? 'Your resume is ready. Your Verified link and cover letter are one tab over.' : 'Your resume is ready. Your cover letter is one tab over.'}</p>
                         <ButtonLink to={`/scan/${id}/apply${search}`} size="lg" className="w-full">Go to Apply <span aria-hidden="true">{'\u2192'}</span></ButtonLink>
                       </div>
                     )}
@@ -1417,6 +1429,8 @@ export default function ScanResult() {
             {/* ── APPLY: the link, the cover letter, the next job ── */}
             {current === 'apply' && earnedApply && (
               <section data-testid="tab-apply" aria-label="Apply" className="flex flex-col gap-4">
+            <h2 className="sr-only">Apply</h2>
+            {unpublishedNote}
             {rewriting && (
               <p role="status" className="text-sm text-gray-700 bg-gray-100 border border-gray-200 rounded-lg px-4 py-3">
                 Your resume is being rewritten again. Your verification link{scan.verificationUrl ? ' stays live and' : ''} and cover letter come back here as soon as it is done.
