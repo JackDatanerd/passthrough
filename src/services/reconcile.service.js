@@ -209,15 +209,8 @@ const MAX_ABANDON_PER_RUN    = 500                       // plain status flips, 
 async function sweepStalePendingPayments(env, supabase, { now = Date.now() } = {}) {
   const result = { checked: 0, abandoned: 0 }
 
-  const { data: stale, error } = await supabase
-    .from('payments')
-    .select('id, paystack_ref, referral_reservation_id')
-    .eq('status', 'PENDING')
-    .gt('created_at', new Date(now - PENDING_LOOKBACK_MS).toISOString())
-    .lt('created_at', new Date(now - PENDING_ABANDON_AGE_MS).toISOString())
-    .limit(MAX_ABANDON_PER_RUN)
-  if (error) { result.error = error.message; return result }
-
+  // Partners round 42 (bug): the housekeeping below used to sit AFTER the stale-payments query and its early return, so a failing
+  // query silently stopped reservation pruning and every partner sweep. It runs first now, independent of that query.
   // Reservation-table hygiene (migration 0044) — see referral.service.js's
   // pruneReferralCodeReservations. Runs even when nothing is stale, never
   // throws, never affects this sweep's own result.
@@ -228,6 +221,17 @@ async function sweepStalePendingPayments(env, supabase, { now = Date.now() } = {
   try { await require('../controllers/partners.controller').sweepPayoutDue(env, supabase) } catch (_) {}
   // Round 41: the partners themselves hear (once per closed cycle) that commission is waiting on their payout details. Never throws.
   try { await require('../controllers/partners.controller').sweepPayoutDetailsReminders(env, supabase) } catch (_) {}
+
+  const { data: stale, error } = await supabase
+    .from('payments')
+    .select('id, paystack_ref, referral_reservation_id')
+    .eq('status', 'PENDING')
+    .gt('created_at', new Date(now - PENDING_LOOKBACK_MS).toISOString())
+    .lt('created_at', new Date(now - PENDING_ABANDON_AGE_MS).toISOString())
+    .limit(MAX_ABANDON_PER_RUN)
+  if (error) result.error = error.message
+
+  if (error) return result
 
   result.checked = stale?.length || 0
   if (!result.checked) return result

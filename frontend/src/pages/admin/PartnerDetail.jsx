@@ -516,9 +516,15 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
   // For a cycle this also includes unpaid refund credits from OTHER closed cycles: the server
   // settles them together with the cycle (round 5), so the default must match or the amount
   // would "differ" from what is settled.
-  const defaultCents = cycle
+  // Round 42: unpaid commission in a currency other than the platform's (it was changed) is settled one currency at a time, ad hoc.
+  const otherCurrencies = (partner.unpaidCurrencies || []).filter(cu => cu !== (partner.currency || 'USD').toUpperCase())
+  const [payCurrency, setPayCurrency] = useState((partner.currency || 'USD').toUpperCase())
+  const scopedOther = !cycle && payCurrency !== (partner.currency || 'USD').toUpperCase()
+  const scoped = !cycle && (otherCurrencies.length > 0 || (partner.unpaidCurrencies || []).length > 1)
+  const baseDefault = cycle
     ? cycle.unpaidCents - (cycle.heldCents || 0) + (cycle.outsideCreditCents || 0)
     : partner.pendingCommissionCents - (partner.heldCents || 0)
+  const defaultCents = scopedOther ? ((partner.unpaidByCurrency || {})[payCurrency] ?? 0) : baseDefault
   const [amount, setAmount] = useState(defaultCents > 0 ? (defaultCents / 100).toFixed(2) : '')
   const [note, setNote] = useState('')
   const [internalNote, setInternalNote] = useState('')
@@ -569,7 +575,8 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
         // payouts.currency as USD anyway, contaminating the actual payout
         // record, not just a display label. partner.currency comes from
         // adminGetPartner (partners.controller.js).
-        currency: partner.currency || 'USD',
+        currency: scoped ? payCurrency : (partner.currency || 'USD'),
+        ...(scoped ? { onlyCurrency: true } : {}),
         note: note.trim() || undefined,
         internalNote: internalNote.trim() || undefined,
         ...(cycle ? { periodStart: cycle.start, periodEnd: cycle.end } : {})
@@ -632,7 +639,13 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
             <span className="font-semibold">{formatCents(defaultCents || 0, partner.currency)}</span>
           </div>
         </div>
-        <Input label={`Amount sent (${partner.currency || 'USD'})`} type="number" step="0.01" value={amount}
+        {scoped && (
+          <Select label="Currency to settle" value={payCurrency} data-testid="payout-currency"
+            onChange={e => { setPayCurrency(e.target.value); const d = e.target.value === (partner.currency || 'USD').toUpperCase() ? baseDefault : ((partner.unpaidByCurrency || {})[e.target.value] ?? 0); setAmount(d > 0 ? (d / 100).toFixed(2) : '') }}>
+            {[...new Set([(partner.currency || 'USD').toUpperCase(), ...(partner.unpaidCurrencies || [])])].map(cu => <option key={cu} value={cu}>{cu}</option>)}
+          </Select>
+        )}
+        <Input label={`Amount sent (${scoped ? payCurrency : (partner.currency || 'USD')})`} type="number" step="0.01" value={amount}
           onChange={e => setAmount(e.target.value)} placeholder="45.00" />
         <p className="text-xs text-gray-400 -mt-2">
           {cycle

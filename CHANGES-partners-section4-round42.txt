@@ -1,0 +1,7 @@
+Partners round 42
+G1 gap: payouts can settle ONE currency (recordPayoutSchema.onlyCurrency); partner detail payout form gets a currency picker when unpaid commission spans currencies; adminGetPartner returns unpaidByCurrency.
+B1 bug: reconcile sweepStalePendingPayments runs reservation pruning + partner sweeps BEFORE the stale-payments query, so a failing query no longer disables them.
+B2 bug: payout-run export and tax summary write their audit entry first and refuse (503) if it cannot be written.
+B3 bug: dashboard no longer says "ready in the next payout run" when PAYOUT_REQUIRES_CURRENT_TERMS holds the partner back (payoutBlockedByTerms); terms prompt says payout is on hold.
+Retracted: the audit's B4 (convert "remaining") - failed rows are genuinely still unconverted.
+Tests: tests/partners.round42.test.js

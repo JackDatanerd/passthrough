@@ -654,7 +654,7 @@ function NotificationPrefs({ token, initial }) {
 
 // Round 8: terms acceptance. An admin-created partner never recorded one and a version bump had no path at all.
 // Not a gate on anything - recorded, and prompted until done.
-function TermsPrompt({ token, version, onAccepted }) {
+function TermsPrompt({ token, version, blocksPayout, onAccepted }) {
   const [state, setState] = useState('idle')   // idle | saving | error
   async function accept() {
     setState('saving')
@@ -665,7 +665,7 @@ function TermsPrompt({ token, version, onAccepted }) {
     <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900" data-testid="terms-prompt">
       <p>
         Please review the current <Link to="/partner/terms" className="underline font-medium">Partner Program terms</Link>
-        {version ? ` (version ${version})` : ''} and accept them. Your links keep working in the meantime.
+        {version ? ` (version ${version})` : ''} and accept them. Your links keep working in the meantime.{blocksPayout ? ' Your next payout is on hold until you do.' : ''}
       </p>
       <button type="button" onClick={accept} disabled={state === 'saving'}
         className="mt-2 px-3 py-1.5 rounded-md bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-60">
@@ -904,7 +904,7 @@ export default function PartnerDashboard() {
                 </div>
               )}
               {data.termsAcceptanceRequired && !termsDone && (
-                <TermsPrompt token={token} version={data.currentTermsVersion} onAccepted={() => setTermsDone(true)} />
+                <TermsPrompt token={token} version={data.currentTermsVersion} blocksPayout={data.payoutBlockedByTerms} onAccepted={() => setTermsDone(true)} />
               )}
               {data.belowMinimum && (
                 <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600">
@@ -917,7 +917,7 @@ export default function PartnerDashboard() {
                   refund credit that will net against it, instead of making the partner add up the cycle rows below. */}
               {/* Round 41 (bug): this said "ready to be paid in the next payout run" right under "we can't pay you" (no payout details) or
                   under the "payout on hold" notice. It is shown only when the next run can actually pay it. */}
-              {data.readyToPayCents > 0 && data.hasPayoutDetails && !data.payoutHoldUntil && (
+              {data.readyToPayCents > 0 && data.hasPayoutDetails && !data.payoutHoldUntil && (!data.payoutBlockedByTerms || termsDone) && (
                 <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-900" data-testid="ready-to-pay">
                   <span className="font-semibold">{fmtCents(data.readyToPayCents, data.currency)}</span> is ready to be paid in the next payout run.
                 </div>

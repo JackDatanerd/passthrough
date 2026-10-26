@@ -837,6 +837,7 @@ async function sweepPayoutDetailsReminders(env, supabase) {
 // bulk read of full account numbers / tax IDs, so the route puts it behind the admin step-up.
 async function adminPayoutRunExport(ctx) {
   const supabase = getSupabase(ctx.env)
+  if (!(await auditBeforeReveal(ctx, supabase, 'partner.payout_run_exported', 'partner', null, {}))) return auditUnavailable(ctx)
   const data = await loadAllPartners(supabase, t => t.select('*').not('payout_method', 'is', null))
   const ledgerByPartner = await loadUnpaidLedgerByPartner(supabase)
   const holdDays = holdDaysFor(ctx.env), minPayout = minPayoutFor(ctx.env), currency = c.activeCurrency(ctx.env)
@@ -855,7 +856,6 @@ async function adminPayoutRunExport(ctx) {
       taxCountry: row.tax_country ?? null, taxId: (await fieldCrypto.openTaxId(ctx.env, row.tax_id)) || null,
       readyToPayCents: r.readyToPayCents, currency })
   }
-  await logAdminAction(ctx, supabase, 'partner.payout_run_exported', 'partner', null, { partners: rows.length })
   ctx.header('Cache-Control', 'no-store')
   return ctx.json({ success: true, data: rows })
 }
@@ -984,6 +984,11 @@ async function adminGetPartner(ctx) {
   camel.payoutDetailsHoldHours = payoutDetailsHoldHoursFor(ctx.env)
   camel.unpaidCurrencies = [...new Set(ledger.filter(l => !l.payout_id).map(l => String(l.currency || camel.currency).toUpperCase()))]
   camel.mixedCurrency = camel.unpaidCurrencies.length > 1
+  // Round 42: what an ad hoc payout in each currency would settle (unpaid, minus the refund-window hold), so the payout form can default it.
+  camel.unpaidByCurrency = Object.fromEntries(camel.unpaidCurrencies.map(cur => {
+    const rows = ledger.filter(l => String(l.currency || camel.currency).toUpperCase() === cur)
+    return [cur, pendingCents(rows) - heldCentsOf(rows, holdDays)]
+  }))
   camel.currentTermsVersion = PARTNER_TERMS_VERSION
   camel.termsCurrent = row.terms_version === PARTNER_TERMS_VERSION
   camel.termsNoticePending = row.terms_version !== PARTNER_TERMS_VERSION && row.terms_notified_version !== PARTNER_TERMS_VERSION
@@ -1426,6 +1431,10 @@ const recordPayoutSchema = z.object({
   amountCents:  z.number().int().positive().max(MAX_PAYOUT_CENTS, 'That amount is larger than the allowed maximum.').optional(),
   confirmedTerms: z.boolean().optional(),
   currency:     z.string().trim().regex(/^[A-Za-z]{3}$/, 'Currency must be a 3-letter code.').transform(v => v.toUpperCase()).optional(),
+  // Partners round 42 (gap): a partner whose unpaid commission spans currencies (the platform currency was changed) could never be paid -
+  // every payout refused with CURRENCY_MISMATCH and nothing could select one currency. With this flag the payout settles ONLY the unpaid
+  // rows in `currency` and leaves the others owed for their own payout.
+  onlyCurrency: z.boolean().optional(),
   payoutMethod: z.enum(['BANK', 'MOBILE_MONEY', 'PAYPAL']).optional(),
   // Shown to the partner on their dashboard. Anything internal belongs in internalNote.
   note:         z.string().trim().max(500).optional(),
@@ -1611,6 +1620,7 @@ async function recordPayoutCore(ctx, supabase, partnerId, body, reply, opts = {}
   // it another (the ledger has carried its own currency since 0051). Normalised, and refused on a mismatch.
   const envCurrency = c.activeCurrency(ctx.env)
   const currency = body.currency || envCurrency
+  if (body.onlyCurrency) unpaidLedger = unpaidLedger.filter(l => String(l.currency || envCurrency).toUpperCase() === currency)
   const ledgerCurrencies = new Set(unpaidLedger.map(l => String(l.currency || envCurrency).toUpperCase()))
   if ([...ledgerCurrencies].some(cur => cur !== currency))
     return reply({ success: false, code: 'CURRENCY_MISMATCH',
@@ -1856,6 +1866,18 @@ async function findPartnerByAnyToken(env, supabase, token, columns) {
 
 // What the payout page shows back to the link holder: names stay (so they recognise the destination), the
 // number is cut to its last four digits.
+// Partners round 42 (bug): the audit write for a BULK read of account numbers / tax IDs. logAdminAction swallows its own failures
+// (right for ordinary actions) so the two bulk exports revealed everything with no trace when the write failed - unlike
+// adminRevealPayoutDetails, which refuses. Returns false when the entry could not be written; the caller then reveals nothing.
+async function auditBeforeReveal(ctx, supabase, action, targetType, targetId, detail = {}) {
+  const actor = ctx.get && ctx.get('user')
+  const { error } = await supabase.from('admin_audit_log').insert({
+    actor_id: actor?.id || null, action, target_type: targetType, target_id: targetId == null ? null : String(targetId), detail })
+  if (error) { console.error(`admin_audit_log insert failed (${action}):`, error.message); return false }
+  return true
+}
+const auditUnavailable = ctx => ctx.json({ success: false, message: 'Could not record this access in the audit log, so nothing was shown. Try again.' }, 503)
+
 function maskedPayoutDetailsForOwner(method, details) {
   return payoutRails.maskedPayoutDetails(method, details)
 }
@@ -2314,6 +2336,8 @@ async function getPartnerDashboard(ctx) {
     payoutAccount:    payoutAccountHint(partner.payout_method, partner.payout_details),
     payoutHoldUntil:  payoutHoldUntilOf(partner.payout_details_submitted_at, payoutDetailsHoldHoursFor(ctx.env)),
     termsAcceptanceRequired: partner.terms_version !== PARTNER_TERMS_VERSION,
+    // Round 42: with PAYOUT_REQUIRES_CURRENT_TERMS on, the next payout run holds this partner back until they accept (or the admin confirms).
+    payoutBlockedByTerms: payoutRequiresCurrentTerms(ctx.env) && partner.terms_version !== PARTNER_TERMS_VERSION,
     currentTermsVersion:     PARTNER_TERMS_VERSION,
     acceptedTermsVersion:    partner.terms_version ?? null,
     // So the dashboard can prompt for payout details while money is owed.
@@ -3940,6 +3964,7 @@ async function adminListTermsAcceptances(ctx) {
 async function adminTaxSummary(ctx) {
   const supabase = getSupabase(ctx.env)
   const year = statementYearOf(ctx)
+  if (!(await auditBeforeReveal(ctx, supabase, 'partner.tax_summary_viewed', 'partner', null, { year }))) return auditUnavailable(ctx)
   const totals = new Map()   // `${partner_id}|${currency}` -> { partnerId, currency, paidCents, payouts }
   let last = null
   for (let page = 0; page < TAX_SUMMARY_MAX_PAYOUT_PAGES; page += 1) {
@@ -3975,7 +4000,6 @@ async function adminTaxSummary(ctx) {
       paidCents: t.paidCents, payouts: t.payouts, taxCountry: p.tax_country ?? null, taxId: removed ? null : ((await fieldCrypto.openTaxId(ctx.env, p.tax_id)) || null) })
   }
   rows.sort((a, b) => b.paidCents - a.paidCents)
-  await logAdminAction(ctx, supabase, 'partner.tax_summary_viewed', 'partner', null, { year, partners: rows.length })
   return ctx.json({ success: true, year, data: rows })
 }
 
