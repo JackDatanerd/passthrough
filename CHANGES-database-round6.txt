@@ -1,0 +1,22 @@
+Database layer round 6 - migrations 0118 (schema evolution + RLS audit)
+
+RLS posture re-verified clean: every table has RLS on with no policy; anon/authenticated hold no grant on any table, sequence or function.
+
+Fixed in supabase/migrations/0118_database_round6.sql
+ 1. Deleting a partner failed when it had a dashboard-source terms acceptance (CHECK vs ON DELETE SET NULL). A BEFORE DELETE trigger now
+    removes the email-less acceptances; rows with an application email are kept and unlinked.
+ 2. grant_fix_credit_once granted a credit on every call when p_round was NULL. Both credit functions now refuse NULL arguments, an erased
+    account, and a scan that is not the credited account's.
+ 3. reattribute_sale refuses a sale that has adjustment rows ('has_adjustments'); the controller maps it to a 409 message.
+ 4. scrub_account_data matched email_logs."to" case-sensitively; now lower() with an expression index.
+ 5. pgcrypto (0001, unused) is moved to the extensions schema if it sits in public; no-op otherwise.
+ 6. Indexes for four foreign keys: scans.fix_payment_id, partner_applications.partner_id, admin_audit_log.actor_id,
+    scan_outcomes.story_moderated_by.
+
+Also: EXPECTED_SCHEMA_VERSION 118, ledger entry for 0118, tests/migrations.0118.pglite.test.js (17 tests, each defect reproduced on the
+pre-0118 schema first).
+
+Run migration 0118 against the database; /health reports the schema as behind until it is applied.
+
+Left as decisions, not changed: legacy raw partner dashboard tokens (rotating means re-emailing partners), redundant users_email_key,
+updated_at triggers on employer_leads/scan_outcomes (would change lead-purge staleness), dead partners.payout_details_token column.

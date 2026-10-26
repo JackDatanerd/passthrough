@@ -3537,6 +3537,7 @@ async function adminReattributeSale(ctx) {
   const refused = {
     already_paid:     [409, 'This sale is already part of a payout. Reverse it and add an adjustment instead.'],
     already_reversed: [409, 'This sale was already reversed.'],
+    has_adjustments:  [409, 'This sale has an adjustment or a partial refund against it, so it cannot be moved. Reverse it and credit the right partner with an adjustment instead.'],
     not_a_sale:       [400, 'Only a sale can be moved.'],
     same_code:        [409, 'The sale already belongs to that code.'],
     target_not_found: [404, 'That code does not exist.'],
