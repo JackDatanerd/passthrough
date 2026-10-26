@@ -21,7 +21,7 @@ export const STATS_FALLBACK = { resumesScanned: 25000, interviewRatePct: 66 }
 
 // Below this many live scans the live count is not used (a small true number reads as a weak claim and
 // the fallback above is the operator's own figure). Above it, the live count always wins.
-export const MIN_LIVE_SCANS = 1000
+export const MIN_LIVE_SCANS = 10
 
 export const ATS_NAMES = ['Workday', 'Greenhouse', 'iCIMS', 'Taleo', 'Lever', 'SuccessFactors']
 
