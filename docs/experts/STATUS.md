@@ -4,7 +4,8 @@ Contract: `passthrough-experts-spec-pack-index.docx` (read first), `passthrough-
 
 ## Base
 
-- Phase 0A was built on commit `ae07e09` (26 Oct 2026, 13:34 +03:00, "Partners round 41 ...").
+- Phase 0B (non-code groundwork) was built on commit `59f6d4a` (26 Oct 2026, 22:20 +03:00, "Scan/ATS: stop foreign stop words ..."). The files read for Phase 0B tasks 4 and 9 were read at `4f261ac`; the only change between `4f261ac` and `59f6d4a` is the ATS service, its test and a CHANGES file, none of which Phase 0B reads.
+- Phase 0A was built on commit `ae07e09` (26 Oct 2026, 13:34 +03:00, "Partners round 41 ...") and is committed as `4f261ac`.
 - Earlier drafts were checked against `7388d37` and `38817f2` (24 Oct). Between `7388d37` and `ae07e09` no file this work touches or depends on changed.
 - Next free migration at the time: **0119** (files, ledger and `EXPECTED_SCHEMA_VERSION` all stood at 118).
 
@@ -12,7 +13,7 @@ Contract: `passthrough-experts-spec-pack-index.docx` (read first), `passthrough-
 
 | Phase | Name | State |
 |---|---|---|
-| 0 | Demand test and groundwork | **0A (the demand test code) delivered, not yet deployed.** The non-code rest of Phase 0 is not started (checklist below). |
+| 0 | Demand test and groundwork | **0A (demand test code) committed as `4f261ac`; deployment not confirmed.** **0B (non-code groundwork) delivered as drafts in `docs/experts/phase0/`; most items still need the owner or counsel (checklist below).** |
 | 1 | Concierge pilot | not started |
 | 2 | MVP platform, invite only | not started |
 | 3 | Marketplace mechanics | not started |
@@ -99,14 +100,43 @@ A fake door for **Human rewrite**, behind one flag, waitlist only. No payment, n
 
 - `frontend/tests/pages/PartnerApply.test.jsx`: 7 tests fail on the untouched base `ae07e09` with "default.get is not a function" at `PartnerApply.jsx:34` (`fetchTermsVersion`). The page now calls `api.get` for the terms version (Partners round 41) and the test's mock of `api` has no `get`. Likely the test mock, not the page. Not fixed here.
 
-## Phase 0 non-code checklist (all NOT STARTED)
+## Phase 0B: what exists (all in `docs/experts/phase0/`)
 
-- [ ] Three to five competitor quotes in the main target markets
-- [ ] Expert shortlist: three to five, the two the founder knows and at least two the founder does not
-- [ ] Legal drafts: expert agreement, grader addendum, client addendum, privacy text; start legal review
-- [ ] Payout provider: shortlist and apply (approval can take weeks); check payout rails for each expert country
-- [ ] Data-flow map for counsel
-- [ ] Copy: checkout wording for the 18-plus tick, third-party data and the optional improvement consent
-- [ ] Style guide and review rubric
-- [ ] Confirm no code, promo or welcome path can reach a human order; check partner terms wording (section 16.7)
-- [ ] Approve the section 27 defaults and set the pilot bars (section 23)
+| File | What it is |
+|---|---|
+| `01-style-guide-v1.docx` | Style guide v1 with 10 synthetic before/after examples. Regional notes unverified. |
+| `02-sample-test-pack.docx`, `02b-rubric-scoring-sheet.xlsx` | Three synthetic test variants with graders-only answers; Appendix C scoring sheet with formulas. |
+| `03-pilot-runbook.docx`, `03b-pilot-recording-sheet.xlsx` | Manual pilot procedure; per-job recording sheet with contribution formulas and the Phase 1 gate. |
+| `04-terms-and-policy-changes.docx` | Quoted current wording and proposed changes for Terms, Privacy and partner terms; version and notice-flow findings. |
+| `05a-client-addendum-draft.docx`, `05b-expert-agreement-draft.docx`, `11c-grader-addendum-draft.docx` | Drafts for counsel. Every page marked. Open questions boxed at the front. |
+| `06-checkout-wording.docx` | The eight checkout strings with placement and the rule each enforces. |
+| `07-competitor-price-sheet.xlsx` | Public listings (not quotes) for 8 services; only one read on the vendor's own page; quote script. |
+| `08-payout-provider-comparison.xlsx` | Research only. Paystack, PayPal, Wise partly researched; others not. Many cells "to verify". |
+| `09-data-flow-map.docx` | Table and diagram from the code; list of what could not be determined. |
+| `10-explainer-faq-waitlist-copy.docx` | Explainer, FAQ, waitlist and opening emails. |
+| `11a-expert-recruiting-kit.docx`, `11b-expert-shortlist-tracker.xlsx` | Application form, interview script, onboarding checklist; tracker with formulas. |
+| `12-phase0-gate-sheet.xlsx` | Demand-test bars (blank), pilot bars with spec conflicts, section 27 decisions with defaults, section 22.3 checklist. |
+
+## Spec conflicts and gaps found in Phase 0B (need the owner)
+
+1. Section 22 (Phase 1 gate) vs section 23 (targets): revision rate under 20% vs under 15%; contribution at least $25 vs $30. The recording sheet uses section 22 until the owner decides.
+2. The Human polish tier has no turnaround or deadline in the product or engineering spec, so its late-credit rule and promise cannot be written.
+3. Appendix E proposes 90-day retention; section 27 says 30 to 90 days.
+4. Existing Terms and Privacy say minimum age 16; Human rewrite is 18 and over. Privacy section 4 says resumes are not shared with any other party. Terms section 3 says every paid purchase includes a cover letter.
+5. Partner terms (section 3 and `ATTRIBUTION_TERMS`) say every purchase earns commission; spec 16.7 says none on human jobs.
+6. `TERMS_VERSION` is `2026-09` but `Terms.jsx` shows a last-updated date of 23 Oct 2026. Not fixed.
+7. Spec 2.6 defines "verified" for the expert; in the pilot the experts are not yet verified, so copy must say "vetted by us".
+
+## Phase 0 non-code checklist
+
+- [~] Three to five competitor quotes in the main target markets. PARTLY: public listings and a quote script drafted (07). **Needs you:** send the requests and record real quotes.
+- [~] Expert shortlist (three to five; two known, at least two unknown). PARTLY: recruiting kit and tracker built (11a, 11b), test pack (02, 02b). **Needs you:** recruit, test, interview.
+- [~] Legal drafts: expert agreement, grader addendum, client addendum, privacy text; start legal review. PARTLY: drafts and counsel questions done (04, 05a, 05b, 11c). **Needs you:** engage counsel.
+- [~] Payout provider: shortlist and apply; check payout rails per country. PARTLY: research only (08), several providers not researched, many items "to verify". **Needs you:** choose, apply.
+- [x] Data-flow map for counsel. DONE (09), with a list of unknowns that need answers.
+- [~] Copy: checkout wording (18-plus tick, third-party data, optional improvement consent). DONE as drafts (06), blocked in one place: polish late rule. **Needs you** and counsel to approve.
+- [x] Style guide and review rubric. DONE as v1 (01, 02, 02b). Regional notes need confirming.
+- [~] Confirm no code, promo or welcome path can reach a human order; check partner terms wording (16.7). PARTLY: partner wording changes drafted (04, PT1 to PT4). The code-path check is a Phase 1 build and test item, not done here.
+- [ ] Approve the section 27 defaults and set the pilot bars (section 23). **Needs you:** use `12-phase0-gate-sheet.xlsx`.
+- [x] Waitlist copy and explainer written. DONE as drafts (10).
+- [x] Pilot runbook and recording sheet (needed before Phase 1). DONE as drafts (03, 03b).

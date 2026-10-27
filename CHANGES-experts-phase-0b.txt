@@ -1,0 +1,70 @@
+CHANGES: Passthrough Experts Phase 0B (non-code groundwork)
+Base commit: 59f6d4a ("Scan/ATS: stop foreign stop words dropping English/tech keywords", 26 Oct 2026 22:20 +03:00)
+Files for tasks 4 and 9 were read at 4f261ac. The only change from 4f261ac to 59f6d4a is src/services/ats.service.js,
+tests/ats.ambiguousStopWords.test.js and a CHANGES file: nothing Phase 0B reads.
+No application code, tests or migrations were changed. Only docs/experts/ and this file.
+
+WHAT WAS WRITTEN (docs/experts/phase0/)
+ 01-style-guide-v1.docx                 Style guide v1 (Appendix D expanded), 10 synthetic examples
+ 02-sample-test-pack.docx               3 synthetic variants + graders-only answers, flaws, traps
+ 02b-rubric-scoring-sheet.xlsx          Appendix C scoring sheet (formulas, truthfulness-zero fail rule)
+ 03-pilot-runbook.docx                  Concierge pilot procedure (intake to manual payout)
+ 03b-pilot-recording-sheet.xlsx         Per-job record, contribution formulas, Phase 1 gate pass/fail
+ 04-terms-and-policy-changes.docx       Terms, Privacy, partner terms: quoted wording + proposed wording; version/notice flow
+ 05a-client-addendum-draft.docx         DRAFT FOR COUNSEL on every page
+ 05b-expert-agreement-draft.docx        DRAFT FOR COUNSEL on every page
+ 06-checkout-wording.docx               8 checkout strings (section 6.2, 16.7)
+ 07-competitor-price-sheet.xlsx         8 public listings (not quotes) + quote request script
+ 08-payout-provider-comparison.xlsx     Research only; verified/unverified marked per cell
+ 09-data-flow-map.docx                  Flow tables + diagram + unknowns
+ 10-explainer-faq-waitlist-copy.docx    Explainer, FAQ, waitlist and opening emails
+ 11a-expert-recruiting-kit.docx         Application form, interview script, onboarding checklist
+ 11b-expert-shortlist-tracker.xlsx      Tracker (section 13 steps) with formulas
+ 11c-grader-addendum-draft.docx         DRAFT FOR COUNSEL on every page
+ 12-phase0-gate-sheet.xlsx              Bars (blank where the owner must choose), pilot bars, section 27 decisions, 22.3 checklist
+Also updated: docs/experts/STATUS.md (modified, not new).
+
+WHAT WAS RESEARCHED (read 2026-10-26)
+ Competitors (task 7): TopResume read on the vendor page (career.io/resume-writing). Seven other services come from third-party pages
+   (stylingcv.com comparison, updated 2026-09-27, which sells a competing AI builder; findmyprofession.com for ZipJob). Prices conflict between sources.
+ Payouts (task 8): Paystack Transfers (Paystack help pages), PayPal Payouts (PayPal docs plus third-party pages), Wise (Wise pages plus a third-party fee article).
+
+WHAT COULD NOT BE VERIFIED
+ - Vendor-page prices for 7 of 8 competitors; rush prices and standalone cover letter prices (mostly not found).
+ - Payout fees and coverage outside what the pages above state; onboarding steps and times for every provider; USD or cross-border payouts from a Paystack account.
+ - Not researched: Flutterwave, Payoneer, Safaricom Daraja, Stripe Connect.
+ - Regional resume norms in the style guide (starter notes; need a regional expert).
+ - Region/location of Supabase, R2, Resend, Anthropic calls, and the Paystack account country (not in code or config).
+ - Whether delivery emails attach files; whether alert messages can contain resume content; font loading in PDF rendering; Anthropic data-use settings.
+ - Whether existing admin tools can issue a late-delivery credit manually; how Word/PDF files would be built by hand in the pilot.
+ - The generated Word/Excel files were opened and converted to PDF to check layout (sampled pages); formulas were recalculated with 0 errors.
+   They were not opened in Word or Excel themselves.
+
+EXISTING FILES READ FOR TASKS 4 AND 9 (read only)
+ frontend/src/pages/Terms.jsx, Privacy.jsx, PartnerTerms.jsx, Register.jsx
+ frontend/src/lib/partnerTerms.js
+ frontend/src/components/layout/TermsUpdateBanner.jsx, components/scan/FixBanner.jsx, components/scan/HumanRewriteOption.jsx, components/home/PricingSection.jsx
+ src/config/constants.js (TERMS_VERSION, PARTNER_TERMS_VERSION), wrangler.toml
+ src/controllers/auth.controller.js, partners.controller.js, scan.controller.js, human-demand.controller.js
+ src/routes/partners.routes.js
+ src/services/claude.service.js, email.service.js, paystack.service.js
+ src/lib/payoutRails.js, redact.js, r2.js, pwned.js, ssrfGuard.js, turnstile.js, alertWebhook.js, humanDemand.js
+ supabase/migrations/0003, 0022, 0025, 0026, 0119
+
+BUGS / OBSERVATIONS (reported, not fixed)
+ O1 Terms.jsx last-updated 23 Oct 2026 but TERMS_VERSION is "2026-09" (Terms text changed after the version stamp; commits not diffed).
+ O2 Terms section 3 hard-codes "80+" as the Verified threshold; the pricing page says the threshold comes from the pricing API. Confirm they agree.
+ O3 Terms and Privacy say minimum age 16; Privacy section 4 says resume content is not shared with any other party (true today, false once experts exist).
+ O4 STATUS.md (before this update) said Phase 0A was "not yet deployed"; it is committed as 4f261ac. Deployment not confirmed.
+ O5 Spec conflicts: Phase 1 gate (22) vs targets (23) on revision rate and contribution; polish tier has no turnaround; Appendix E (90 days) vs section 27 (30 to 90).
+
+KNOWN GAPS
+ 1. Competitor data: one vendor-confirmed row of eight. The sheet is a starting point for real quotes, not a price benchmark.
+ 2. Payout research is partial and does not recommend a provider.
+ 3. Legal drafts are drafts for counsel; no legal conclusion is given, and no statute is cited.
+ 4. Style guide regional notes, interview scoring, and test fee/time/pass bar are proposals; the pass bar is blank.
+ 5. The runbook leaves open: shared edit tool, hand-built files, late-credit mechanics, whether AI tools are allowed, whether the 3-day hold applies.
+ 6. Polish tier late rule is undefined, so checkout string 6 is incomplete for Polish.
+ 7. The waitlist confirmation email would need a code change (the app sends no email on waitlist join).
+ 8. Checkout consent recording, version bump and partner-code enforcement are Phase 1 code items, not covered here.
+ 9. No file was reviewed by counsel, a regional expert, or an accountant.
