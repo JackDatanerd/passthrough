@@ -102,6 +102,11 @@ describe('lib/outcomes — toPublicStory', () => {
   it('re-vets on the way out: a stored name that would fail today is dropped, not shown', () => {
     expect(lib.toPublicStory(row({ story_display_name: 'https://evil.example' }), 'x')).toBeNull()
   })
+  it('never shows the story of a refunded or disputed purchase', () => {
+    expect(lib.toPublicStory(row({ scans: { verification_code: 'ABC', verification_status: 'REVOKED', verification_revoked_at: '2026-09-01', verification_revoked_reason: 'REFUND' } }), 'abc')).toBeNull()
+    expect(lib.toPublicStory(row({ scans: { verification_revoked_reason: 'DISPUTE' } }), 'abc')).toBeNull()
+    expect(lib.toPublicStory(row({ scans: { verification_revoked_reason: 'OWNER' } }), 'abc')).not.toBeNull()   // the owner hiding their own page is not a reversal
+  })
   it('never carries the scan id, user id or any contact field', () => {
     const out = lib.toPublicStory(row({ scan_id: SCAN, user_id: USER }), 'abc')
     expect(JSON.stringify(out)).not.toContain(SCAN)
@@ -154,6 +159,15 @@ describe('submitOutcome', () => {
   it('409s a scan with no purchased fix (a free scan has nothing to report on)', async () => {
     const { c } = outcomesSetup(q => (q.table === 'scans' ? { data: deliveredScan({ fix_purchased: false }), error: null } : undefined))
     expect((await c.submitOutcome(ctxFor({ body: { scanId: SCAN, outcome: 'INTERVIEW' } }))).status).toBe(409)
+  })
+  it('409s a refunded or disputed purchase (and a delivery whose rewrite failed)', async () => {
+    const { c } = outcomesSetup(q => {
+      if (q.table === 'scans') return { data: deliveredScan({ fix_payment_id: 'p1' }), error: null }
+      if (q.table === 'payments') return { data: [{ id: 'p1', status: 'DISPUTED' }], error: null }
+    })
+    expect((await c.submitOutcome(ctxFor({ body: { scanId: SCAN, outcome: 'INTERVIEW' } }))).status).toBe(409)
+    const failed = outcomesSetup(q => (q.table === 'scans' ? { data: deliveredScan({ rewrite_failed: true }), error: null } : undefined))
+    expect((await failed.c.submitOutcome(ctxFor({ body: { scanId: SCAN, outcome: 'INTERVIEW' } }))).status).toBe(409)
   })
   it('stores the answer with the scan\'s own role category, never one the client sent', async () => {
     const { c, db } = outcomesSetup(q => (q.table === 'scans' ? { data: deliveredScan(), error: null } : undefined))
@@ -218,20 +232,131 @@ describe('withdrawStory', () => {
 })
 
 describe('pendingOutcomes', () => {
-  it('asks only about delivered fixes old enough, and leaves out the ones already answered', async () => {
-    const scans = [1, 2, 3, 4, 5].map(i => ({ id: `s${i}`, job_title: `Job ${i}`, role_category: 'sales', ats_score: 40, fix_ats_score: 85, fix_generated_at: '2026-08-01T00:00:00Z' }))
-    const { c, db } = outcomesSetup(q => {
-      if (q.table === 'scans') return { data: scans, error: null }
-      if (q.table === 'scan_outcomes' && q.filters.some(f => f[0] === 'in')) return { data: [{ scan_id: 's1' }], error: null }
-      if (q.table === 'scan_outcomes') return { data: [{ scan_id: 'sx', story_status: 'PENDING', story_display_name: 'Amara O.', story_quote: 'q', answered_at: '2026-09-02T00:00:00Z' }], error: null }
+  const NOWISO = '2026-10-10T12:00:00Z'
+  const scanRow = (i, over = {}) => ({ id: `s${i}`, user_id: USER, job_title: `Job ${i}`, role_category: 'sales', fix_tier: 'FIX', ats_score: 40, fix_ats_score: 85, fix_purchased: true, fix_payment_id: `p${i}`, rewrite_failed: false, first_delivered_at: '2026-08-01T00:00:00Z', fix_generated_at: '2026-08-01T00:00:00Z', ...over })
+  const outRow = (scan_id, over = {}) => ({ scan_id, outcome: 'NO_INTERVIEW', interview_count: null, interview_after_days: null, story_status: 'NONE', story_display_name: null, story_quote: null, answered_at: '2026-08-20T00:00:00Z', updated_at: '2026-08-20T00:00:00Z', scans: { job_title: 'Job', role_category: 'sales', fix_tier: 'FIX', first_delivered_at: '2026-08-01T00:00:00Z' }, ...over })
+  function setup({ scans = [], outs = [], reversed = [] } = {}) {
+    return outcomesSetup(q => {
+      if (q.table === 'scans') {
+        const [from, to] = q.range || [0, 999]
+        return { data: scans.slice(from, to + 1), error: null }
+      }
+      if (q.table === 'scan_outcomes') return { data: outs, error: null }
+      if (q.table === 'payments') return { data: reversed.map(id => ({ id, status: 'REFUNDED' })), error: null }
     })
-    const res = await c.pendingOutcomes(ctxFor())
+  }
+  const run = async (c, fn = {}) => { const realNow = Date.now; Date.now = () => Date.parse(NOWISO); try { return await c.pendingOutcomes(ctxFor()) } finally { Date.now = realNow } }
+
+  it('asks only about delivered fixes old enough, and leaves out the ones already answered', async () => {
+    const { c, db } = setup({ scans: [1, 2, 3, 4, 5].map(i => scanRow(i)), outs: [outRow('s1')] })
+    const res = await run(c)
     expect(res.body.data.pending.map(p => p.scanId)).toEqual(['s2', 's3', 's4'])   // capped at 3, s1 answered
-    expect(res.body.data.stories[0]).toMatchObject({ scanId: 'sx', status: 'PENDING' })
     const q = db.calls.find(x => x.table === 'scans')
     expect(eqValue(q, 'user_id')).toBe(USER)
     expect(eqValue(q, 'fix_purchased')).toBe(true)
-    expect(q.filters.some(f => f[0] === 'lte' && f[1] === 'fix_generated_at')).toBe(true)
+    // time is measured from the FIRST delivery, so an edit or a retry (which rewrite fix_generated_at) never moves it
+    expect(q.filters.some(f => f[0] === 'lte' && f[1] === 'first_delivered_at')).toBe(true)
+    expect(q.filters.some(f => f[1] === 'fix_generated_at')).toBe(false)
+  })
+  it('an answered scan never pushes an unanswered one out of view (more than one page of answered scans)', async () => {
+    const scans = Array.from({ length: 30 }, (_, i) => scanRow(i + 1))
+    const outs = scans.slice(0, 26).map(s => outRow(s.id))
+    const { c } = setup({ scans, outs })
+    const res = await run(c)
+    expect(res.body.data.pending.map(p => p.scanId)).toEqual(['s27', 's28', 's29'])
+  })
+  it('does not ask about a refunded or disputed purchase, a failed rewrite, or one past the age limit', async () => {
+    const { c } = setup({
+      scans: [scanRow(1), scanRow(2, { rewrite_failed: true }), scanRow(3, { first_delivered_at: '2026-05-01T00:00:00Z' }), scanRow(4)],
+      reversed: ['p1'],
+    })
+    expect((await run(c)).body.data.pending.map(p => p.scanId)).toEqual(['s4'])
+  })
+  it('does not ask a fix delivered less than 14 days ago', async () => {
+    const { c } = setup({ scans: [scanRow(1, { first_delivered_at: '2026-10-01T00:00:00Z' })] })
+    expect((await run(c)).body.data.pending).toEqual([])
+  })
+  it('asks again about "still applying" 30 days after it was given — and not before', async () => {
+    const stale = outRow('s1', { outcome: 'STILL_APPLYING', updated_at: '2026-09-01T00:00:00Z' })
+    const fresh = outRow('s2', { outcome: 'STILL_APPLYING', updated_at: '2026-10-01T00:00:00Z' })
+    const { c } = setup({ scans: [scanRow(1), scanRow(2)], outs: [stale, fresh] })
+    const res = await run(c)
+    expect(res.body.data.pending.map(p => [p.scanId, p.reask])).toEqual([['s1', true]])
+    // the re-asked one is not also listed as an answer to change; the other is
+    expect(res.body.data.answers.map(a => a.scanId)).toEqual(['s2'])
+  })
+  it('lists the answers a person has given so any can be changed, and says what kind of delivery it was', async () => {
+    const { c } = setup({ scans: [], outs: [outRow('s1', { outcome: 'INTERVIEW', interview_count: 2, story_status: 'PENDING', scans: { job_title: 'Nurse', role_category: 'healthcare', fix_tier: 'BADGE', first_delivered_at: '2026-08-01T00:00:00Z' } })] })
+    const res = await run(c)
+    expect(res.body.data.answers[0]).toMatchObject({ scanId: 's1', outcome: 'INTERVIEW', interviewCount: 2, storyStatus: 'PENDING', fixTier: 'BADGE', jobTitle: 'Nurse' })
+  })
+  it('still reports stories', async () => {
+    const { c } = setup({ outs: [outRow('sx', { outcome: 'INTERVIEW', story_status: 'PENDING', story_display_name: 'Amara O.', story_quote: 'q' })] })
+    expect((await run(c)).body.data.stories[0]).toMatchObject({ scanId: 'sx', status: 'PENDING' })
+  })
+})
+
+describe('evaluateAsk — the one definition of who is asked', () => {
+  const DAY = 86400000
+  const NOW = Date.parse('2026-10-10T12:00:00Z')
+  const daysAgo = n => new Date(NOW - n * DAY).toISOString()
+  const scan = (over = {}) => ({ user_id: USER, fix_purchased: true, first_delivered_at: daysAgo(20), fix_generated_at: daysAgo(1), rewrite_failed: false, outcome_prompted_at: null, outcome_prompt_attempts: 0, ...over })
+  const user = (over = {}) => ({ email: 'a@x.y', status: 'ACTIVE', email_verified: true, deleted_at: null, notify_outcome_followup: true, ...over })
+  const ev = (o, now = NOW) => lib.evaluateAsk({ user: user(), ...o }, now)
+
+  it('dashboard: asked from day 14 to day 120 after the FIRST delivery, however recently it was edited', () => {
+    expect(ev({ scan: scan() }).dashboard).toMatchObject({ ask: true })                                    // 20 days; fix_generated_at is 1 day ago
+    expect(ev({ scan: scan({ first_delivered_at: daysAgo(13) }) }).dashboard).toMatchObject({ ask: false, reason: 'TOO_EARLY' })
+    expect(ev({ scan: scan({ first_delivered_at: daysAgo(14) }) }).dashboard.ask).toBe(true)
+    expect(ev({ scan: scan({ first_delivered_at: daysAgo(120) }) }).dashboard.ask).toBe(true)
+    expect(ev({ scan: scan({ first_delivered_at: daysAgo(121) }) }).dashboard).toMatchObject({ ask: false, reason: 'TOO_OLD' })
+  })
+  it('says when a too-early scan will be asked', () => {
+    const v = ev({ scan: scan({ first_delivered_at: daysAgo(10) }) }).dashboard
+    expect(v.at).toBe(new Date(NOW + 4 * DAY).toISOString())
+  })
+  it('falls back to fix_generated_at only when the first-delivery stamp is missing', () => {
+    expect(ev({ scan: scan({ first_delivered_at: null, fix_generated_at: daysAgo(20) }) }).dashboard.ask).toBe(true)
+  })
+  it('not purchased / not delivered / failed rewrite / refunded: never asked, either way', () => {
+    for (const [over, reason, extra] of [[{ fix_purchased: false }, 'NOT_PURCHASED'], [{ first_delivered_at: null, fix_generated_at: null }, 'NOT_DELIVERED'], [{ rewrite_failed: true }, 'REWRITE_FAILED'], [{}, 'PURCHASE_REVERSED', { purchaseLive: false }]]) {
+      const v = ev({ scan: scan({ first_delivered_at: daysAgo(40), ...over }), ...(extra || {}) })
+      expect(v.dashboard, reason).toMatchObject({ ask: false, reason })
+      expect(v.email, reason).toMatchObject({ ask: false, reason })
+    }
+  })
+  it('any answer but "still applying" is final for the dashboard; "still applying" is asked again after 30 days', () => {
+    expect(ev({ scan: scan(), outcome: { outcome: 'NO_INTERVIEW' } }).dashboard).toMatchObject({ ask: false, reason: 'ANSWERED' })
+    expect(ev({ scan: scan(), outcome: { outcome: 'INTERVIEW' } }).dashboard.reason).toBe('ANSWERED')
+    const waiting = ev({ scan: scan(), outcome: { outcome: 'STILL_APPLYING', updated_at: daysAgo(10) } }).dashboard
+    expect(waiting).toMatchObject({ ask: false, reason: 'REASK_NOT_DUE', at: new Date(NOW + 20 * DAY).toISOString() })
+    expect(ev({ scan: scan(), outcome: { outcome: 'STILL_APPLYING', updated_at: daysAgo(30) } }).dashboard).toMatchObject({ ask: true, reason: 'REASK_STILL_APPLYING' })
+    expect(ev({ scan: scan({ first_delivered_at: daysAgo(366) }), outcome: { outcome: 'STILL_APPLYING', updated_at: daysAgo(100) } }).dashboard.reason).toBe('TOO_OLD')
+  })
+  it('email: delivered 30..120 days ago, unanswered, never mailed, attempts left', () => {
+    expect(ev({ scan: scan({ first_delivered_at: daysAgo(29) }) }).email).toMatchObject({ ask: false, reason: 'TOO_EARLY' })
+    expect(ev({ scan: scan({ first_delivered_at: daysAgo(30) }) }).email).toMatchObject({ ask: true, reason: 'SEND' })
+    expect(ev({ scan: scan({ first_delivered_at: daysAgo(121) }) }).email.reason).toBe('TOO_OLD')
+    expect(ev({ scan: scan({ first_delivered_at: daysAgo(40), outcome_prompted_at: daysAgo(1) }) }).email.reason).toBe('ALREADY_PROMPTED')
+    expect(ev({ scan: scan({ first_delivered_at: daysAgo(40), outcome_prompt_attempts: 3 }) }).email.reason).toBe('ATTEMPTS_EXHAUSTED')
+    expect(ev({ scan: scan({ first_delivered_at: daysAgo(40) }), outcome: { outcome: 'STILL_APPLYING' } }).email.reason).toBe('ANSWERED')   // the email asks once; the dashboard re-asks
+  })
+  it('email: needs an active, verified, opted-in, undeleted owner who was not mailed in the last 30 days', () => {
+    const s = scan({ first_delivered_at: daysAgo(40) })
+    expect(ev({ scan: s, user: user({ deleted_at: '2026-09-01' }) }).email.reason).toBe('ACCOUNT_DELETED')
+    expect(ev({ scan: s, user: user({ status: 'BANNED' }) }).email.reason).toBe('ACCOUNT_NOT_ACTIVE')
+    expect(ev({ scan: s, user: user({ email_verified: false }) }).email.reason).toBe('EMAIL_UNVERIFIED')
+    expect(ev({ scan: s, user: user({ notify_outcome_followup: false }) }).email.reason).toBe('OPTED_OUT')
+    expect(ev({ scan: s, user: user({ email: null }) }).email.reason).toBe('NO_EMAIL')
+    expect(ev({ scan: s, user: null }).email.reason).toBe('NO_USER')
+    expect(ev({ scan: s, recentlyEmailed: true }).email.reason).toBe('USER_COOLDOWN')
+    expect(ev({ scan: scan({ user_id: null, first_delivered_at: daysAgo(40) }) }).email.reason).toBe('NO_OWNER')
+  })
+  it('isAskable refuses a refunded purchase and a failed rewrite', () => {
+    const s = { user_id: USER, fix_purchased: true, fix_generated_at: '2026-09-01T00:00:00Z' }
+    expect(lib.isAskable(s, USER)).toBe(true)
+    expect(lib.isAskable(s, USER, { purchaseLive: false })).toBe(false)
+    expect(lib.isAskable({ ...s, rewrite_failed: true }, USER)).toBe(false)
   })
 })
 
@@ -269,21 +394,23 @@ describe('myStories', () => {
 describe('sweepOutcomePrompts', () => {
   const NOW = Date.parse('2026-10-10T12:00:00Z')
   const user = (over = {}) => ({ email: 'a@x.y', name: 'Ann', status: 'ACTIVE', email_verified: true, deleted_at: null, notify_outcome_followup: true, ...over })
-  const row = (id, uid, over = {}) => ({ id, user_id: uid, outcome_prompt_attempts: 0, users: user(over) })
-  function run(rows, { answered = [], sent = true, claimResult = [{ id: 'x' }] } = {}) {
+  const row = (id, uid, over = {}, userOver = {}) => ({ id, user_id: uid, fix_purchased: true, fix_payment_id: `p-${id}`, rewrite_failed: false, first_delivered_at: '2026-08-15T00:00:00Z', outcome_prompted_at: null, outcome_prompt_attempts: 0, users: user(userOver), ...over })
+  function run(rows, { answered = [], sent = true, claimResult = [{ id: 'x' }], cooling = [], reversed = [] } = {}) {
     const sends = []
     const { c, db } = outcomesSetup(q => {
-      if (q.table === 'scans' && q.op === 'select') return { data: rows, error: null }
+      if (q.table === 'scans' && q.op === 'select' && q.cols && q.cols.startsWith('user_id')) return { data: cooling.map(user_id => ({ user_id })), error: null }
+      if (q.table === 'scans' && q.op === 'select') { const [f, t] = q.range || [0, 9999]; return { data: rows.slice(f, t + 1), error: null } }
       if (q.table === 'scan_outcomes') return { data: answered.map(scan_id => ({ scan_id })), error: null }
-      if (q.table === 'scans' && q.op === 'update' && q.patch.outcome_prompted_at) return { data: claimResult, error: null }
+      if (q.table === 'payments') return { data: reversed.map(id => ({ id, status: 'DISPUTED' })), error: null }
+      if (q.table === 'scans' && q.op === 'update') return { data: claimResult, error: null }
     }, { sendOutcomeFollowUp: async (...a) => { sends.push(a); return sent } })
     return c.sweepOutcomePrompts({ FRONTEND_URL: 'https://x' }, db, NOW).then(r => ({ r, sends, db }))
   }
-  it('looks only at delivered fixes in the 30-to-120-day window that were never prompted', async () => {
+  it('looks only at delivered fixes in the 30-to-120-day window (from the FIRST delivery) that were never prompted', async () => {
     const { db } = await run([])
     const q = db.calls[0]
-    expect(q.filters).toContainEqual(['lte', 'fix_generated_at', new Date(NOW - 30 * 86400000).toISOString()])
-    expect(q.filters).toContainEqual(['gte', 'fix_generated_at', new Date(NOW - 120 * 86400000).toISOString()])
+    expect(q.filters).toContainEqual(['lte', 'first_delivered_at', new Date(NOW - 30 * 86400000).toISOString()])
+    expect(q.filters).toContainEqual(['gte', 'first_delivered_at', new Date(NOW - 120 * 86400000).toISOString()])
     expect(q.filters).toContainEqual(['is', 'outcome_prompted_at', null])
     expect(q.filters).toContainEqual(['lt', 'outcome_prompt_attempts', constants.OUTCOME_EMAIL_MAX_ATTEMPTS])
   })
@@ -292,14 +419,39 @@ describe('sweepOutcomePrompts', () => {
     expect(r.sent).toBe(2)
     expect(sends).toHaveLength(2)
   })
+  it('one email covers all of a person\'s fixes: the others are stamped as asked, so the next hours do not mail them again', async () => {
+    const { db } = await run([row('a', 'u1'), row('b', 'u1')])
+    const stamp = db.calls.filter(q => q.op === 'update' && q.patch.outcome_prompted_at && !q.patch.outcome_prompt_attempts)
+    expect(stamp).toHaveLength(1)
+    expect(eqValue(stamp[0], 'user_id')).toBe('u1')
+    expect(stamp[0].filters).toContainEqual(['is', 'outcome_prompted_at', null])
+  })
+  it('does not mail someone who was already mailed within the cooldown', async () => {
+    const { r, sends } = await run([row('a', 'u1'), row('b', 'u2')], { cooling: ['u1'] })
+    expect(sends).toHaveLength(1)
+    expect(r).toMatchObject({ sent: 1, skipped: 1 })
+  })
   it('skips people who answered, opted out, are banned, deleted or unverified', async () => {
     const { r, sends } = await run([
-      row('a', 'u1'), row('b', 'u2', { notify_outcome_followup: false }), row('c', 'u3', { status: 'BANNED' }),
-      row('d', 'u4', { deleted_at: '2026-09-01T00:00:00Z' }), row('e', 'u5', { email_verified: false }), row('f', 'u6'),
+      row('a', 'u1'), row('b', 'u2', {}, { notify_outcome_followup: false }), row('c', 'u3', {}, { status: 'BANNED' }),
+      row('d', 'u4', {}, { deleted_at: '2026-09-01T00:00:00Z' }), row('e', 'u5', {}, { email_verified: false }), row('f', 'u6'),
     ], { answered: ['a'] })
     expect(sends).toHaveLength(1)
     expect(sends[0][3]).toBe('Ann')
     expect(r).toMatchObject({ sent: 1, skipped: 4 })
+  })
+  it('does not mail a refunded or disputed purchase, or a failed rewrite', async () => {
+    const { r, sends } = await run([row('a', 'u1'), row('b', 'u2', { rewrite_failed: true }), row('c', 'u3')], { reversed: ['p-a'] })
+    expect(sends).toHaveLength(1)
+    expect(r.sent).toBe(1)
+  })
+  it('keeps reading past a full page of answered scans, so they cannot starve the people behind them', async () => {
+    const page = constants.OUTCOME_EMAIL_BATCH * 3
+    const answeredRows = Array.from({ length: page }, (_, i) => row(`old${i}`, `ou${i}`))
+    const waiting = row('fresh', 'uf')
+    const { r, sends } = await run([...answeredRows, waiting], { answered: answeredRows.map(x => x.id) })
+    expect(sends).toHaveLength(1)
+    expect(r.sent).toBe(1)
   })
   it('does not send when another run has already claimed the scan', async () => {
     const { r, sends } = await run([row('a', 'u1')], { claimResult: [] })
@@ -316,6 +468,7 @@ describe('sweepOutcomePrompts', () => {
   })
   it('never lets a throwing sender escape', async () => {
     const { c, db } = outcomesSetup(q => {
+      if (q.table === 'scans' && q.op === 'select' && q.cols && q.cols.startsWith('user_id')) return { data: [], error: null }
       if (q.table === 'scans' && q.op === 'select') return { data: [row('a', 'u1')], error: null }
       if (q.table === 'scans' && q.op === 'update' && q.patch.outcome_prompted_at) return { data: [{ id: 'a' }], error: null }
     }, { sendOutcomeFollowUp: async () => { throw new Error('resend down') } })
@@ -325,6 +478,57 @@ describe('sweepOutcomePrompts', () => {
   it('reports a query failure instead of throwing', async () => {
     const { c, db } = outcomesSetup(() => ({ data: null, error: { message: 'db down' } }))
     expect((await c.sweepOutcomePrompts({}, db, NOW)).error).toBe('db down')
+  })
+})
+
+describe('the follow-up email link', () => {
+  it('lands on the My Story tab, which is where the question and the answers live', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'email.service.js'), 'utf8')
+    expect(src).toMatch(/ANSWER_URL:\s+`\$\{env\.FRONTEND_URL\}\/dashboard\/story`/)
+  })
+})
+
+describe('adminOutcomeAsk — the simulator', () => {
+  const DAY = 86400000
+  const ADMIN_SCAN = { id: SCAN, user_id: USER, fix_purchased: true, fix_tier: 'FIX', fix_payment_id: 'p1', rewrite_failed: false, first_delivered_at: new Date(Date.now() - 10 * DAY).toISOString(), fix_generated_at: new Date(Date.now() - 1 * DAY).toISOString(), outcome_prompted_at: null, outcome_prompt_attempts: 0, users: { email: 'secret@x.y', status: 'ACTIVE', email_verified: true, deleted_at: null, notify_outcome_followup: true } }
+  function setup(over = {}) {
+    return outcomesSetup(q => {
+      if (q.table === 'scans' && q.cols && q.cols.startsWith('outcome_prompted_at')) return { data: over.mailed || [], error: null }
+      if (q.table === 'scans') return { data: over.scan === undefined ? ADMIN_SCAN : over.scan, error: null }
+      if (q.table === 'scan_outcomes') return { data: over.outcome || null, error: null }
+      if (q.table === 'payments') return { data: (over.reversed || []).map(id => ({ id, status: 'REFUNDED' })), error: null }
+    })
+  }
+  const call = (c, scanId = SCAN, days) => c.adminOutcomeAsk(ctxFor({ params: { scanId }, query: days === undefined ? {} : { days } }))
+  it('explains now and N days ahead, from the first delivery, without exposing the address', async () => {
+    const { c } = setup()
+    const res = await call(c, SCAN, '25')
+    expect(res.status).toBe(200)
+    const d = res.body.data
+    expect(d.now_verdict.dashboard).toMatchObject({ ask: false, reason: 'TOO_EARLY' })
+    expect(d.simulated.dashboard).toMatchObject({ ask: true })
+    expect(d.simulated.email).toMatchObject({ ask: true, reason: 'SEND' })      // 35 days after delivery
+    expect(d.schedule.dashboardFrom).toBeTruthy()
+    expect(JSON.stringify(d)).not.toContain('secret@x.y')
+  })
+  it('reflects a refund and an answer already given', async () => {
+    const { c } = setup({ reversed: ['p1'], outcome: { outcome: 'NO_INTERVIEW', answered_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-01T00:00:00Z' } })
+    const d = (await call(c, SCAN, '40')).body.data
+    expect(d.facts).toMatchObject({ purchaseReversed: true, answer: 'NO_INTERVIEW' })
+    expect(d.simulated.dashboard.reason).toBe('PURCHASE_REVERSED')
+  })
+  it('applies the 30-day cooldown from other mailed fixes of the same person', async () => {
+    const { c } = setup({ mailed: [{ outcome_prompted_at: new Date(Date.now() - 2 * DAY).toISOString() }] })
+    expect((await call(c, SCAN, '30')).body.data.now_verdict.email.reason).not.toBe('SEND')
+    expect((await call(c, SCAN, '40')).body.data.simulated.email.reason).toBe('SEND')    // the cooldown has run out by then
+  })
+  it('400s a bad id or bad days, 404s a missing scan', async () => {
+    const { c } = setup()
+    expect((await call(c, 'x')).status).toBe(400)
+    expect((await call(c, SCAN, '-1')).status).toBe(400)
+    expect((await call(c, SCAN, '1.5')).status).toBe(400)
+    expect((await call(c, SCAN, '731')).status).toBe(400)
+    expect((await call(setup({ scan: null }).c, SCAN)).status).toBe(404)
   })
 })
 

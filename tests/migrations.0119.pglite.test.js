@@ -35,8 +35,8 @@ beforeAll(async () => {
 }, 180000)
 
 describe('migration 0119', () => {
-  it('is the newest migration, records itself in the ledger and moves schema_version to 119', async () => {
-    expect(files[files.length - 1]).toBe('0119_human_demand_test.sql')
+  it('records itself in the ledger and moves schema_version to 119', async () => {
+    expect(files).toContain('0119_human_demand_test.sql')
     expect((await q(`select name from applied_migrations where version = 119`))[0].name).toBe('0119_human_demand_test')
     expect((await q(`select (value->>'version')::int v from system_state where key = 'schema_version'`))[0].v).toBe(119)
   })

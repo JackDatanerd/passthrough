@@ -84,5 +84,7 @@ router.get('/audit-log',  c.adminListAuditLog)
 // Database audit (0077): the Claude cost ledger, aggregated in the database.
 router.get('/claude-usage', c.adminClaudeUsage)
 router.get('/prompt-outcomes', c.adminPromptOutcomes)
+// Why is / isn't a scan asked "did it lead to an interview?" — and when will it be (controllers/outcomes.controller.js).
+router.get('/outcome-ask/:scanId', validateUuidParam('scanId'), require('../controllers/outcomes.controller').adminOutcomeAsk)
 
 module.exports = router

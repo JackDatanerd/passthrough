@@ -15,7 +15,7 @@ module.exports = {
   // migration ends by writing its number to system_state.schema_version (see 0059); the Worker
   // compares the two (lib/health.js). Bump it in the same commit as the migration —
   // the schema-version test in tests/crossCutting.round1.test.js fails when the newest migration and this value disagree.
-  EXPECTED_SCHEMA_VERSION: 119,
+  EXPECTED_SCHEMA_VERSION: 120,
 
   // Standard (post-promo) prices — these are what priceForTier() falls back
   // to once PROMO_ENDS_AT passes, and what the frontend shows crossed-out as
@@ -189,11 +189,20 @@ module.exports = {
   // follow-up email goes out later, if the question is still unanswered.
   OUTCOME_DASHBOARD_AFTER_DAYS: 14,
   OUTCOME_EMAIL_AFTER_DAYS: 30,
-  // Past this age the email is not sent any more (the answer would be about something long gone).
-  OUTCOME_EMAIL_MAX_AGE_DAYS: 120,
+  // Measured from the FIRST delivery (scans.first_delivered_at, migration 0120), so a retry or an edit never moves it.
+  // Past this age neither the dashboard nor the email asks any more (the answer would be about something long gone).
+  OUTCOME_ASK_MAX_AGE_DAYS: 120,
+  // "Still applying" is an honest "ask me later": the dashboard asks again this long after that answer was given, for up to a
+  // year after the first delivery. (It is never emailed a second time.)
+  OUTCOME_REASK_AFTER_DAYS: 30,
+  OUTCOME_REASK_MAX_AGE_DAYS: 365,
   // Follow-up emails per sweep run, and attempts per scan before we stop trying.
   OUTCOME_EMAIL_BATCH: 40,
   OUTCOME_EMAIL_MAX_ATTEMPTS: 3,
+  // One person is emailed about this at most once per this many days, however many fixes they have (the dashboard shows them all).
+  OUTCOME_EMAIL_USER_COOLDOWN_DAYS: 30,
+  // The sweep reads the queue in pages and keeps going past answered / ineligible rows, up to this many pages per run.
+  OUTCOME_SWEEP_MAX_PAGES: 8,
   // The interview rate is only published once this many people have answered: a rate over a handful
   // of replies is noise, and every public number here has to survive being asked "based on what?".
   OUTCOME_MIN_RESPONSES: 50,

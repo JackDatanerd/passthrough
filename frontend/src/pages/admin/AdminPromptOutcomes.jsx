@@ -4,7 +4,9 @@ import Spinner from '../../components/ui/Spinner'
 import DataTable from '../../components/ui/DataTable'
 import { useToast } from '../../components/ui/Toast'
 import useLatestRequest from '../../hooks/useLatestRequest'
-import { formatNumber } from '../../lib/utils'
+import { formatNumber, formatDateTime } from '../../lib/utils'
+import Button from '../../components/ui/Button'
+import Input from '../../components/ui/Input'
 
 // DATABASE ROUND 5 (feature gap): every delivered resume fix and cover letter is stamped with the prompt generation that wrote it, and
 // people who got an interview (or not) answer a follow-up. The comparison that tells the owner whether a prompt change helped lived in a
@@ -25,6 +27,75 @@ function table(caption, rows, minResponses) {
       ]}
       rows={rows} rowKey={r => String(r.version)}
     />
+  )
+}
+
+
+// Why is — or isn't — a scan being asked "did it lead to an interview?", and when will it be? The same rule the dashboard and the follow-up
+// email use (lib/outcomes.js evaluateAsk), run against the real scan, now and N days ahead — so the conditions can be simulated without
+// editing any data.
+const REASONS = {
+  ASK: 'Asked on the dashboard / My Story now.', REASK_STILL_APPLYING: 'Asked again: "still applying" was answered 30+ days ago.',
+  SEND: 'The follow-up email will go out on the next hourly run.', TOO_EARLY: 'Too early — not yet due.', TOO_OLD: 'Too old — past the age limit.',
+  ANSWERED: 'Already answered.', REASK_NOT_DUE: 'Answered "still applying"; the re-ask is not due yet.', ALREADY_PROMPTED: 'The email was already sent for this scan.',
+  ATTEMPTS_EXHAUSTED: 'The email failed to send too many times.', NOT_PURCHASED: 'No purchased fix on this scan.', NOT_DELIVERED: 'The fix has not been delivered.',
+  REWRITE_FAILED: 'The rewrite failed, so the resume was handed back unchanged — nothing to ask about.', PURCHASE_REVERSED: 'The purchase was refunded or is disputed.',
+  NO_OWNER: 'The scan has no account.', NO_USER: 'The account could not be read.', NO_EMAIL: 'The account has no email address.', ACCOUNT_DELETED: 'The account was deleted.',
+  ACCOUNT_NOT_ACTIVE: 'The account is not active (banned).', EMAIL_UNVERIFIED: 'The email address is not verified.', OPTED_OUT: 'The person switched the follow-up email off.',
+  USER_COOLDOWN: 'This person was already emailed about another fix in the last 30 days.', NO_SCAN: 'No such scan.',
+}
+function Verdict({ label, v }) {
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-3 text-sm">
+      <p className="text-xs uppercase tracking-wide text-gray-400">{label}</p>
+      <p className={`font-semibold ${v.ask ? 'text-green-700' : 'text-gray-900'}`}>{v.ask ? 'Asked' : 'Not asked'}</p>
+      <p className="text-gray-600">{REASONS[v.reason] || v.reason}</p>
+      {v.at && <p className="text-xs text-gray-500 mt-1">Due {formatDateTime(v.at)}</p>}
+    </div>
+  )
+}
+function AskSimulator() {
+  const [scanId, setScanId] = useState('')
+  const [days, setDays] = useState('0')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [res, setRes] = useState(null)
+  async function run(e) {
+    e.preventDefault()
+    setBusy(true); setError(''); setRes(null)
+    try {
+      const r = await api.get(`/admin/outcome-ask/${encodeURIComponent(scanId.trim())}`, { params: { days: days === '' ? 0 : days } })
+      setRes(r.data.data)
+    } catch (err) {
+      setError(err?.response?.data?.message || 'Could not check that scan.')
+    } finally { setBusy(false) }
+  }
+  return (
+    <section className="flex flex-col gap-3 border-t border-gray-100 pt-4 mt-2" aria-label="Interview question simulator">
+      <h2 className="text-sm font-semibold text-gray-700">When is a person asked about an interview?</h2>
+      <p className="text-xs text-gray-400">Paste a scan id to see whether its owner is asked now, by dashboard and by email, and what changes after N more days. Nothing is written.</p>
+      <form onSubmit={run} className="flex flex-wrap items-end gap-3">
+        <Input label="Scan id" value={scanId} onChange={e => setScanId(e.target.value)} wrapperClassName="w-96 max-w-full" />
+        <Input label="Days ahead" type="number" min={0} max={730} value={days} onChange={e => setDays(e.target.value)} wrapperClassName="w-28" />
+        <Button type="submit" size="sm" loading={busy} disabled={!scanId.trim()}>Check</Button>
+      </form>
+      {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+      {res && (
+        <div className="flex flex-col gap-3">
+          <p className="text-xs text-gray-500">
+            First delivered {res.facts.firstDeliveredAt ? formatDateTime(res.facts.firstDeliveredAt) : '—'}
+            {res.schedule && <> · dashboard from {formatDateTime(res.schedule.dashboardFrom)} · email from {formatDateTime(res.schedule.emailFrom)} · neither after {formatDateTime(res.schedule.askUntil)}</>}
+            {res.facts.answer && <> · answered {res.facts.answer}</>}
+          </p>
+          <div className="grid sm:grid-cols-2 gap-3">
+            <Verdict label="Dashboard / My Story — now" v={res.now_verdict.dashboard} />
+            <Verdict label="Follow-up email — now" v={res.now_verdict.email} />
+            {res.days > 0 && <Verdict label={`Dashboard — in ${res.days} days`} v={res.simulated.dashboard} />}
+            {res.days > 0 && <Verdict label={`Email — in ${res.days} days`} v={res.simulated.email} />}
+          </div>
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -74,6 +145,7 @@ export default function AdminPromptOutcomes() {
           {data.letter.length ? table('Interview rate by cover letter prompt version', data.letter, data.minResponses) : <p className="text-sm text-gray-400 italic">No answers yet.</p>}
         </>
       )}
+      <AskSimulator />
     </div>
   )
 }

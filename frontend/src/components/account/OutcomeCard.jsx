@@ -8,12 +8,16 @@ import { roleLabel } from '../../lib/roleCategories'
 import { formatDate } from '../../lib/utils'
 
 // "Did your resume lead to an interview?" — the question behind the homepage's interview rate, asked on
-// the dashboard 14 days after a fix was delivered (the follow-up email links here a month after).
+// the dashboard and the My Story tab 14 days after a fix was first delivered (the follow-up email, a month after, links to My Story).
 //
 // Three answers, none privileged: "yes", "not yet", "still applying". An honest "not yet" is as useful as
 // a "yes", and the copy says so; the form never nudges toward the flattering answer. Sharing a story is
 // strictly optional, needs a ticked consent box, is reviewed before it appears, and can be taken back.
+//
+// An answer is never final: "still applying" is asked again 30 days later, and every answer given is listed on the My Story tab
+// (`showAnswers`) with a button to change it — someone who said "not yet" and then got the call can say so.
 const STORY_LIMITS = { name: 40, quote: 160, text: 1200 }
+const ANSWER_TEXT = { INTERVIEW: 'Yes, I got an interview', NO_INTERVIEW: 'Not yet', STILL_APPLYING: 'Still applying' }
 const STATUS_TEXT = {
   PENDING:  'Waiting for review — it is not public yet.',
   APPROVED: 'Published on the homepage.',
@@ -62,7 +66,8 @@ export function StoryForm({ scanId, onDone, onCancel, interview, initial, submit
   )
 }
 
-function Question({ item, onAnswered }) {
+// `current` (an outcome) is set when the person is changing an answer they already gave: that option is not offered again.
+function Question({ item, onAnswered, current = null }) {
   const [step, setStep] = useState('ask')        // ask | saved
   const [count, setCount] = useState('')
   const [days, setDays] = useState('')
@@ -104,15 +109,17 @@ function Question({ item, onAnswered }) {
   return (
     <div className="rounded-lg border border-blue-100 bg-white p-4">
       <p className="text-sm text-gray-500 mb-1">
-        {item.jobTitle ? `${item.jobTitle} · ` : ''}{item.roleCategory ? `${roleLabel(item.roleCategory)} · ` : ''}fixed resume delivered {formatDate(item.deliveredAt)}
+        {item.jobTitle ? `${item.jobTitle} · ` : ''}{item.roleCategory ? `${roleLabel(item.roleCategory)} · ` : ''}{item.fixTier === 'BADGE' ? 'Verified credential' : 'fixed resume'} delivered {formatDate(item.deliveredAt)}
       </p>
       {step === 'ask' && (
         <>
-          <p className="font-semibold text-gray-900 mb-3">Did it lead to an interview?</p>
+          <p className="font-semibold text-gray-900 mb-3">
+            {item.reask ? 'You told us you were still applying. Any news?' : current ? 'What is the answer now?' : (item.fixTier === 'BADGE' ? 'Did your credential lead to an interview?' : 'Did it lead to an interview?')}
+          </p>
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" pending={busy} onClick={yes}>Yes, I got an interview</Button>
-            <Button size="sm" variant="secondary" pending={busy} onClick={() => answer('NO_INTERVIEW')}>Not yet</Button>
-            <Button size="sm" variant="secondary" pending={busy} onClick={() => answer('STILL_APPLYING')}>Still applying</Button>
+            {current !== 'INTERVIEW' && <Button size="sm" pending={busy} onClick={yes}>Yes, I got an interview</Button>}
+            {current !== 'NO_INTERVIEW' && <Button size="sm" variant="secondary" pending={busy} onClick={() => answer('NO_INTERVIEW')}>Not yet</Button>}
+            {current !== 'STILL_APPLYING' && <Button size="sm" variant="secondary" pending={busy} onClick={() => answer('STILL_APPLYING')}>Still applying</Button>}
           </div>
         </>
       )}
@@ -153,9 +160,39 @@ function Question({ item, onAnswered }) {
   )
 }
 
+// One answer already given, with the way back in: "Change my answer" opens the same question. Moving away from "yes" ends a story
+// that was shared with it (the server enforces that), so the person is told before they do it.
+function AnswerRow({ answer, onChanged }) {
+  const [changing, setChanging] = useState(false)
+  const hasStory = answer.storyStatus && answer.storyStatus !== 'NONE'
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-4 text-sm">
+      <p className="text-gray-500">
+        {answer.jobTitle ? `${answer.jobTitle} · ` : ''}{answer.roleCategory ? `${roleLabel(answer.roleCategory)} · ` : ''}delivered {formatDate(answer.deliveredAt)}
+      </p>
+      <p className="font-semibold text-gray-900 mt-0.5">You told us: {ANSWER_TEXT[answer.outcome] || answer.outcome}</p>
+      {!changing ? (
+        <Button type="button" size="sm" variant="secondary" className="mt-2" onClick={() => setChanging(true)}>Change my answer</Button>
+      ) : (
+        <div className="mt-3">
+          {answer.outcome === 'INTERVIEW' && hasStory && (
+            <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3">
+              Changing this answer away from “yes” takes the story you shared down, because it would no longer be true.
+            </p>
+          )}
+          <Question item={{ scanId: answer.scanId, jobTitle: answer.jobTitle, roleCategory: answer.roleCategory, fixTier: answer.fixTier, deliveredAt: answer.deliveredAt }}
+            current={answer.outcome} onAnswered={(msg) => { setChanging(false); onChanged(msg) }} />
+          <Button type="button" size="sm" variant="ghost" className="mt-2" onClick={() => setChanging(false)}>Cancel</Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // `showStories` lists the person's existing stories under the question. The My Story tab owns that list now, so the
 // dashboard pages turn it off and keep only the question.
-export default function OutcomeCard({ showStories = true }) {
+// `onAnswered` lets the page around the card re-read what it shows (an answer can end or start a story).
+export default function OutcomeCard({ showStories = true, showAnswers = false, onAnswered }) {
   const [state, setState] = useState(null)       // { pending, stories } | null (nothing to show / failed)
   const [note, setNote] = useState('')
   const [withdrawError, setWithdrawError] = useState('')
@@ -183,7 +220,8 @@ export default function OutcomeCard({ showStories = true }) {
 
   const pending = state?.pending || []
   const stories = showStories ? (state?.stories || []) : []
-  if (!pending.length && !stories.length && !note) return null
+  const answers = showAnswers ? (state?.answers || []) : []
+  if (!pending.length && !stories.length && !answers.length && !note) return null
 
   return (
     <section id="outcome" aria-label="Tell us how it went" className="scroll-mt-4 rounded-xl border border-blue-200 bg-blue-50 p-5 flex flex-col gap-3">
@@ -193,8 +231,14 @@ export default function OutcomeCard({ showStories = true }) {
       </div>
       {note && <p role="status" className="text-sm text-green-700">{note}</p>}
       {pending.map(item => (
-        <Question key={item.scanId} item={item} onAnswered={(msg) => { setNote(msg); load() }} />
+        <Question key={item.scanId} item={item} onAnswered={(msg) => { setNote(msg); load(); onAnswered?.() }} />
       ))}
+      {answers.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <h3 className="text-sm font-semibold text-gray-900">Your answers</h3>
+          {answers.map(a => <AnswerRow key={a.scanId} answer={a} onChanged={(msg) => { setNote(msg); load(); onAnswered?.() }} />)}
+        </div>
+      )}
       {stories.map(s => (
         <div key={s.scanId} className="rounded-lg border border-gray-200 bg-white p-4 text-sm">
           <p className="font-semibold text-gray-900">Your story{s.displayName ? ` as “${s.displayName}”` : ''}</p>

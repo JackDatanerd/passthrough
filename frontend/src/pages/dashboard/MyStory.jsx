@@ -132,8 +132,9 @@ export default function MyStory() {
           </p>
         </div>
 
-        {/* "Did it lead to an interview?" for fixes delivered 14+ days ago. Answering yes is how a story starts. */}
-        <OutcomeCard key={promptKey} showStories={false} />
+        {/* "Did it lead to an interview?" for fixes delivered 14+ days ago (a "still applying" is asked again after 30 days), then
+            every answer already given, each one changeable. Answering yes is how a story starts. */}
+        <OutcomeCard key={promptKey} showStories={false} showAnswers onAnswered={load} />
 
         {note && <p role="status" className="text-sm text-green-700">{note}</p>}
         {actionError && <p role="alert" className="text-sm text-red-600">{actionError}</p>}
@@ -150,7 +151,7 @@ export default function MyStory() {
         {stories && stories.length === 0 && (
           <div className="rounded-xl border border-dashed border-gray-200 p-8 text-center">
             <p className="text-gray-600">No stories yet.</p>
-            <p className="text-sm text-gray-500 mt-1">When a fixed resume leads to an interview, you can tell us about it here. We ask 14 days after your fix arrives.</p>
+            <p className="text-sm text-gray-500 mt-1">When a fixed resume leads to an interview, you can tell us about it here. We ask 14 days after your fix first arrives, and you can change an answer any time.</p>
             <Link to="/dashboard" className="inline-block mt-3 text-sm text-blue-700 hover:text-blue-900">Back to your scans</Link>
           </div>
         )}

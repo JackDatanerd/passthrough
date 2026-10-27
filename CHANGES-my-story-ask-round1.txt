@@ -1,0 +1,32 @@
+My Story: when a person is asked "did it lead to an interview?" — audit round 1. Migration 0120.
+Base commit: 6473c79. Fresh-clone audit of the question's conditions (dashboard / My Story prompt, follow-up email sweep); 10 findings, all closed.
+
+THE RULE, NOW IN ONE PLACE
+ lib/outcomes.js evaluateAsk() is the single definition. The dashboard prompt and the email sweep pre-filter in SQL and re-check every row with it; the admin simulator (#10) calls it directly, so the explanation can not drift from the behaviour.
+   dashboard   delivered 14..120 days ago (from the FIRST delivery), never answered; a "still applying" answer is asked again 30 days after it was given (up to 1 year); live purchase; rewrite did not fail.
+   email       delivered 30..120 days ago, never answered, never mailed, < 3 attempts; owner active, verified, not deleted, opted in; live purchase; rewrite did not fail; owner not mailed in the last 30 days.
+
+FINDINGS CLOSED
+ 1  Answers could never be changed in the UI. /pending now also returns `answers`; My Story shows "Your answers" with "Change my answer" (the same question, minus the current answer; warns that leaving "yes" takes a shared story down; My Story re-reads its stories afterwards).
+ 2  "Still applying" was a dead end. The dashboard asks again 30 days after (OUTCOME_REASK_AFTER_DAYS), up to a year after delivery; worded "You told us you were still applying. Any news?". Not emailed a second time.
+ 3  Email sweep starvation. The queue is read in pages (up to OUTCOME_SWEEP_MAX_PAGES) and each page is judged before the next; answered scans / ineligible people can no longer fill the window. Stable order (first_delivered_at, id).
+ 4  Refunded / disputed purchases are no longer asked (dashboard, email), can not submit an answer or story (409), and their stories are never shown publicly (toPublicStory; the admin story list flags them). Their earlier answers still count in the totals — dropping them would only remove the unhappy ones. Payment lookups fail open, like purchaseIsLive.
+ 5  One email per person: sending stamps their other in-window scans as asked, and nobody is mailed again within OUTCOME_EMAIL_USER_COOLDOWN_DAYS (30).
+ 6  Dashboard and email now share the 120-day limit (OUTCOME_ASK_MAX_AGE_DAYS; the old OUTCOME_EMAIL_MAX_AGE_DAYS is removed). The dashboard reads pages until three askable scans are found, so more than 25 answered scans no longer hide an unanswered one.
+ 7  Retries and owner edits rewrite fix_generated_at and used to restart both clocks. scans.first_delivered_at (migration 0120, stamped once by a trigger, backfilled) is what all timing uses now.
+ 8  A credential-only (BADGE) delivery is asked about "your credential", not a "fixed resume"; a delivery whose rewrite failed (the unchanged resume was handed back) is not asked at all.
+ 9  The follow-up email links to /dashboard/story (the tab that holds the question and the answers) instead of /dashboard#outcome, whose anchor could not exist before the card loaded.
+ 10 Simulator: GET /api/admin/outcome-ask/:scanId?days=N (admin only, read-only, no address returned) and a panel on Admin > Prompt outcomes: "asked now? by dashboard / by email? why? what changes after N more days?".
+
+DEPLOY ORDER
+ Apply migration 0120 BEFORE deploying the Worker: the prompt and the sweep read scans.first_delivered_at (the prompt is a dashboard extra and shows nothing, and the sweep reports an error, until it exists). EXPECTED_SCHEMA_VERSION is 120.
+ Scans that were already retried or edited get first_delivered_at = their current fix_generated_at (the best value still known).
+
+SIMULATING BY HAND (SQL), if the admin panel is not enough
+ dashboard:  update scans set first_delivered_at = now() - interval '15 days' where id = '<scan>';  delete from scan_outcomes where scan_id = '<scan>';
+ email:      update scans set first_delivered_at = now() - interval '31 days', outcome_prompted_at = null, outcome_prompt_attempts = 0 where id = '<scan>';   (owner: ACTIVE, verified, follow-up on; no other scan of theirs mailed in 30 days)
+
+FILES
+ supabase/migrations/0120_outcome_ask_first_delivery.sql (new); src/config/constants.js; src/config/migrationLedger.js; src/lib/outcomes.js; src/controllers/outcomes.controller.js; src/controllers/stats.controller.js; src/controllers/admin-stories.controller.js; src/routes/admin.routes.js; src/services/email.service.js
+ frontend/src/components/account/OutcomeCard.jsx; frontend/src/pages/dashboard/MyStory.jsx; frontend/src/pages/admin/AdminPromptOutcomes.jsx; frontend/src/pages/admin/AdminStories.jsx
+ Tests: tests/homepage.outcomes.test.js (rewritten pending / sweep blocks, evaluateAsk, simulator, refund gates); tests/migrations.0120.pglite.test.js (new); tests/migrations.pglite.test.js (keep list); tests/migrations.0119.pglite.test.js ("newest migration" assertion no longer true); frontend/tests/outcomeCard.test.jsx; frontend/tests/adminOutcomeAsk.test.jsx (new); frontend/tests/pages/MyStory.answers.test.jsx (new); frontend/tests/adminStories.test.jsx.

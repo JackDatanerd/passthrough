@@ -22,7 +22,7 @@ async function adminListStories(ctx) {
   const status = LIST_STATUSES.includes(ctx.req.query('status')) ? ctx.req.query('status') : STORY_STATUS.PENDING
   const { data, error, count } = await supabase.from('scan_outcomes')
     .select('scan_id, role_category, outcome, interview_count, interview_after_days, story_status, story_display_name, story_quote, story_text, story_show_credential, story_moderated_at, answered_at, ' +
-      'scans(ats_score, fix_ats_score, verification_code, verification_status, verification_revoked_at)', { count: 'exact' })
+      'scans(ats_score, fix_ats_score, verification_code, verification_status, verification_revoked_at, verification_revoked_reason)', { count: 'exact' })
     .eq('story_status', status).order('answered_at', { ascending: true }).range(from, to)
   if (error) throw error
   return ctx.json({ success: true, data: {
@@ -32,6 +32,8 @@ async function adminListStories(ctx) {
       displayName: r.story_display_name, quote: r.story_quote, text: r.story_text, showCredential: r.story_show_credential === true,
       scoreBefore: r.scans?.ats_score ?? null, scoreAfter: r.scans?.fix_ats_score ?? null,
       credentialLive: !!r.scans?.verification_code && (r.scans?.verification_status || 'ACTIVE') === 'ACTIVE' && !r.scans?.verification_revoked_at,
+      // Refunded / disputed: the public side will not show this story (lib/outcomes toPublicStory) — approving it changes nothing there.
+      purchaseReversed: ['REFUND', 'DISPUTE'].includes(r.scans?.verification_revoked_reason),
       answeredAt: r.answered_at, moderatedAt: r.story_moderated_at,
     })),
     total: count ?? (data || []).length, page, pageSize,

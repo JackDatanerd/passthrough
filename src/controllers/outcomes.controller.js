@@ -6,22 +6,29 @@
 //   DELETE /api/outcomes/:scanId/story     take a story back; the answer itself stays
 //
 // plus sweepOutcomePrompts(), the hourly job that emails the question once, a month after delivery,
-// to people who have not answered it on the dashboard.
+// to people who have not answered it on the dashboard, and adminOutcomeAsk(), which explains (and simulates) the verdict.
 //
-// Only a DELIVERED fix can be asked about (fix_purchased and fix_generated_at): an interview rate over
-// people who never received anything would measure nothing. Answers are the person's own and can be
-// changed at any time; a story is never public until an admin approves it (admin-stories controller).
+// WHO IS ASKED, and when, is defined once in lib/outcomes.js evaluateAsk; the SQL filters below are only a pre-filter and every
+// row is re-checked there. Only a DELIVERED, still-live fix can be asked about: an interview rate over people who never received
+// anything (or who got their money back) would measure nothing. Time is measured from the FIRST delivery (migration 0120).
+// Answers are the person's own and can be changed at any time (/pending lists them for exactly that); a story is never public
+// until an admin approves it (admin-stories controller).
 
 const { getSupabase } = require('../config/supabase')
 const constants = require('../config/constants')
 const { UUID_RE } = require('../middleware/validateUuidParam')
 const emailService = require('../services/email.service')
-const { parseSubmit, isAskable, nextStoryState, STORY_STATUS, OUTCOMES } = require('../lib/outcomes')
+const { parseSubmit, isAskable, nextStoryState, evaluateAsk, STORY_STATUS, OUTCOMES } = require('../lib/outcomes')
 const { signLeadToken, verifyLeadToken, leadLinkSecrets } = require('../lib/leadTokens')
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const PENDING_SHOWN = 3
 const MY_STORIES_SHOWN = 50
+const ANSWERS_SHOWN = 10
+const ANSWERS_READ = 500        // a person's own answers: one row per delivered scan, so this is far past any real account
+const PENDING_PAGE = 25
+const PENDING_MAX_PAGES = 8
+const REVERSED = ['REFUNDED', 'DISPUTED']
 
 const iso = (ms) => new Date(ms).toISOString()
 
@@ -29,40 +36,76 @@ async function readJson(c) {
   try { return await c.req.json() } catch (_) { return null }
 }
 
+// Ids (of the given payments) whose purchase was refunded or is disputed. Fails open: a payment that cannot be read does not
+// stop anyone being asked (same rule as scan.controller purchaseIsLive).
+async function reversedPayments(supabase, paymentIds) {
+  const ids = [...new Set((paymentIds || []).filter(Boolean))]
+  if (!ids.length) return new Set()
+  try {
+    const { data, error } = await supabase.from('payments').select('id, status').in('id', ids)
+    if (error) return new Set()
+    return new Set((data || []).filter(p => REVERSED.includes(p.status)).map(p => p.id))
+  } catch (_) { return new Set() }
+}
+
 // GET /api/outcomes/pending
+//   pending   up to 3 fixes to ask about now (see evaluateAsk): delivered 14..120 days ago and never answered, or a "still
+//             applying" answer that is 30+ days old
+//   answers   the person's recent answers, so any of them can be changed (My Story shows them)
+//   stories   the state of the stories they have shared
 async function pendingOutcomes(c) {
   const user = c.get('user')
   const supabase = getSupabase(c.env)
-  const cutoff = iso(Date.now() - constants.OUTCOME_DASHBOARD_AFTER_DAYS * DAY_MS)
+  const nowMs = Date.now()
 
-  const { data: scans, error } = await supabase.from('scans')
-    .select('id, job_title, role_category, ats_score, fix_ats_score, fix_generated_at')
-    .eq('user_id', user.id).eq('fix_purchased', true)
-    .not('fix_generated_at', 'is', null).lte('fix_generated_at', cutoff)
-    .order('fix_generated_at', { ascending: false }).limit(25)
-  if (error) throw error
+  const { data: outs, error: oErr } = await supabase.from('scan_outcomes')
+    .select('scan_id, outcome, interview_count, interview_after_days, story_status, story_display_name, story_quote, answered_at, updated_at, ' +
+      'scans(job_title, role_category, fix_tier, first_delivered_at, fix_generated_at)')
+    .eq('user_id', user.id).order('updated_at', { ascending: false }).limit(ANSWERS_READ)
+  if (oErr) throw oErr
+  const outcomes = new Map((outs || []).map(r => [r.scan_id, r]))
 
-  const ids = (scans || []).map(s => s.id)
-  let answeredIds = new Set()
-  if (ids.length) {
-    const { data: answered, error: aErr } = await supabase.from('scan_outcomes').select('scan_id').in('scan_id', ids)
-    if (aErr) throw aErr
-    answeredIds = new Set((answered || []).map(r => r.scan_id))
+  // Read the person's delivered fixes newest first, a page at a time, until three are askable: an answered scan must never push an
+  // unanswered one out of view (it used to: the newest 25 were read and THEN the answered ones dropped).
+  const pending = []
+  const oldest = iso(nowMs - constants.OUTCOME_REASK_MAX_AGE_DAYS * DAY_MS)
+  const newest = iso(nowMs - constants.OUTCOME_DASHBOARD_AFTER_DAYS * DAY_MS)
+  for (let page = 0; page < PENDING_MAX_PAGES && pending.length < PENDING_SHOWN; page++) {
+    const { data: scans, error } = await supabase.from('scans')
+      .select('id, user_id, job_title, role_category, fix_tier, ats_score, fix_ats_score, fix_purchased, fix_payment_id, rewrite_failed, first_delivered_at, fix_generated_at')
+      .eq('user_id', user.id).eq('fix_purchased', true)
+      .not('first_delivered_at', 'is', null).lte('first_delivered_at', newest).gte('first_delivered_at', oldest)
+      .order('first_delivered_at', { ascending: false }).order('id', { ascending: true })
+      .range(page * PENDING_PAGE, page * PENDING_PAGE + PENDING_PAGE - 1)
+    if (error) throw error
+    const rows = scans || []
+    const askable = rows.filter(s => evaluateAsk({ scan: s, outcome: outcomes.get(s.id) || null }, nowMs).dashboard.ask)
+    const reversed = await reversedPayments(supabase, askable.map(s => s.fix_payment_id))
+    for (const s of askable) {
+      if (reversed.has(s.fix_payment_id) || pending.length >= PENDING_SHOWN) continue
+      pending.push({
+        scanId: s.id, jobTitle: s.job_title || null, roleCategory: s.role_category || null, fixTier: s.fix_tier || null,
+        scoreBefore: s.ats_score ?? null, scoreAfter: s.fix_ats_score ?? null,
+        deliveredAt: s.first_delivered_at || s.fix_generated_at, reask: outcomes.has(s.id),
+      })
+    }
+    if (rows.length < PENDING_PAGE) break
   }
-  const pending = (scans || []).filter(s => !answeredIds.has(s.id)).slice(0, PENDING_SHOWN).map(s => ({
-    scanId: s.id, jobTitle: s.job_title || null, roleCategory: s.role_category || null,
-    scoreBefore: s.ats_score ?? null, scoreAfter: s.fix_ats_score ?? null, deliveredAt: s.fix_generated_at,
+
+  const asked = new Set(pending.map(p => p.scanId))
+  const answers = (outs || []).filter(r => r.scans && !asked.has(r.scan_id)).slice(0, ANSWERS_SHOWN).map(r => ({
+    scanId: r.scan_id, outcome: r.outcome, interviewCount: r.interview_count ?? null, interviewAfterDays: r.interview_after_days ?? null,
+    storyStatus: r.story_status || STORY_STATUS.NONE, jobTitle: r.scans.job_title || null, roleCategory: r.scans.role_category || null,
+    fixTier: r.scans.fix_tier || null, deliveredAt: r.scans.first_delivered_at || r.scans.fix_generated_at || null,
+    answeredAt: r.answered_at, updatedAt: r.updated_at,
   }))
 
-  const { data: stories, error: sErr } = await supabase.from('scan_outcomes')
-    .select('scan_id, outcome, story_status, story_display_name, story_quote, answered_at')
-    .eq('user_id', user.id).neq('story_status', STORY_STATUS.NONE)
-    .order('answered_at', { ascending: false }).limit(10)
-  if (sErr) throw sErr
+  const stories = (outs || []).filter(r => r.story_status && r.story_status !== STORY_STATUS.NONE)
+    .sort((a, b) => String(b.answered_at).localeCompare(String(a.answered_at))).slice(0, 10)
 
   return c.json({ success: true, data: {
-    pending,
-    stories: (stories || []).map(r => ({ scanId: r.scan_id, status: r.story_status, displayName: r.story_display_name, quote: r.story_quote, answeredAt: r.answered_at })),
+    pending, answers,
+    stories: stories.map(r => ({ scanId: r.scan_id, status: r.story_status, displayName: r.story_display_name, quote: r.story_quote, answeredAt: r.answered_at })),
   } })
 }
 
@@ -96,11 +139,12 @@ async function submitOutcome(c) {
   const supabase = getSupabase(c.env)
 
   const { data: scan, error } = await supabase.from('scans')
-    .select('id, user_id, role_category, fix_purchased, fix_generated_at').eq('id', v.scanId).maybeSingle()
+    .select('id, user_id, role_category, fix_purchased, fix_generated_at, fix_payment_id, rewrite_failed').eq('id', v.scanId).maybeSingle()
   if (error) throw error
   // Someone else's scan and a missing one are the same answer: no scan id is confirmed to a stranger.
   if (!scan || scan.user_id !== user.id) return c.json({ success: false, message: 'Scan not found.' }, 404)
   if (!isAskable(scan, user.id)) return c.json({ success: false, message: 'You can report an outcome once your fixed resume has been delivered.' }, 409)
+  if ((await reversedPayments(supabase, [scan.fix_payment_id])).size) return c.json({ success: false, message: 'This purchase was refunded or is under dispute, so there is nothing to report on.' }, 409)
 
   const { data: existing, error: exErr } = await supabase.from('scan_outcomes')
     .select('story_status, story_display_name, story_quote, story_text, story_show_credential').eq('scan_id', v.scanId).maybeSingle()
@@ -148,39 +192,64 @@ async function withdrawStory(c) {
 }
 
 // ── follow-up email sweep ───────────────────────────────────────────────────────────────────────
-// A month after a fix was delivered, ask once. One scan per person per run; a scan is claimed before
-// the send (so two overlapping runs cannot both mail it) and released again if the send did not go,
-// up to OUTCOME_EMAIL_MAX_ATTEMPTS. Skips anyone who has switched the interview follow-up off (Settings), is banned or
-// deleted, never verified their address, or has already answered.
+// A month after a fix was first delivered, ask once. One scan per person per run; a scan is claimed before the send (so two
+// overlapping runs cannot both mail it) and released again if the send did not go, up to OUTCOME_EMAIL_MAX_ATTEMPTS. What the
+// verdict for each scan is lives in lib/outcomes.js evaluateAsk (answered, opted out, banned, deleted, unverified, refunded,
+// a failed rewrite, too early / too old, mailed this person within the cooldown).
+//
+// The queue is read oldest first in PAGES and every page is judged before the next is read: answered scans and ineligible people
+// are never stamped (an answer can be changed and an address can be verified later), so they stay in the query's result for as
+// long as they are in the window. Reading one fixed-size page let a few hundred of them starve everyone behind them.
+//
+// One email covers all of a person's fixes (the dashboard lists up to three), so when it goes, their other scans in the window are
+// stamped as asked too; and nobody is mailed again within OUTCOME_EMAIL_USER_COOLDOWN_DAYS.
 async function sweepOutcomePrompts(env, supabase, nowMs = Date.now()) {
   const out = { candidates: 0, sent: 0, failed: 0, skipped: 0 }
   const newest = iso(nowMs - constants.OUTCOME_EMAIL_AFTER_DAYS * DAY_MS)
-  const oldest = iso(nowMs - constants.OUTCOME_EMAIL_MAX_AGE_DAYS * DAY_MS)
-
-  const { data: rows, error } = await supabase.from('scans')
-    .select('id, user_id, outcome_prompt_attempts, users(email, name, status, email_verified, deleted_at, notify_outcome_followup)')
-    .eq('fix_purchased', true).not('fix_generated_at', 'is', null)
-    .lte('fix_generated_at', newest).gte('fix_generated_at', oldest)
-    .is('outcome_prompted_at', null).lt('outcome_prompt_attempts', constants.OUTCOME_EMAIL_MAX_ATTEMPTS)
-    .not('user_id', 'is', null)
-    .order('fix_generated_at', { ascending: true }).limit(constants.OUTCOME_EMAIL_BATCH * 3)
-  if (error) return { ...out, error: error.message }
-
-  const ids = (rows || []).map(r => r.id)
-  let answered = new Set()
-  if (ids.length) {
-    const { data: a, error: aErr } = await supabase.from('scan_outcomes').select('scan_id').in('scan_id', ids)
-    if (aErr) return { ...out, error: aErr.message }
-    answered = new Set((a || []).map(r => r.scan_id))
-  }
+  const oldest = iso(nowMs - constants.OUTCOME_ASK_MAX_AGE_DAYS * DAY_MS)
+  const cooldownSince = iso(nowMs - constants.OUTCOME_EMAIL_USER_COOLDOWN_DAYS * DAY_MS)
+  const pageSize = constants.OUTCOME_EMAIL_BATCH * 3
 
   const perUser = new Map()
-  for (const r of rows || []) {
-    if (answered.has(r.id) || perUser.has(r.user_id)) continue
-    const u = r.users
-    const eligible = u && u.email && !u.deleted_at && u.status === 'ACTIVE' && u.email_verified === true && u.notify_outcome_followup !== false
-    if (!eligible) { out.skipped++; continue }
-    perUser.set(r.user_id, r)
+  for (let page = 0; page < constants.OUTCOME_SWEEP_MAX_PAGES && perUser.size < constants.OUTCOME_EMAIL_BATCH; page++) {
+    const { data: rows, error } = await supabase.from('scans')
+      .select('id, user_id, fix_purchased, fix_payment_id, rewrite_failed, first_delivered_at, outcome_prompted_at, outcome_prompt_attempts, users(email, name, status, email_verified, deleted_at, notify_outcome_followup)')
+      .eq('fix_purchased', true).not('first_delivered_at', 'is', null)
+      .lte('first_delivered_at', newest).gte('first_delivered_at', oldest)
+      .is('outcome_prompted_at', null).lt('outcome_prompt_attempts', constants.OUTCOME_EMAIL_MAX_ATTEMPTS)
+      .not('user_id', 'is', null)
+      .order('first_delivered_at', { ascending: true }).order('id', { ascending: true })
+      .range(page * pageSize, page * pageSize + pageSize - 1)
+    if (error) return { ...out, error: error.message }
+    const batch = rows || []
+    if (!batch.length) break
+
+    const ids = batch.map(r => r.id)
+    const { data: a, error: aErr } = await supabase.from('scan_outcomes').select('scan_id').in('scan_id', ids)
+    if (aErr) return { ...out, error: aErr.message }
+    const answered = new Set((a || []).map(r => r.scan_id))
+
+    const owners = [...new Set(batch.map(r => r.user_id))]
+    const { data: recent, error: rErr } = await supabase.from('scans').select('user_id')
+      .in('user_id', owners).gte('outcome_prompted_at', cooldownSince)
+    if (rErr) return { ...out, error: rErr.message }
+    const cooling = new Set((recent || []).map(r => r.user_id))
+    const reversed = await reversedPayments(supabase, batch.map(r => r.fix_payment_id))
+
+    for (const r of batch) {
+      if (answered.has(r.id) || perUser.has(r.user_id)) continue
+      const verdict = evaluateAsk({
+        scan: r, outcome: null, user: r.users, purchaseLive: !reversed.has(r.fix_payment_id), recentlyEmailed: cooling.has(r.user_id),
+      }, nowMs).email
+      if (!verdict.ask) {
+        // Only the people we would otherwise have mailed count as skipped; a scan that simply is not due, or that is already
+        // settled, is not news.
+        if (['ACCOUNT_DELETED', 'ACCOUNT_NOT_ACTIVE', 'EMAIL_UNVERIFIED', 'OPTED_OUT', 'NO_EMAIL', 'NO_USER', 'USER_COOLDOWN'].includes(verdict.reason)) out.skipped++
+        continue
+      }
+      perUser.set(r.user_id, r)
+    }
+    if (batch.length < pageSize) break
   }
   out.candidates = perUser.size
 
@@ -192,7 +261,15 @@ async function sweepOutcomePrompts(env, supabase, nowMs = Date.now()) {
     if (cErr || !claimed || !claimed.length) continue   // another run has it
     let ok = false
     try { ok = await emailService.sendOutcomeFollowUp(env, supabase, r.users.email, r.users.name, { unsubscribeUrl: await followUpUnsubscribeUrl(env, r.users.email) }) } catch (err) { console.error('Outcome follow-up send failed:', err.message) }
-    if (ok) { out.sent++; continue }
+    if (ok) {
+      out.sent++
+      // This one email covers the person's other fixes in the window too (the dashboard lists them): do not mail them again for each.
+      const { error: sibErr } = await supabase.from('scans').update({ outcome_prompted_at: claimedAt })
+        .eq('user_id', r.user_id).eq('fix_purchased', true).is('outcome_prompted_at', null)
+        .gte('first_delivered_at', oldest).lte('first_delivered_at', newest)
+      if (sibErr) console.error(`Outcome follow-up sibling stamp failed for ${r.user_id}:`, sibErr.message)
+      continue
+    }
     out.failed++
     const { error: relErr } = await supabase.from('scans').update({ outcome_prompted_at: null }).eq('id', r.id)
     if (relErr) console.error(`Outcome follow-up release failed for ${r.id}:`, relErr.message)
@@ -237,4 +314,60 @@ function unsubscribeFollowUpRedirect(c) {
   return c.redirect(`${base}/dashboard/settings`, 302)
 }
 
-module.exports = { pendingOutcomes, myStories, submitOutcome, withdrawStory, sweepOutcomePrompts, unsubscribeFollowUp, unsubscribeFollowUpRedirect, followUpUnsubscribeUrl }
+// GET /api/admin/outcome-ask/:scanId?days=N   (admin only)
+// "Why is — or isn't — this scan being asked whether it led to an interview, and when will it be?" Runs the same evaluateAsk the
+// dashboard and the sweep use, against the scan's real row, now and (with days=N, 0..730) N days from now, so the conditions can
+// be simulated without touching data. Read-only; returns flags about the owner, never their address.
+async function adminOutcomeAsk(c) {
+  const scanId = c.req.param('scanId')
+  if (!UUID_RE.test(scanId || '')) return c.json({ success: false, message: 'Invalid ID.' }, 400)
+  const raw = c.req.query('days')
+  const days = raw === undefined || raw === '' ? 0 : Number(raw)
+  if (!Number.isInteger(days) || days < 0 || days > 730) return c.json({ success: false, message: 'days must be a whole number from 0 to 730.' }, 400)
+  const supabase = getSupabase(c.env)
+
+  const { data: scan, error } = await supabase.from('scans')
+    .select('id, user_id, fix_purchased, fix_tier, fix_payment_id, rewrite_failed, first_delivered_at, fix_generated_at, outcome_prompted_at, outcome_prompt_attempts, users(email, status, email_verified, deleted_at, notify_outcome_followup)')
+    .eq('id', scanId).maybeSingle()
+  if (error) throw error
+  if (!scan) return c.json({ success: false, message: 'Scan not found.' }, 404)
+
+  const { data: outcome, error: oErr } = await supabase.from('scan_outcomes')
+    .select('outcome, answered_at, updated_at').eq('scan_id', scanId).maybeSingle()
+  if (oErr) throw oErr
+  const reversed = await reversedPayments(supabase, [scan.fix_payment_id])
+  let prompted = []
+  if (scan.user_id) {
+    const { data: mailed, error: mErr } = await supabase.from('scans').select('outcome_prompted_at')
+      .eq('user_id', scan.user_id).not('outcome_prompted_at', 'is', null).limit(100)
+    if (mErr) throw mErr
+    prompted = (mailed || []).map(r => Date.parse(r.outcome_prompted_at)).filter(Number.isFinite)
+  }
+
+  const nowMs = Date.now()
+  const at = (atMs) => evaluateAsk({
+    scan, outcome: outcome || null, user: scan.users || null, purchaseLive: !reversed.has(scan.fix_payment_id),
+    recentlyEmailed: prompted.some(t => t >= atMs - constants.OUTCOME_EMAIL_USER_COOLDOWN_DAYS * DAY_MS && t <= atMs),
+  }, atMs)
+  const simMs = nowMs + days * DAY_MS
+  const delivered = scan.first_delivered_at || scan.fix_generated_at || null
+  const d = delivered ? Date.parse(delivered) : null
+  const u = scan.users || null
+  return c.json({ success: true, data: {
+    scanId, now: iso(nowMs), simulatedAt: iso(simMs), days,
+    facts: {
+      fixPurchased: scan.fix_purchased === true, fixTier: scan.fix_tier || null, firstDeliveredAt: delivered, rewriteFailed: scan.rewrite_failed === true,
+      purchaseReversed: reversed.has(scan.fix_payment_id), answer: outcome ? outcome.outcome : null, answeredAt: outcome ? outcome.answered_at : null,
+      emailedAt: scan.outcome_prompted_at || null, emailAttempts: scan.outcome_prompt_attempts || 0,
+      owner: u ? { status: u.status, emailVerified: u.email_verified === true, deleted: !!u.deleted_at, followUpOn: u.notify_outcome_followup !== false } : null,
+    },
+    schedule: d == null ? null : {
+      dashboardFrom: iso(d + constants.OUTCOME_DASHBOARD_AFTER_DAYS * DAY_MS),
+      emailFrom: iso(d + constants.OUTCOME_EMAIL_AFTER_DAYS * DAY_MS),
+      askUntil: iso(d + constants.OUTCOME_ASK_MAX_AGE_DAYS * DAY_MS),
+    },
+    now_verdict: at(nowMs), simulated: at(simMs),
+  } })
+}
+
+module.exports = { adminOutcomeAsk, pendingOutcomes, myStories, submitOutcome, withdrawStory, sweepOutcomePrompts, unsubscribeFollowUp, unsubscribeFollowUpRedirect, followUpUnsubscribeUrl }

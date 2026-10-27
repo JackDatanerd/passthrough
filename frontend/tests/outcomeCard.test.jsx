@@ -202,3 +202,51 @@ describe('managing a story that exists', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/No story to withdraw/)
   })
 })
+
+describe('an answer is never final', () => {
+  const answer = (over = {}) => ({ scanId: SCAN, outcome: 'NO_INTERVIEW', interviewCount: null, interviewAfterDays: null, storyStatus: 'NONE', jobTitle: 'Product Manager', roleCategory: 'product_management', fixTier: 'FIX', deliveredAt: '2026-08-01T10:00:00Z', answeredAt: '2026-08-20T10:00:00Z', updatedAt: '2026-08-20T10:00:00Z', ...over })
+
+  it('"still applying" comes back as its own question, worded as one', async () => {
+    load({ pending: [pending({ reask: true })], answers: [], stories: [] })
+    render(<OutcomeCard />)
+    expect(await screen.findByText('You told us you were still applying. Any news?')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Still applying' })).toBeEnabled()   // it can be snoozed again
+  })
+  it('names a credential-only delivery as a credential, not a fixed resume', async () => {
+    load({ pending: [pending({ fixTier: 'BADGE' })], answers: [], stories: [] })
+    render(<OutcomeCard />)
+    expect(await screen.findByText('Did your credential lead to an interview?')).toBeInTheDocument()
+    expect(screen.getByText(/Verified credential delivered/)).toBeInTheDocument()
+  })
+  it('lists nothing extra on the dashboard, but shows every answer given (changeable) where asked to', async () => {
+    load({ pending: [], answers: [answer()], stories: [] })
+    const { container, unmount } = render(<OutcomeCard />)
+    await waitFor(() => expect(api.get).toHaveBeenCalled())
+    expect(container).toBeEmptyDOMElement()
+    unmount()
+    render(<OutcomeCard showAnswers />)
+    expect(await screen.findByText('You told us: Not yet')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Change my answer' })).toBeEnabled()
+  })
+  it('changing "not yet" to "yes" sends INTERVIEW for that scan, offers the details, and tells the page to re-read', async () => {
+    load({ pending: [], answers: [answer()], stories: [] })
+    const onAnswered = vi.fn()
+    render(<OutcomeCard showAnswers onAnswered={onAnswered} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Change my answer' }))
+    expect(screen.queryByRole('button', { name: 'Not yet' })).toBeNull()                // the current answer is not offered again
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, I got an interview' }))
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/outcomes', { scanId: SCAN, outcome: 'INTERVIEW' }))
+    expect(await screen.findByText('How many interviews?')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+    await waitFor(() => expect(onAnswered).toHaveBeenCalled())
+  })
+  it('warns that moving away from "yes" takes a shared story down', async () => {
+    load({ pending: [], answers: [answer({ outcome: 'INTERVIEW', storyStatus: 'APPROVED' })], stories: [] })
+    render(<OutcomeCard showAnswers />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Change my answer' }))
+    expect(screen.getByText(/takes the story you shared down/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Yes, I got an interview' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Still applying' }))
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/outcomes', { scanId: SCAN, outcome: 'STILL_APPLYING' }))
+  })
+})

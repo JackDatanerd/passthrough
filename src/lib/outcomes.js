@@ -13,6 +13,8 @@ const c = require('../config/constants')
 const { cleanName, cleanNotes, hasSubstance, isPublicSafeName } = require('./text')
 
 const OUTCOMES = Object.freeze({ INTERVIEW: 'INTERVIEW', NO_INTERVIEW: 'NO_INTERVIEW', STILL_APPLYING: 'STILL_APPLYING' })
+// scans.verification_revoked_reason values written by a refund or a dispute (lib/verification.js REVOKE_REASON).
+const REVERSED_REASONS = Object.freeze(['REFUND', 'DISPUTE'])
 const STORY_STATUS = Object.freeze({ NONE: 'NONE', PENDING: 'PENDING', APPROVED: 'APPROVED', REJECTED: 'REJECTED' })
 
 // A link, an address, or a phone-number-sized digit run has no place in a testimonial.
@@ -67,9 +69,79 @@ function parseSubmit(body) {
   return { ok: true, data: { ...v, story: story.data } }
 }
 
-// A fix is only askable about once it has actually been delivered to the person.
-function isAskable(scan, userId) {
+// A fix is only reportable once it has actually been delivered to the person, and only while it is still a purchase: a refunded
+// or disputed one has had its credential revoked and its files withdrawn, so neither an answer nor a story about it is evidence
+// of anything. A delivery whose rewrite failed handed back the unchanged resume, so "did the fix lead to an interview?" has no
+// subject either. `purchaseLive` fails open (true) when the payment could not be read: nobody is punished for our own outage.
+function isAskable(scan, userId, { purchaseLive = true } = {}) {
   return !!scan && scan.user_id === userId && scan.fix_purchased === true && !!scan.fix_generated_at
+    && scan.rewrite_failed !== true && purchaseLive !== false
+}
+
+// ── when a person is asked ──────────────────────────────────────────────────────────────────────────
+// ONE definition, used three ways: the dashboard / My Story prompt and the follow-up email sweep (both pre-filter in SQL, then
+// re-check each row here), and the admin simulator that answers "why is / isn't this scan being asked, and when will it be?".
+//
+//   dashboard   delivered >= 14 days ago and <= 120 days ago, never answered. A "still applying" answer is asked again 30 days
+//               after it was given (for up to a year after delivery); any other answer is final unless the person reopens it.
+//   email       delivered 30..120 days ago, never answered, never mailed, under 3 attempts, the person is active, verified and
+//               has not switched the follow-up off, and no other follow-up went to them in the last 30 days.
+//
+// "Delivered" means the FIRST delivery (first_delivered_at, migration 0120), so a retry or an edit never moves the clock.
+// Returns { ask, reason, at } — `at` is the moment the verdict is expected to change in the person's favour (when it is asked),
+// or null when nothing will change it.
+const DAY = 24 * 60 * 60 * 1000
+const when = (ms) => new Date(ms).toISOString()
+const ms = (v) => { const t = v ? Date.parse(v) : NaN; return Number.isFinite(t) ? t : null }
+
+function deliveredAtMs(scan) { return ms(scan && (scan.first_delivered_at || scan.fix_generated_at)) }
+
+function evaluateAsk({ scan, outcome = null, purchaseLive = true, user = null, recentlyEmailed = false }, nowMs = Date.now()) {
+  const no = (reason, at = null) => ({ ask: false, reason, at: at == null ? null : when(at) })
+  const base = (() => {
+    if (!scan) return 'NO_SCAN'
+    if (scan.fix_purchased !== true) return 'NOT_PURCHASED'
+    if (deliveredAtMs(scan) == null) return 'NOT_DELIVERED'
+    if (scan.rewrite_failed === true) return 'REWRITE_FAILED'
+    if (purchaseLive === false) return 'PURCHASE_REVERSED'
+    return null
+  })()
+
+  const dashboard = (() => {
+    if (base) return no(base)
+    const d = deliveredAtMs(scan), age = nowMs - d
+    if (outcome) {
+      if (outcome.outcome !== OUTCOMES.STILL_APPLYING) return no('ANSWERED')
+      if (age > c.OUTCOME_REASK_MAX_AGE_DAYS * DAY) return no('TOO_OLD')
+      const due = (ms(outcome.updated_at) ?? ms(outcome.answered_at) ?? nowMs) + c.OUTCOME_REASK_AFTER_DAYS * DAY
+      return nowMs < due ? no('REASK_NOT_DUE', due) : { ask: true, reason: 'REASK_STILL_APPLYING', at: null }
+    }
+    if (age < c.OUTCOME_DASHBOARD_AFTER_DAYS * DAY) return no('TOO_EARLY', d + c.OUTCOME_DASHBOARD_AFTER_DAYS * DAY)
+    if (age > c.OUTCOME_ASK_MAX_AGE_DAYS * DAY) return no('TOO_OLD')
+    return { ask: true, reason: 'ASK', at: null }
+  })()
+
+  const email = (() => {
+    if (base) return no(base)
+    if (!scan.user_id) return no('NO_OWNER')
+    if (outcome) return no('ANSWERED')
+    if (scan.outcome_prompted_at) return no('ALREADY_PROMPTED')
+    if ((scan.outcome_prompt_attempts || 0) >= c.OUTCOME_EMAIL_MAX_ATTEMPTS) return no('ATTEMPTS_EXHAUSTED')
+    const d = deliveredAtMs(scan), age = nowMs - d
+    if (age < c.OUTCOME_EMAIL_AFTER_DAYS * DAY) return no('TOO_EARLY', d + c.OUTCOME_EMAIL_AFTER_DAYS * DAY)
+    if (age > c.OUTCOME_ASK_MAX_AGE_DAYS * DAY) return no('TOO_OLD')
+    if (user) {
+      if (!user.email) return no('NO_EMAIL')
+      if (user.deleted_at) return no('ACCOUNT_DELETED')
+      if (user.status !== 'ACTIVE') return no('ACCOUNT_NOT_ACTIVE')
+      if (user.email_verified !== true) return no('EMAIL_UNVERIFIED')
+      if (user.notify_outcome_followup === false) return no('OPTED_OUT')
+    } else return no('NO_USER')
+    if (recentlyEmailed) return no('USER_COOLDOWN')
+    return { ask: true, reason: 'SEND', at: null }
+  })()
+
+  return { dashboard, email }
 }
 
 // What the story row should become after the author submits `incoming` over `existing`.
@@ -122,6 +194,9 @@ function toPublicStory(row, id) {
   const text = row.story_text ? cleanNotes(row.story_text) : ''
   if (!displayName || !quote || !text) return null
   const scan = row.scans || {}
+  // A refunded or disputed purchase has had its credential and files withdrawn: its owner's story is not shown beside a product
+  // they got their money back for (the answer itself still counts in the totals — dropping it would only remove the unhappy ones).
+  if (REVERSED_REASONS.includes(scan.verification_revoked_reason)) return null
   const credentialLive = row.story_show_credential === true && !!scan.verification_code
     && (scan.verification_status || 'ACTIVE') === 'ACTIVE' && !scan.verification_revoked_at
   return {
@@ -138,4 +213,4 @@ function toPublicStory(row, id) {
   }
 }
 
-module.exports = { OUTCOMES, STORY_STATUS, parseSubmit, storySchema, cleanDisplayName, isAskable, nextStoryState, interviewRatePct, changePct, MIN_CHANGE_BASE, toPublicStory }
+module.exports = { OUTCOMES, STORY_STATUS, parseSubmit, storySchema, cleanDisplayName, isAskable, evaluateAsk, deliveredAtMs, nextStoryState, interviewRatePct, changePct, MIN_CHANGE_BASE, toPublicStory }

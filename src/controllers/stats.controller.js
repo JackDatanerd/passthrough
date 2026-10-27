@@ -12,7 +12,7 @@ const cryptoLib = require('../lib/crypto')
 const { interviewRatePct, changePct, toPublicStory, STORY_STATUS } = require('../lib/outcomes')
 
 const STORY_COLUMNS = 'scan_id, role_category, outcome, interview_count, interview_after_days, story_status, story_display_name, story_quote, story_text, story_show_credential, ' +
-  'scans(ats_score, fix_ats_score, verification_code, verification_status, verification_revoked_at)'
+  'scans(ats_score, fix_ats_score, verification_code, verification_status, verification_revoked_at, verification_revoked_reason)'
 
 async function safe(label, fn) {
   try {

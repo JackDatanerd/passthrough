@@ -20,6 +20,11 @@ const list = (stories, total = stories.length) => ({ data: { data: { stories, to
 beforeEach(() => { api.get.mockReset(); api.post.mockReset(); toast.mockReset() })
 
 describe('AdminStories', () => {
+  it('flags a story whose purchase was refunded or disputed: approving it changes nothing publicly', async () => {
+    api.get.mockResolvedValue(list([story({ purchaseReversed: true })]))
+    render(<AdminStories />)
+    expect(await screen.findByText(/Purchase refunded or disputed — never shown publicly/)).toBeInTheDocument()
+  })
   it('lists pending stories by default with everything a reviewer needs to judge them', async () => {
     api.get.mockResolvedValue(list([story()]))
     render(<AdminStories />)

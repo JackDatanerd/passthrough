@@ -809,23 +809,6 @@ async function sendFixDelivered(env, supabase, email, name, code, verificationUr
   })
 }
 
-// Credential-only (BADGE tier): nothing was rewritten, so it must not be told "your fixed/rewritten resume is ready".
-async function sendBadgeDelivered(env, supabase, email, name, code, verificationUrl, verified = true, scanId = null) {
-  if (!verified) {
-    return send(env, supabase, email, 'Your formatted resume is ready', 'badge_delivered_report', {
-      NAME:             name,
-      VERIFICATION_URL: verificationUrl,
-      ...resultUrls(env, scanId)
-    })
-  }
-  return send(env, supabase, email, '✓ Your Passthrough Verified credential is ready', 'badge_delivered', {
-    NAME:              name,
-    VERIFICATION_CODE: code,
-    VERIFICATION_URL:  verificationUrl,
-    ...resultUrls(env, scanId)
-  })
-}
-
 async function sendFixDeliveredPlain(env, supabase, email, name, scanId = null) {
   return send(env, supabase, email, '✓ Your fixed resume is ready', 'fix_delivered_plain', {
     NAME:         name,
@@ -856,7 +839,7 @@ async function sendFixFailed(env, supabase, email, name) {
 async function sendOutcomeFollowUp(env, supabase, email, name, { unsubscribeUrl } = {}) {
   return send(env, supabase, email, 'Did your resume lead to an interview?', 'outcome_followup', {
     NAME:         name,
-    ANSWER_URL:   `${env.FRONTEND_URL}/dashboard#outcome`,
+    ANSWER_URL:   `${env.FRONTEND_URL}/dashboard/story`,
     SETTINGS_URL: `${env.FRONTEND_URL}/dashboard/settings`
   }, {
     headers: unsubscribeUrl ? {
@@ -1141,7 +1124,7 @@ module.exports = {
   sendWelcome, sendWelcomeOffer, sendVerification, sendPasswordReset,
   sendPasswordChanged, sendEmailChangedOldAddress, sendEmailChangeCompleted, sendEmailChangeConfirmation, sendAccountDeleted, sendAccountLockoutAlert,
   sendNewSignInAlert,
-  sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendBadgeDelivered, sendFixDeliveredPlain, sendFixFailed, sendOutcomeFollowUp,
+  sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed, sendOutcomeFollowUp,
   sendVerificationReported,
   sendPartnerLinksSelfReset, sendPartnerCodeLimitReached, sendPartnerCodeExpiring, sendPartnerTermsAccepted,
   sendPaymentReceipt, sendPaymentReversed,

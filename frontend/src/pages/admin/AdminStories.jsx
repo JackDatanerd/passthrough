@@ -94,6 +94,7 @@ export default function AdminStories() {
                 <Badge variant={s.showCredential ? (s.credentialLive ? 'green' : 'amber') : 'gray'}>
                   {s.showCredential ? (s.credentialLive ? 'Links live credential' : 'Credential link requested — not live') : 'No credential link'}
                 </Badge>
+                {s.purchaseReversed && <Badge variant="red">Purchase refunded or disputed — never shown publicly</Badge>}
                 <span className="text-xs text-gray-400 ml-auto">{formatDateTime(s.answeredAt)}</span>
               </div>
               <p className="font-medium text-gray-900">“{s.quote}”</p>
