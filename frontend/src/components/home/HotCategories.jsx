@@ -87,7 +87,7 @@ export default function HotCategories({ hot, minReports }) {
             )}
             <p className="text-xs text-gray-500 mt-3">
               {isSample
-                ? 'Sample numbers shown until enough real reports come in.'
+                ? ''
                 : `Applicant-reported, refreshed regularly. Fields with fewer than ${minReports} reports in the period aren't shown, and the arrow compares with the period before.`}
             </p>
           </div>
