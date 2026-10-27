@@ -772,6 +772,8 @@ export default function ScanResult() {
     const prev = prevStage.current
     prevStage.current = stage
     if (prev == null) return                        // first sight of this scan: the address decides where to land
+    // A delivery can hand a compensating credit out (or take one back): the account's count is read from the server.
+    if (prev !== 'delivered' && stage === 'delivered') refreshUser()
     // Payment just went through (or a free credit was spent): the screen moves to the resume being written. Only from the
     // steps before it, so it never pulls anyone out of the editor they are typing in.
     if (prev === 'scored' && stage !== 'scored') navigate(`/scan/${id}/resume${search}`)
@@ -832,6 +834,10 @@ export default function ScanResult() {
   const resultsReady = RESULTS_READY.includes(scan.status)
   const purchased = rewriting || delivered
   const hasLink = !!scan.verificationUrl && scan.verificationStatus !== 'REVOKED' && credentialEarned(scan)
+  // The page exists for any non-plain delivery, but it only reads "Verified" once the delivered file clears the line.
+  const linkEarned = !!scan.verificationUrl && credentialEarned(scan)
+  const underLine = delivered && scan.fixTier !== 'FIX_PLAIN' && typeof scan.fixAtsScore === 'number' && scan.fixAtsScore < ATS_BADGE_THRESHOLD
+  const creditHeld = !!scan.fixCreditHeld
   // The state of a verification page the owner (or Passthrough) has switched off. Both tabs that talk about the link say so.
   const unpublishedNote = scan.verificationUrl && scan.verificationStatus === 'REVOKED' ? (
     <p data-testid="unpublished-note" className="text-sm text-gray-700 bg-gray-100 border border-gray-200 rounded-md px-3 py-2">
@@ -973,14 +979,30 @@ export default function ScanResult() {
             {/* ── SCORE: the number, the three biggest reasons, and the one thing to do next ── */}
             {current === 'score' && (
               <section data-testid="tab-score" aria-label="Score" className="flex flex-col gap-6">
-                {delivered && (
+                {delivered && !(underLine || (scan.fixTier === 'FIX_PLAIN' && typeof scan.fixAtsScore === 'number' && scan.fixAtsScore < ATS_BADGE_THRESHOLD)) && (
                   <div className="flex flex-wrap items-center gap-3 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800" role="status">
                     <span aria-hidden="true">✓</span>
                     {rewrites(scan.fixTier)
-                      ? <span><b className="text-green-900">Your fixed resume scores {scan.fixAtsScore ?? '—'}.</b> It's ready{scan.verificationUrl ? ', with your Verified link' : ''}.</span>
+                      ? <span><b className="text-green-900">Your fixed resume scores {scan.fixAtsScore ?? '—'}.</b> It's ready{linkEarned ? ', with your Verified link' : ''}.</span>
                       : credentialEarned(scan)
                         ? <span><b className="text-green-900">Your Verified resume is ready.</b> Your score of {scan.fixAtsScore} now carries a link employers can check.</span>
                         : <span><b className="text-green-900">Your files are ready.</b> The formatted file scored {scan.fixAtsScore ?? '—'}, under the {ATS_BADGE_THRESHOLD} the credential needs.</span>}
+                  </div>
+                )}
+                {delivered && (underLine || (scan.fixTier === 'FIX_PLAIN' && typeof scan.fixAtsScore === 'number' && scan.fixAtsScore < ATS_BADGE_THRESHOLD)) && (
+                  <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900" role="status" data-testid="under-line-status">
+                    <p>
+                      <b>{rewrites(scan.fixTier) ? 'Your fixed resume' : 'Your formatted file'} scores {scan.fixAtsScore}, {ATS_BADGE_THRESHOLD - scan.fixAtsScore} point{ATS_BADGE_THRESHOLD - scan.fixAtsScore === 1 ? '' : 's'} under the {ATS_BADGE_THRESHOLD}{scan.fixTier === 'FIX_PLAIN' ? ' target' : ' a Verified link needs'}.</b>
+                      {' '}The files are ready{scan.fixTier === 'FIX_PLAIN' ? '' : ' and your link reads as a scan report until it gets there'}.
+                      {rewrites(scan.fixTier) && scan.fixRetryCount < MAX_FIX_RETRIES && <> You have {MAX_FIX_RETRIES - scan.fixRetryCount} free {MAX_FIX_RETRIES - scan.fixRetryCount === 1 ? 'retry' : 'retries'} left, and you can edit the resume yourself.</>}
+                    </p>
+                    {creditHeld && (
+                      <p className="mt-1" data-testid="credit-status">
+                        A free fix credit is on your account for this resume{(user?.freeFixCredits || 0) > 0 ? ` (${user.freeFixCredits} available)` : ''}. It goes away if this resume reaches {ATS_BADGE_THRESHOLD}; until then it covers another fix.{' '}
+                        <Link to={`/scan?from=${scan.id}`} className="font-semibold underline underline-offset-2">Scan it against another job</Link>
+                      </p>
+                    )}
+                    <Link to={`/scan/${id}/resume${search}`} className="mt-1 inline-block font-semibold text-blue-700 underline underline-offset-2">Go to Your resume →</Link>
                   </div>
                 )}
                 {!user && (
@@ -1309,8 +1331,9 @@ export default function ScanResult() {
                       </div>
                     ) : (
                       <p className="text-sm text-amber-800 mb-3">
-                        We tried a few times but couldn't get this one past {ATS_BADGE_THRESHOLD}. We've added a free fix credit to your
-                        account for your next resume — no charge next time.
+                        We tried a few times but couldn't get this one past {ATS_BADGE_THRESHOLD}.{creditHeld
+                          ? ' A free fix credit is on your account for your next resume — no charge next time. It goes away if this one reaches ' + ATS_BADGE_THRESHOLD + ' after your own edits.'
+                          : ' You can still edit it yourself to close the gap.'}
                       </p>
                     )}
                   </>
@@ -1417,7 +1440,7 @@ export default function ScanResult() {
                 <SectionBoundary name="delivered-resume-editor" resetKey={scan.id} message="The resume editor could not load.">
                   <DeliveredResumeEditor
                     scan={scan}
-                    onSaved={async updated => { setScan(prev => ({ ...prev, ...updated })); await fetchScan() }}
+                    onSaved={async updated => { setScan(prev => ({ ...prev, ...updated })); await fetchScan(); if (updated?.creditRevoked) refreshUser() }}
                   />
                 </SectionBoundary>
               </>
@@ -1441,7 +1464,7 @@ export default function ScanResult() {
             )}
             <div className="grid gap-4 lg:grid-cols-[1.05fr_.95fr] lg:items-start">
               <div className="flex min-w-0 flex-col gap-4">
-            {delivered && !scan.verificationUrl && scan.fixTier !== 'FIX_PLAIN' && typeof scan.fixAtsScore === 'number' && scan.fixAtsScore < ATS_BADGE_THRESHOLD && (
+            {underLine && !unpublishedNote && (
               <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm" data-testid="verified-locked">
                 <h3 className="mb-2 text-lg font-semibold text-gray-900">Verified link: earned at {ATS_BADGE_THRESHOLD}</h3>
                 <p className="mb-2.5 text-sm text-gray-700">Your resume scores <b>{scan.fixAtsScore}</b>, {ATS_BADGE_THRESHOLD - scan.fixAtsScore} point{ATS_BADGE_THRESHOLD - scan.fixAtsScore === 1 ? '' : 's'} away. It opens here on its own once the score reaches {ATS_BADGE_THRESHOLD}.</p>
@@ -1449,7 +1472,7 @@ export default function ScanResult() {
                 <ButtonLink to={`/scan/${id}/resume${search}`}>Back to Your resume</ButtonLink>
               </div>
             )}
-            {scan.verificationUrl && scan.verificationStatus !== 'REVOKED' && (
+            {linkEarned && scan.verificationStatus !== 'REVOKED' && (
               <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm" data-testid="verified-link-card">
                 <h3 className="mb-2.5 text-lg font-semibold text-gray-900">Your Verified link</h3>
                 <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm">
@@ -1509,7 +1532,7 @@ export default function ScanResult() {
                         portfolio, or a README. Hidden while unpublished so
                         this doesn't invite grabbing an embed for a page
                         that currently reads "revoked". */}
-                    {scan.verificationStatus !== 'REVOKED' && (
+                    {linkEarned && scan.verificationStatus !== 'REVOKED' && (
                       <div className="mt-4 pt-4 border-t border-gray-200">
                         <p className="text-xs font-medium text-gray-900 mb-2">
                           Embed your live badge

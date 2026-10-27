@@ -45,7 +45,7 @@ export default function DeliveredResumeEditor({ scan, onSaved }) {
     try {
       const res = await api.patch(`/scan/${scan.id}/delivered-resume`, paperChanged ? { resumeData: draft, paper: paper || 'auto' } : { resumeData: draft })
       const d = res.data.data
-      setResult({ score: d.fixAtsScore, verified: d.credentialVerified })
+      setResult({ score: d.fixAtsScore, verified: d.credentialVerified, creditRevoked: !!d.creditRevoked })
       setEditing(false)
       await onSaved(d)
     } catch (err) {
@@ -70,7 +70,8 @@ export default function DeliveredResumeEditor({ scan, onSaved }) {
       {result && !editing && (
         <p className={`text-sm mt-3 ${plain || result.verified ? 'text-green-800' : 'text-amber-800'}`} role="status">
           Saved — new ATS score {result.score}/100
-          {!plain && (result.verified ? ' · still Passthrough Verified.' : ` · below ${ATS_BADGE_THRESHOLD}, so the files now carry the Scan Report wording instead of Verified.`)}
+          {!plain && (result.verified ? (result.creditRevoked ? ' · over the line: your link now reads Passthrough Verified, and the free credit that was held for this resume is used up.' : ' · still Passthrough Verified.') : ` · below ${ATS_BADGE_THRESHOLD}, so the files now carry the Scan Report wording instead of Verified.`)}
+          {plain && result.creditRevoked && ' · over the line: the free credit that was held for this resume is used up.'}
         </p>
       )}
 

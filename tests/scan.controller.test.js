@@ -1388,7 +1388,7 @@ describe('runAtsScan', () => {
 
 describe('generateFix', () => {
   function setup(opts = {}) {
-    const state = { scanUpdates: [], r2Puts: [], r2Deletes: [], credits: [], alerts: [], emails: [] }
+    const state = { scanUpdates: [], r2Puts: [], r2Deletes: [], credits: [], revokes: [], alerts: [], emails: [] }
     const scan = 'scan' in opts ? opts.scan : {
       id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' },
       job_description_text: 'JD', fix_tier: 'FIX', fix_retry_count: 0, role_category: null,
@@ -1399,6 +1399,7 @@ describe('generateFix', () => {
       if (q.table === 'users' && q.op === 'select') return { data: userRow, error: null }
       if (q.table === 'scans' && q.op === 'update') { state.scanUpdates.push(q.patch); return { data: opts.deliverError ? null : [{ id: 's1' }], error: opts.deliverError || null } }
       if (q.op === 'rpc' && q.name === 'grant_fix_credit_once') { state.credits.push(q.args); return { data: true, error: opts.creditErr || null } }
+      if (q.op === 'rpc' && q.name === 'revoke_compensation_credit') { state.revokes.push(q.args); return { data: true, error: null } }
     })
     const rewriteCalls = []
     let rewriteCallIdx = 0
@@ -1643,6 +1644,25 @@ describe('generateFix', () => {
       await t.mod.generateFix(t.env, t.db, 's1')
       expect(delivered().rewritten_resume_data).toEqual({ name: 'Jane Rewritten' })
       expect(delivered().fix_ats_score).toBe(85)
+    })
+    // Migration 0121: a compensating credit exists only to carry a resume to the line, so a delivery that clears it takes back any
+    // credit still attributed to this scan (granted on an earlier round) - and a delivery under the line, or one where no rewrite
+    // was produced at all, never does.
+    it('a delivery that clears the line asks for the scan\'s held compensation credit back', async () => {
+      t = setup({ scoreFn: n => n === 0 ? 60 : 85 })
+      await t.mod.generateFix(t.env, t.db, 's1')
+      expect(t.state.revokes).toEqual([{ p_scan_id: 's1', p_user_id: 'u1' }])
+    })
+    it('a delivery under the line takes nothing back', async () => {
+      t = setup({ scoreFn: n => n === 0 ? 60 : 50 })
+      await t.mod.generateFix(t.env, t.db, 's1')
+      expect(t.state.revokes).toEqual([])
+    })
+    it('a total rewrite failure that delivers an original over the line keeps its credit (the paid-for rewrite did not arrive)', async () => {
+      t = setup({ rewriteResult: { success: false, error: 'PARSE_FAIL' }, scoreFn: () => 90 })
+      await t.mod.generateFix(t.env, t.db, 's1')
+      expect(t.state.credits).toEqual([{ p_scan_id: 's1', p_user_id: 'u1', p_round: 0 }])
+      expect(t.state.revokes).toEqual([])
     })
   })
 

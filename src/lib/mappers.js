@@ -111,6 +111,9 @@ function scanRowToCamel(row) {
     fixCreditRound:    row.fix_credit_round ?? null,
     // Migration 0092: once-only marker for the compensating credit of a failed Badge -> Fix upgrade.
     upgradeCreditGrantedAt: row.upgrade_credit_granted_at ?? null,
+    // Migration 0121: one compensating credit per purchase, and whether it is still attributed to this unverified resume.
+    fixCreditGranted:  !!row.fix_credit_granted,
+    fixCreditHeld:     !!row.fix_credit_held,
     // When the CURRENT scan attempt began: a retry spends a new slot long after created_at, and the waiting
     // screen's clock / stalled warning must count from then, not from the original creation.
     // The epoch marks "no scan slot was spent" (refund bookkeeping); it is not a start time, so the waiting screen uses the last
@@ -199,7 +202,7 @@ const SERVER_ONLY_SCAN_FIELDS = [
   'resumePath', 'resumeAtsPath', 'resumePdfPath',        // storage keys
   'resumeHashHistory', 'fixPaymentId',
   'anonTokenHash',                                       // capability secret at rest (migration 0045)
-  'fixJobLockUntil', 'fixCreditRound', 'upgradeCreditGrantedAt', 'fixErrorRecoveries', 'badgeUpgradedAt',   // job bookkeeping (migrations 0026 / 0057 / 0089)
+  'fixJobLockUntil', 'fixCreditRound', 'fixCreditGranted', 'upgradeCreditGrantedAt', 'fixErrorRecoveries', 'badgeUpgradedAt',   // job bookkeeping (migrations 0026 / 0057 / 0089 / 0121)
   'firstDeliveredAt',                                    // when the FIRST delivery happened — the clock for "did it lead to an interview?" (0120); the browser is sent deliveredAt by /outcomes/pending instead
   'scanSlotSpentAt',                                     // when the free-scan slot was spent — refund bookkeeping (0072)
   'docTemplateVersion',                                  // which document look rules render this scan's files (0101) — the browser never needs it
@@ -212,7 +215,7 @@ const CLIENT_SCAN_FIELDS = [
   'verificationStatus', 'verificationRevokedAt', 'verificationRevokedReason', 'resumePdfHash', 'verificationViews',
   'verificationDownloads', 'resumeHash', 'verifiedAt', 'roleCategory', 'seniorityLevel', 'userId',
   'anonExpiresAt', 'contactName', 'contactEmail', 'inputMode', 'rawBrainDumpText', 'originalResumeData',
-  'rewrittenResumeData', 'userEditedResumeData', 'quantificationPrompts', 'createdAt', 'updatedAt',
+  'rewrittenResumeData', 'userEditedResumeData', 'quantificationPrompts', 'createdAt', 'updatedAt', 'fixCreditHeld',
   'scanStartedAt', 'scanStage', 'fixProgress',           // waiting-screen telemetry (0088); no resume content in either
 ]
 // Allow-list: only CLIENT_SCAN_FIELDS get out, whatever else scanRowToCamel grows.

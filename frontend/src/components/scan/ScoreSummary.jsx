@@ -30,7 +30,7 @@ export default function ScoreSummary({ score, passed, provisional = false, origi
           {(originalSentence || sentence) && <p className="text-sm text-gray-600">{originalSentence || sentence}</p>}
         </div>
       </div>
-      <ScoreRoad after={has ? score : null} />
+      <ScoreRoad before={original && typeof original.after === 'number' ? score : undefined} after={original && typeof original.after === 'number' ? original.after : (has ? score : null)} />
     </div>
   )
 }

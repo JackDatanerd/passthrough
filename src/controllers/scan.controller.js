@@ -1475,9 +1475,11 @@ async function updateDeliveredResume(ctx) {
   // (a database without migration 0089 simply has no flag to clear).
   if (scan.retryNoGain) { try { await supabase.from('scans').update({ fix_retry_no_gain: false }).eq('id', scan.id) } catch (_) {} }
   if (code) await purgeBadgeCache(code)
+  // An edit that carries the resume over the line ends the credit that was handed out to get it there.
+  const creditRevoked = fixAtsScore >= c.ATS_BADGE_THRESHOLD ? await revokeCompensationCredit(supabase, scan) : false
 
   return ctx.json({ success: true, data: {
-    fixAtsScore, hasPdf: !!finalPdfKey, quantificationPrompts: prompts, retryNoGain: false, paperSize: paperChoice,
+    fixAtsScore, creditRevoked, fixCreditHeld: creditRevoked ? false : !!scan.fixCreditHeld, hasPdf: !!finalPdfKey, quantificationPrompts: prompts, retryNoGain: false, paperSize: paperChoice,
     credentialVerified,
     rewrittenResumeData: resumeData,
     userEditedResumeData: resumeData,
@@ -1953,7 +1955,9 @@ async function upgradeBadgeToFix(ctx) {
     const { data: claimed, error: claimErr } = await supabase.from('scans').update({
       // fix_progress: the credential-only run's progress (round 0, phase 'rendering') is still on the row; the waiting
       // screen accepts it for this round (same round number) and would skip straight to "Preparing your files".
-      fix_tier: 'FIX', status: 'FIX_PURCHASED', badge_upgraded_at: new Date().toISOString(), fix_progress: null
+      fix_tier: 'FIX', status: 'FIX_PURCHASED', badge_upgraded_at: new Date().toISOString(), fix_progress: null,
+      // The credit that paid for this upgrade was the one handed out for the Badge: spent, so the upgraded fix can earn its own.
+      fix_credit_granted: false, fix_credit_held: false
     }).eq('id', scan.id).eq('fix_purchased', true).eq('fix_tier', 'BADGE').eq('status', 'FIX_DELIVERED').select('id')
     if (claimErr) throw claimErr
     if (!claimed || claimed.length === 0) {
@@ -2955,6 +2959,21 @@ async function grantFixCreditOnce(env, supabase, scan, round, why, { upgrade = f
   }
 }
 
+// The resume this scan's compensating credit was for has reached the Verified line (a free retry or the owner's own edit got it
+// there): the credit goes (migration 0121). Takes back only what is still there - a credit already spent elsewhere is not clawed
+// below zero. Best-effort, never throws; returns true when this call took one back.
+async function revokeCompensationCredit(supabase, scan) {
+  if (!scan?.userId) return false
+  try {
+    const { data, error } = await supabase.rpc('revoke_compensation_credit', { p_scan_id: scan.id, p_user_id: scan.userId })
+    if (error) throw error
+    return data === true
+  } catch (err) {
+    console.error(`[WARN] revoke_compensation_credit ${scan.id}:`, err.message)
+    return false
+  }
+}
+
 // Hashes of a superseded delivery, kept so a hiring manager holding an OLDER
 // file is told "earlier version", not "modified" (see verify.controller).
 function nextHashHistory(scan) {
@@ -3457,9 +3476,10 @@ async function generateFixRun(env, supabase, scanId, leaseToken = null) {
     const fixReport = fallbackScored ? deliveredReport(fallbackScored) : bestReport
 
     if (rewriteFailed && scan.userId) {
-      // A total rewrite failure, not a quality shortfall — compensate every time it happens
-      // rather than waiting for retries to run out. Once per round (grantFixCreditOnce), so a
-      // re-run of a crashed job can't pay twice.
+      // A total rewrite failure, not a quality shortfall — compensate rather than waiting for retries to run out.
+      // One credit per purchase (migration 0121): a later round never grants a second. The product the person paid for
+      // (the rewrite) did not arrive, so this credit stands even when the original already clears the line; a LATER round
+      // that does deliver a real rewrite over the line takes it back (revokeCompensationCredit below).
       await grantFixCreditOnce(env, supabase, scan, scan.fixRetryCount || 0, 'rewrite failure', { upgrade: upgradeRound })
     } else if (!isRetry && baselineHeld && producedCandidate && fixAtsScore < c.ATS_BADGE_THRESHOLD && scan.userId) {
       // Round 5 (G2): every rewrite scored BELOW the person's own upload and the upload itself is under the badge
@@ -3598,6 +3618,8 @@ async function generateFixRun(env, supabase, scanId, leaseToken = null) {
     // it) could leave a stale badge cached for up to BADGE_TTL after the page
     // itself already shows the new result.
     if (code) await purgeBadgeCache(code)
+    // The resume has reached the line: a compensating credit still attributed to it (granted on an earlier round) goes.
+    if (scan.userId && !rewriteFailed && fixAtsScore >= c.ATS_BADGE_THRESHOLD) await revokeCompensationCredit(supabase, scan)
 
     if (user) {
       try {
@@ -3946,7 +3968,7 @@ function ledgered(handler) {
 }
 
 // Internals exported for tests only.
-const __test = { blendAiScore, fetchAiScore, coverLetterFileStem, draftFileStem, purchaseIsLive, grantFixCreditOnce, deliveredFileStem, buildFailure, refundScanQuota, refundScanSlot, slotSpentAt }
+const __test = { revokeCompensationCredit, blendAiScore, fetchAiScore, coverLetterFileStem, draftFileStem, purchaseIsLive, grantFixCreditOnce, deliveredFileStem, buildFailure, refundScanQuota, refundScanSlot, slotSpentAt }
 
 module.exports = {
   __test,

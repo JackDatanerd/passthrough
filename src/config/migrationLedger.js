@@ -45,6 +45,7 @@ const LEDGER_NAMES = {
   118: '0118_database_round6',
   119: '0119_human_demand_test',
   120: '0120_outcome_ask_first_delivery',
+  121: '0121_credit_one_per_purchase',
 }
 
 module.exports = { LEDGER_NAMES }

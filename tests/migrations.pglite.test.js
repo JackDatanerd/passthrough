@@ -165,7 +165,7 @@ describe('scrub_account_data', () => {
   // scrub_account_data (copy the newest body — a replace that starts from an older one drops every column added since) or listing it here on purpose.
   const KEPT = {
     users: ['created_at', 'deleted_at', 'email_bounce_type', 'email_bounced_at', 'email_verified', 'free_fix_credits', 'notify_outcome_followup', 'notify_scan_results', 'scans_day_reset', 'scans_today', 'terms_accepted_at', 'terms_version'],
-    scans: ['anon_expires_at', 'badge_upgraded_at', 'created_at', 'fix_retry_no_gain', 'fix_ats_score', 'fix_credit_round', 'fix_error_recoveries', 'fix_generated_at', 'first_delivered_at', 'fix_job_lock_until', 'upgrade_credit_granted_at', 'fix_purchased', 'fix_retry_count', 'cover_letter_count',
+    scans: ['anon_expires_at', 'badge_upgraded_at', 'created_at', 'fix_retry_no_gain', 'fix_ats_score', 'fix_credit_round', 'fix_credit_granted', 'fix_credit_held', 'fix_error_recoveries', 'fix_generated_at', 'first_delivered_at', 'fix_job_lock_until', 'upgrade_credit_granted_at', 'fix_purchased', 'fix_retry_count', 'cover_letter_count',
             'outcome_prompt_attempts', 'passed', 'outcome_prompted_at', 'resume_mime_type', 'rewrite_failed', 'role_category', 'scan_completed_at', 'scan_slot_spent_at', 'seniority_level', 'verification_downloads',
             'verification_views', 'verified_at', 'ats_score', 'content_score', 'format_score', 'keyword_score', 'sections_score', 'updated_at',
             // waiting-screen telemetry (0088): job phase and per-attempt scores. No resume content, nothing personal.

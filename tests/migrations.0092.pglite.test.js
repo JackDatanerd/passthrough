@@ -35,8 +35,8 @@ describe('grant_upgrade_credit_once', () => {
     expect((await q(`select grant_upgrade_credit_once('${S}','${U}') as ok`))[0].ok).toBe(false)   // a re-run of a crashed job
     expect(Number((await q(`select free_fix_credits as n from users where id='${U}'`))[0].n)).toBe(2)
   })
-  it('later retry rounds are unaffected (the per-round marker is not consumed by the upgrade)', async () => {
-    expect((await q(`select grant_fix_credit_once('${S}','${U}',1) as ok`))[0].ok).toBe(true)
+  it('the upgrade does not consume the per-round marker, but (migration 0121) it IS the scan\'s one compensating credit: a later round does not grant a second', async () => {
+    expect((await q(`select grant_fix_credit_once('${S}','${U}',1) as ok`))[0].ok).toBe(false)
   })
   it('is not callable by clients', async () => {
     await db.exec(`set role authenticated`)
