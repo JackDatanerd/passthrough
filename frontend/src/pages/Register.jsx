@@ -3,6 +3,7 @@ import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
 import { useApi } from '../hooks/useApi'
 import { safeNext } from '../lib/session'
+import { scanTarget } from '../lib/anonScans'
 import { getToken } from '../lib/storage'
 import { useAuth } from '../hooks/useAuth'
 import Button from '../components/ui/Button'
@@ -79,7 +80,7 @@ export default function Register() {
         // A pending anon scan still wins — it's a specific piece of work the
         // person just did, more useful to land on than wherever they were
         // headed before it existed. Otherwise honor `next`, then dashboard.
-        navigate(scanId ? `/scan/${scanId}` : (next || '/dashboard'))
+        navigate(scanTarget(next, scanId))
         return res
       }, { fallback: 'Registration failed.' })
     } catch (_) {

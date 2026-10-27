@@ -30,7 +30,7 @@ const CALLS = {
   sendEmailChangeConfirmation: ['n@x.y', 'Ann', 'tok'], sendAccountDeleted: ['u@x.y', 'Ann'], sendAccountLockoutAlert: ['u@x.y', 'Ann', 15],
   sendNewSignInAlert: ['u@x.y', 'Ann', { ip: '1.2.3.4', when: Date.UTC(2026, 9, 5, 23, 30) }],
   sendScanFail: ['u@x.y', 'Ann', 60, { keywordScore: 1, formatScore: 2, sectionsScore: 3, contentScore: 4 }], sendScanPass: ['u@x.y', 'Ann', 85],
-  sendAnonScanResult: ['u@x.y', 'Ann', 'sid', 'tok', 85, true], sendFixDelivered: ['u@x.y', 'Ann', 'ABC', 'https://v', true],
+  sendAnonScanResult: ['u@x.y', 'Ann', 'sid', 'tok', 85, true], sendFixDelivered: ['u@x.y', 'Ann', 'ABC', 'https://v', true], sendBadgeDelivered: ['u@x.y', 'Ann', 'ABC', 'https://v', true],
   sendVerificationReported: ['u@x.y', 'Ann', { code: 'AB3XY7K2PQ', phrase: 'that something on it is wrong', pageUrl: 'https://usepassthrough.com/v/AB3XY7K2PQ' }],
   sendFixDeliveredPlain: ['u@x.y', 'Ann'], sendFixFailed: ['u@x.y', 'Ann'], sendOutcomeFollowUp: ['u@x.y', 'Ann'],
   sendPaymentReceipt: ['u@x.y', 'Ann', { fixTier: 'FIX', amountCents: 4900, currency: 'USD', reference: 'ref1', createdAt: '2026-10-05T23:30:00Z' }],
@@ -114,6 +114,8 @@ describe('delivery emails — cover letter and the result page', () => {
   const cases = [
     ['sendFixDelivered', ['u@x.y', 'Ann', 'ABC', 'https://v', true, 'scan-42']],
     ['sendFixDelivered', ['u@x.y', 'Ann', 'ABC', 'https://v', false, 'scan-42']],
+    ['sendBadgeDelivered', ['u@x.y', 'Ann', 'ABC', 'https://v', true, 'scan-42']],
+    ['sendBadgeDelivered', ['u@x.y', 'Ann', 'ABC', 'https://v', false, 'scan-42']],
     ['sendFixDeliveredPlain', ['u@x.y', 'Ann', 'scan-42']],
   ]
   for (const [fn, args] of cases) {
@@ -129,5 +131,28 @@ describe('delivery emails — cover letter and the result page', () => {
     const { svc, sent, db, env } = setup()
     await svc.sendFixDeliveredPlain(env, db, 'u@x.y', 'Ann')
     expect(sent[0].html).toContain('https://usepassthrough.com/dashboard')
+  })
+})
+
+describe('credential-only delivery emails say what was actually done', () => {
+  // The BADGE tier rewrites nothing: "your fixed resume" / "your rewritten resume" would be untrue.
+  for (const verified of [true, false]) {
+    it(`sendBadgeDelivered (${verified ? 'credential issued' : 'under the bar'}): subject and body never claim a rewrite`, async () => {
+      const { svc, sent, db, env } = setup()
+      await svc.sendBadgeDelivered(env, db, 'u@x.y', 'Ann', 'ABC', 'https://usepassthrough.com/v/ABC', verified, 'scan-42')
+      expect(sent).toHaveLength(1)
+      const text = `${sent[0].subject} ${String(sent[0].html).replace(/<[^>]+>/g, ' ')}`
+      expect(text).not.toMatch(/fixed resume|rewritten resume/i)
+      expect(text).toMatch(/Nothing in it was rewritten/)
+      expect(sent[0].subject).toMatch(verified ? /Verified credential is ready/ : /formatted resume is ready/)
+      expect(String(sent[0].html)).toContain('https://usepassthrough.com/scan/scan-42')
+      if (!verified) expect(text).toMatch(/free fix credit/)
+      else expect(text).toMatch(/Passthrough Verified/)
+    })
+  }
+  it('and the full-fix emails keep saying so (nothing else changed)', async () => {
+    const { svc, sent, db, env } = setup()
+    await svc.sendFixDelivered(env, db, 'u@x.y', 'Ann', 'ABC', 'https://v', false, 'scan-42')
+    expect(sent[0].subject).toBe('Your rewritten resume is ready')
   })
 })

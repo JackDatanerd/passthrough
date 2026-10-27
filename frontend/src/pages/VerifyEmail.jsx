@@ -6,6 +6,7 @@ import Spinner from '../components/ui/Spinner'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import { useCooldown } from '../hooks/useCooldown'
+import { peekVerifyReturn, clearVerifyReturn } from '../lib/verifyReturn'
 
 // Email links point to FRONTEND_URL/verify-email?token=xxx — NOT the API URL
 // This page reads the token from the URL and calls the API
@@ -78,6 +79,14 @@ export default function VerifyEmail() {
     }
   }
 
+  // A buyer who was stopped at "verify your email first" is brought back to the scan they were buying, not left at the dashboard.
+  const back = status === 'success' || status === 'already' ? peekVerifyReturn() : null
+  const backTo = back ? (user ? back : `/login?next=${encodeURIComponent(back)}`) : null
+  const backButton = backTo && (
+    <Link to={backTo} onClick={clearVerifyReturn} data-testid="verify-back" className="inline-block bg-blue-700 text-white px-5 py-2.5 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors">
+      Back to your scan
+    </Link>
+  )
   const btn = 'inline-block bg-blue-700 text-white px-5 py-2.5 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors disabled:opacity-60'
 
   return (
@@ -96,9 +105,10 @@ export default function VerifyEmail() {
               <div className="text-green-500 text-4xl mb-3">✓</div>
               <h1 className="text-xl font-bold text-gray-900 mb-2">Email verified</h1>
               <p className="text-sm text-gray-500 mb-6">
-                You can now download your fixed resumes.
+                Your email is verified. You can now buy and download your resumes.
               </p>
-              <Link to="/dashboard" className={btn}>
+              {backButton}
+              <Link to="/dashboard" className={backButton ? 'block mt-4 text-sm text-blue-700 underline underline-offset-2' : btn}>
                 Go to dashboard →
               </Link>
             </>
@@ -110,7 +120,8 @@ export default function VerifyEmail() {
               <p className="text-sm text-gray-500 mb-6">
                 This link has been replaced by a newer one, and your email is already verified.
               </p>
-              <Link to="/dashboard" className={btn}>
+              {backButton}
+              <Link to="/dashboard" className={backButton ? 'block mt-4 text-sm text-blue-700 underline underline-offset-2' : btn}>
                 Go to dashboard →
               </Link>
             </>

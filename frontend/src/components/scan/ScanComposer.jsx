@@ -15,6 +15,8 @@ import Textarea from '../ui/Textarea'
 import ButtonLink from '../ui/ButtonLink'
 import ProgressBar from '../ui/ProgressBar'
 import ResumeFieldsForm from './ResumeFieldsForm'
+import JdMeter, { jdMeter } from './JdMeter'
+import JobLinkFeedback from './JobLinkFeedback'
 import PaperSizeSelect from './PaperSizeSelect'
 import useScanForm, { MAX_RESUME_CHARS, MAX_JD_CHARS, MIN_JD_CHARS, MIN_BRAIN_DUMP_CHARS, jdLength } from './useScanForm'
 import { formatNumber, formatDate, cn } from '../../lib/utils'
@@ -131,14 +133,6 @@ export default function ScanComposer() {
 
   const jdCount = jdLength(f.jdText)
   const jdOk = jdCount >= MIN_JD_CHARS
-  // The posting meter: short is red and says how many more, thin is amber, a full posting is green.
-  const meter = jdCount < MIN_JD_CHARS
-    ? { tone: 'bad', msg: jdCount === 0 ? `Paste the posting, at least ${MIN_JD_CHARS} characters` : `${MIN_JD_CHARS - jdCount} more characters needed`, pct: Math.max(3, (jdCount / MIN_JD_CHARS) * 30) }
-    : jdCount < 400 ? { tone: 'mid', msg: 'Works, but a full posting scores more accurately', pct: 30 + (jdCount / 400) * 30 }
-      : jdCount > MAX_JD_CHARS ? { tone: 'mid', msg: 'Long. We trim the intro and benefits, keep the requirements', pct: 100 }
-        : { tone: 'ok', msg: 'Looks like a full posting', pct: Math.min(100, 60 + (jdCount / MAX_JD_CHARS) * 40) }
-  const tone = { bad: ['text-red-700', 'bg-red-500'], mid: ['text-amber-700', 'bg-amber-500'], ok: ['text-green-700', 'bg-green-600'] }[meter.tone]
-
   const resumeSummary = !resumeReady ? 'Not added yet'
     : entryMode === 'upload' ? (f.file?.name || 'Your file')
       : entryMode === 'rescan' ? rescanSource?.label
@@ -334,24 +328,13 @@ export default function ScanComposer() {
               <div>
                 <Input aria-label="Job posting link" placeholder="https://jobs.example.com/product-manager" value={f.jobUrl} onChange={e => f.setJobUrl(e.target.value)}
                   inputMode="url" autoComplete="off" aria-invalid={f.jobLink === 'bad' || f.jobLink === 'blocked' ? true : undefined} />
-                {f.jobLink === 'blocked' && (
-                  <Alert variant="warning" data-testid="link-blocked" className="mt-2" action={{ label: 'Switch to paste', onClick: () => f.setUseUrl(false) }}>
-                    <b>LinkedIn can’t be read automatically.</b> Copy the posting text instead.
-                  </Alert>
-                )}
-                {f.jobLink === 'bad' && <Alert variant="error" data-testid="link-bad" className="mt-2">That doesn’t look like a web address.</Alert>}
-                {f.jobLink === 'ok' && <Alert variant="success" data-testid="link-ok" className="mt-2">Looks good. We’ll read the page when you scan. If it can’t be read, you come straight back here with everything you entered.</Alert>}
+                <JobLinkFeedback jobLink={f.jobLink} onSwitchToPaste={() => f.setUseUrl(false)} />
                 <p className="mt-2 text-xs text-gray-500">Best results: the employer’s own posting, not a job-board repost.</p>
               </div>
             ) : (
               <div>
                 <Textarea aria-label="Job description" placeholder="Paste the full job description here…" rows={7} className="min-h-[132px]" value={f.jdText} onChange={e => f.setJdText(e.target.value)} />
-                <div aria-hidden="true" className="mt-2 h-1.5 overflow-hidden rounded-full bg-gray-100"><i className={cn('block h-full transition-[width,background-color] duration-200', tone[1])} style={{ width: `${meter.pct}%` }} /></div>
-                <div className="mt-1.5 flex justify-between gap-2.5 text-xs">
-                  <span data-testid="jd-meter-msg" className={cn('font-medium', tone[0])}>{meter.msg}</span>
-                  <span className={cn('tabular-nums', jdCount > MAX_JD_CHARS ? 'font-medium text-amber-700' : 'text-gray-500')}>{formatNumber(jdCount)} / {formatNumber(MAX_JD_CHARS)}</span>
-                </div>
-                <span className="sr-only">{jdOk ? 'Enough to score' : 'Too short'}</span>
+                <JdMeter text={f.jdText} />
               </div>
             )}
             <details className="mt-3 text-sm text-gray-600">

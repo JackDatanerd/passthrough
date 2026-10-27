@@ -34,6 +34,7 @@ import { statusLabel, formatDate } from '../lib/utils'
 import { scanHeading, scanSource } from '../lib/scanDisplay'
 import ScanStrip from '../components/scan/ScanStrip'
 import SectionBoundary from '../components/ui/SectionBoundary'
+import { rememberVerifyReturn } from '../lib/verifyReturn'
 import { rewrites, credentialEarned } from '../lib/scanTiers'
 import CopyButton from '../components/ui/CopyButton'
 import ButtonLink from '../components/ui/ButtonLink'
@@ -115,6 +116,8 @@ export default function ScanResult() {
   // spend a credit) from an account whose email is unverified — downloads need it, and the receipt
   // goes to it. needsVerify turns the error into a "resend the verification email" action.
   const [needsVerify, setNeedsVerify] = useState(false)
+  // Sent to their inbox to verify, the buyer comes back through a link that knows nothing of this page: remember it for them.
+  useEffect(() => { if (needsVerify) rememberVerifyReturn(pathname) }, [needsVerify, pathname])
   const [verifyResent, setVerifyResent] = useState('')
   // FEATURE GAP CLOSED (round 3 — G3): the caller's own open checkout for this scan, if any (see
   // loadPendingPayment). Without it, a buyer whose popup closed or whose verify call failed came
@@ -784,7 +787,7 @@ export default function ScanResult() {
             <Spinner size="lg" className="mx-auto mb-4" />
             <p className="text-gray-500 text-sm">Loading scan…</p>
             {pollError && (
-              <p className="text-xs text-amber-600 mt-2">{pollError}</p>
+              <p className="text-xs text-amber-700 mt-2">{pollError}</p>
             )}
           </div>
         </div>
@@ -883,7 +886,7 @@ export default function ScanResult() {
             leaveNote={scan.userId ? 'You can leave this page. The scan keeps running and will be in your scans when it finishes.' : null}
           >
             {pollError && (
-              <p className="text-xs text-amber-600 mt-2">{pollError}</p>
+              <p className="text-xs text-amber-700 mt-2">{pollError}</p>
             )}
             {stalled && (
               <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-left">
@@ -1207,7 +1210,7 @@ export default function ScanResult() {
                 {['FIX_PURCHASED', 'FIX_GENERATING'].includes(scan.status) && (
                   <FixProgress tier={scan.fixTier} startedAt={scan.updatedAt} progress={scan.fixProgress} round={scan.fixRetryCount}>
                     {pollError && (
-                      <p className="text-xs text-amber-600 mt-3">{pollError}</p>
+                      <p className="text-xs text-amber-700 mt-3">{pollError}</p>
                     )}
                   </FixProgress>
                 )}

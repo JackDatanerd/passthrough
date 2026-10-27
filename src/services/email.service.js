@@ -809,6 +809,23 @@ async function sendFixDelivered(env, supabase, email, name, code, verificationUr
   })
 }
 
+// Credential-only (BADGE tier): nothing was rewritten, so it must not be told "your fixed/rewritten resume is ready".
+async function sendBadgeDelivered(env, supabase, email, name, code, verificationUrl, verified = true, scanId = null) {
+  if (!verified) {
+    return send(env, supabase, email, 'Your formatted resume is ready', 'badge_delivered_report', {
+      NAME:             name,
+      VERIFICATION_URL: verificationUrl,
+      ...resultUrls(env, scanId)
+    })
+  }
+  return send(env, supabase, email, '✓ Your Passthrough Verified credential is ready', 'badge_delivered', {
+    NAME:              name,
+    VERIFICATION_CODE: code,
+    VERIFICATION_URL:  verificationUrl,
+    ...resultUrls(env, scanId)
+  })
+}
+
 async function sendFixDeliveredPlain(env, supabase, email, name, scanId = null) {
   return send(env, supabase, email, '✓ Your fixed resume is ready', 'fix_delivered_plain', {
     NAME:         name,
@@ -1124,7 +1141,7 @@ module.exports = {
   sendWelcome, sendWelcomeOffer, sendVerification, sendPasswordReset,
   sendPasswordChanged, sendEmailChangedOldAddress, sendEmailChangeCompleted, sendEmailChangeConfirmation, sendAccountDeleted, sendAccountLockoutAlert,
   sendNewSignInAlert,
-  sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed, sendOutcomeFollowUp,
+  sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendBadgeDelivered, sendFixDeliveredPlain, sendFixFailed, sendOutcomeFollowUp,
   sendVerificationReported,
   sendPartnerLinksSelfReset, sendPartnerCodeLimitReached, sendPartnerCodeExpiring, sendPartnerTermsAccepted,
   sendPaymentReceipt, sendPaymentReversed,

@@ -301,6 +301,11 @@ export default function useScanForm({ loadRecent = false } = {}) {
       // link itself fail, so only then is URL mode left. A 429 (the daily cap) or a 413 (file too large) says nothing about
       // the link, and flipping out of URL mode there threw away a perfectly good one.
       if (useUrl && err.response?.status === 400 && err.response?.data?.code === 'JD_URL_FAILED') setUseUrl(false)
+      // The daily cap is the server's count, not ours (two tabs, another device): when it refuses, ask for the real figure so the
+      // page shows the used-up state instead of a pill that still says scans are left and a button that can only fail again.
+      if (err.response?.status === 429 && userId) {
+        api.get('/profile').then(res => { if (res.data?.data?.quota) setQuota(res.data.data.quota) }).catch(() => {})
+      }
       setError(msg)
     } finally {
       setLoading(false)

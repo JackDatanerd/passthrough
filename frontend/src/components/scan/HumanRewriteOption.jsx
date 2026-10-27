@@ -18,7 +18,7 @@ import {
 // prices. No countdown, no scarcity, no "most popular", no pre-selected tier, and no claim that the service is live.
 // No discount, promo, welcome or referral code is read or applied here.
 
-const PRIVACY_LINE = 'A human expert will see your resume; your contact details stay hidden while they work.'
+const PRIVACY_LINE = 'When this opens, a human expert will see your resume. Your contact details will be hidden while they work.'
 
 export default function HumanRewriteOption() {
   const user = useContext(AuthContext)?.user || null       // null-safe on purpose: the offer card renders in bare tests too
@@ -62,6 +62,7 @@ export default function HumanRewriteOption() {
     if (busy) return
     if (!tier) { setError('Choose an option first.'); return }
     if (!signedIn && !email.trim()) { setError('Enter the email we should write to.'); return }
+    if (!signedIn && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim())) { setError('Enter a valid email address.'); return }
     if (!signedIn && !consent) { setError('Tick the box to say we may email you when this opens.'); return }
     setBusy(true); setError('')
     try {

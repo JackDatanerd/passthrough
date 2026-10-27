@@ -3831,7 +3831,7 @@ async function generateBadgeRun(env, supabase, scanId) {
 
     if (user) {
       try {
-        await emailService.sendFixDelivered(env, supabase, user.email, user.name, code, verificationUrl, credentialVerified, scanId)
+        await emailService.sendBadgeDelivered(env, supabase, user.email, user.name, code, verificationUrl, credentialVerified, scanId)
       } catch (e) { console.error('Badge email:', e.message) }
     }
     return { success: true }

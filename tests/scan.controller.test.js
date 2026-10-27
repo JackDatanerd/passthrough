@@ -2083,6 +2083,7 @@ describe('generateBadge', () => {
       'services/pdf.service.js': { generateResumePDF: opts.pdfImpl ?? (async () => Buffer.from('fake-pdf')) },
       'services/email.service.js': {
         sendFixDelivered: async (...a) => state.emails.push({ fn: 'sendFixDelivered', a }),
+        sendBadgeDelivered: async (...a) => state.emails.push({ fn: 'sendBadgeDelivered', a }),
         sendFixFailed: async (...a) => state.emails.push({ fn: 'sendFixFailed', a }),
         sendOwnerAlert: async (...a) => state.alerts.push(a),
       },
@@ -2273,10 +2274,10 @@ describe('generateBadge', () => {
     expect(t.state.alerts.length).toBe(1)
   })
 
-  it('sends the delivered-credential email to a logged-in user', async () => {
+  it('sends the credential-only delivery email (not the rewrite one) to a logged-in user', async () => {
     t = setup()
     await t.mod.generateBadge(t.env, t.db, 's1')
-    expect(t.state.emails[0].fn).toBe('sendFixDelivered')
+    expect(t.state.emails[0].fn).toBe('sendBadgeDelivered')
   })
 
   it('an anonymous scan never attempts to send an email', async () => {

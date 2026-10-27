@@ -9,7 +9,11 @@ import Alert from '../ui/Alert'
 import ProgressBar from '../ui/ProgressBar'
 import ResumeFieldsForm from './ResumeFieldsForm'
 import PaperSizeSelect from './PaperSizeSelect'
-import useScanForm, { MAX_RESUME_CHARS, MAX_JD_CHARS } from './useScanForm'
+import useScanForm, { MAX_RESUME_CHARS } from './useScanForm'
+import JdMeter from './JdMeter'
+import JobLinkFeedback from './JobLinkFeedback'
+import { usePricing } from '../../hooks/usePricing'
+import { ANON_SCANS_PER_HOUR, FREE_SCANS_PER_DAY } from '../../lib/scoreThresholds'
 import { formatNumber } from '../../lib/utils'
 
 // The compact scan card (homepage hero, and anywhere a small form is wanted). All of its state and rules live in
@@ -20,9 +24,12 @@ export default function ScanForm() {
     brainDumpText, setBrainDumpText, restored, contactName, setContactName, contactEmail, setContactEmail,
     manualData, setManualData, restoredManual, rescanSource, useImproved, setUseImproved,
     hasSavedProfile, extraProfiles, profileChoice, setProfileChoice, primaryAvailable,
-    useUrl, setUseUrl, jobUrl, setJobUrl, jdText, setJdText, restoredJd, paperSize, setPaperSize,
+    useUrl, setUseUrl, jobUrl, setJobUrl, jobLink, jdText, setJdText, restoredJd, paperSize, setPaperSize,
     loading, uploadPct, cancelUpload, error, quotaText, submitLabel, handleSubmit,
   } = useScanForm()
+  const { pricing } = usePricing('')
+  const anonPerHour = pricing?.anonScansPerHour ?? ANON_SCANS_PER_HOUR
+  const freePerDay = pricing?.freeScansPerDay ?? FREE_SCANS_PER_DAY
 
   return (
     <Form onSubmit={handleSubmit} className="flex flex-col gap-5">
@@ -110,7 +117,7 @@ export default function ScanForm() {
                   detailed background and silent backend truncation. */}
               <span className={`shrink-0 text-xs tabular-nums ${
                 brainDumpText.length >= MAX_RESUME_CHARS ? 'text-red-600 font-medium' :
-                brainDumpText.length >= MAX_RESUME_CHARS * 0.9 ? 'text-amber-600' : 'text-gray-400'
+                brainDumpText.length >= MAX_RESUME_CHARS * 0.9 ? 'text-amber-700' : 'text-gray-500'
               }`}>
                 {formatNumber(brainDumpText.length)} / {formatNumber(MAX_RESUME_CHARS)}
               </span>
@@ -253,12 +260,10 @@ export default function ScanForm() {
               value={jobUrl}
               onChange={e => setJobUrl(e.target.value)}
             />
+            <JobLinkFeedback jobLink={jobLink} onSwitchToPaste={() => setUseUrl(false)} />
             <p className="mt-1 text-xs text-gray-500">
-              LinkedIn URLs cannot be read automatically — paste the text instead.
-              For the most accurate score, use the employer's own posting link
-              rather than a job board aggregator or reposted listing. A very long posting is
-              trimmed to its role and requirements (company intro and benefits go first) —
-              your result shows the text that was scored.
+              For the most accurate score, use the employer's own posting link rather than a job board aggregator or reposted listing.
+              A very long posting is trimmed to its role and requirements (company intro and benefits go first); your result shows the text that was scored.
             </p>
           </div>
         ) : (
@@ -269,19 +274,7 @@ export default function ScanForm() {
               onChange={e => setJdText(e.target.value)}
               rows={7}
             />
-            <div className="mt-1 flex items-start justify-between gap-3">
-              <p className={`text-xs ${jdText.length > MAX_JD_CHARS ? 'text-amber-700' : 'text-gray-500'}`}>
-                {jdText.length > MAX_JD_CHARS
-                  ? `Longer than ${formatNumber(MAX_JD_CHARS)} characters — we'll trim the company intro, benefits and legal text first and keep the role and requirements. Your result shows what was scored.`
-                  : ''}
-              </p>
-              <span className={`shrink-0 text-xs tabular-nums ${
-                jdText.length > MAX_JD_CHARS ? 'text-amber-700 font-medium' :
-                jdText.length >= MAX_JD_CHARS * 0.9 ? 'text-amber-600' : 'text-gray-400'
-              }`}>
-                {formatNumber(jdText.length)} / {formatNumber(MAX_JD_CHARS)}
-              </span>
-            </div>
+            <JdMeter text={jdText} />
           </div>
         )}
       </div>
@@ -310,7 +303,7 @@ export default function ScanForm() {
         </p>
       )}
       <p className="text-xs text-gray-500">
-        {user ? 'Results in ~30 seconds.' : 'No account needed. Results in ~30 seconds. Without an account, your result is kept for 24 hours — create a free account to keep it.'}
+        {user ? 'Results in ~30 seconds.' : <span data-testid="anon-limits">No account needed. Results in ~30 seconds. Without an account: {anonPerHour} free scan{anonPerHour === 1 ? '' : 's'} an hour, result kept for 24 hours. A free account gets {freePerDay} a day, saved for good.</span>}
       </p>
     </Form>
   )

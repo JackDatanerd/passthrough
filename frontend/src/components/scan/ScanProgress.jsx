@@ -25,7 +25,7 @@ export default function ScanProgress({ createdAt, stage, leaveNote, children }) 
       <PassAnim tone="blue" />
       <div className="flex items-baseline justify-between gap-3">
         <h2 className="text-lg font-semibold text-gray-900">Scanning your resume…</h2>
-        <span className="text-xs tabular-nums text-gray-400" data-testid="scan-elapsed">{fmt(elapsed)}</span>
+        <span className="text-xs tabular-nums text-gray-500" data-testid="scan-elapsed">{fmt(elapsed)}</span>
       </div>
       <p className="mt-1 text-sm text-gray-600">Usually about 30 seconds.</p>
       {leaveNote && <p className="mt-1 text-sm text-gray-600">{leaveNote}</p>}

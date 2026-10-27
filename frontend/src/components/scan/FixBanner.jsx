@@ -247,7 +247,9 @@ export default function FixBanner({
       {isBadge && <Alt lead="Want it rewritten too?" tier="FIX" label="Fix & verify" testid="alt-fix" />}
       <Alt lead="Just the rewrite, no Verified?" tier="FIX_PLAIN" label="Fix only" testid="alt-plain" />
 
-      <HumanRewriteOption />   {/* Experts Phase 0A demand test: renders nothing unless the server flag is on */}
+      {/* Experts Phase 0A demand test: renders nothing unless the server flag is on. Not beside the credential-only lead offer: that
+          card says nothing is rewritten, and a person is not asked in the same breath whether they want a human to rewrite it. */}
+      {!isBadge && <HumanRewriteOption />}
 
       {showWriterCompare && (
         <div className="mt-3 flex flex-wrap gap-x-3.5 gap-y-1 border-t border-gray-200 pt-2.5 text-xs text-gray-500" data-testid="writer-compare" aria-label="How it compares">

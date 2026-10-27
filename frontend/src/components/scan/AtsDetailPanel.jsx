@@ -100,7 +100,7 @@ export default function AtsDetailPanel({ scan, detail: detailProp, title = 'Why 
                 ))}
               </ul>
               {unquantified.count > unquantified.examples.length && (
-                <p className="text-xs text-gray-400 mt-1">…and {unquantified.count - unquantified.examples.length} more.</p>
+                <p className="text-xs text-gray-500 mt-1">…and {unquantified.count - unquantified.examples.length} more.</p>
               )}
             </div>
           )}
@@ -150,7 +150,7 @@ export default function AtsDetailPanel({ scan, detail: detailProp, title = 'Why 
       )}
 
       {hasOptionalNudge && (
-        <p className="text-xs text-gray-400 mt-4">
+        <p className="text-xs text-gray-500 mt-4">
           {sections.hasProjects === false && 'Consider adding a Projects section. '}
           {sections.hasCertifications === false && 'Consider adding relevant certifications, if you have any.'}
         </p>

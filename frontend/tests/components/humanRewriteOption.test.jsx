@@ -111,7 +111,7 @@ describe('flag ON', () => {
     expect(dlg).toHaveTextContent(/opening this soon and it is not available yet/i)
     expect(dlg).toHaveTextContent(/free and no payment is taken/i)
     expect(dlg).toHaveTextContent(/prices below are what we expect to charge at launch/i)
-    expect(screen.getByTestId('human-privacy-line')).toHaveTextContent('A human expert will see your resume; your contact details stay hidden while they work.')
+    expect(screen.getByTestId('human-privacy-line')).toHaveTextContent('When this opens, a human expert will see your resume. Your contact details will be hidden while they work.')
     expect(dlg.textContent).not.toMatch(/limited|spots? left|only \d|hurry|countdown|expires|ends (in|soon)|available now|order now|buy now|pay now|checkout|most popular|best value|sold out|now live|discount|promo|code/i)
     expect(screen.queryByTestId('offer-countdown')).toBeNull()
     for (const r of screen.getAllByRole('radio')) expect(r).not.toBeChecked()                // nothing pre-selected

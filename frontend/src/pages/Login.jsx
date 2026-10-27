@@ -3,6 +3,7 @@ import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
 import { useApi } from '../hooks/useApi'
 import { safeNext } from '../lib/session'
+import { scanTarget } from '../lib/anonScans'
 import { getToken } from '../lib/storage'
 import { useAuth } from '../hooks/useAuth'
 import Button from '../components/ui/Button'
@@ -55,7 +56,7 @@ export default function Login() {
         // BUG FIX (Auth round 3, B3): a scan the visitor just claimed wins over `next`, exactly as it
         // does on Register — it is the specific piece of work they did a moment ago. `next` used to
         // win here, so the claimed scan was silently never shown.
-        navigate(claimedScanId ? `/scan/${claimedScanId}` : (next || '/dashboard'))
+        navigate(scanTarget(next, claimedScanId))
         return res
       }, { fallback: 'Login failed.' })
     } catch (_) { /* error already captured by useApi */ }

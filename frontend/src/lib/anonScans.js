@@ -72,3 +72,13 @@ export function removeAnonScanToken(scanId) {
     else localStorage.setItem(KEY, JSON.stringify(remaining))
   } catch (_) {}
 }
+
+// Where a sign-in or sign-up should land. A person who was on a specific scan (the buy gate sends them to
+// /register?next=/scan/<id>...) goes BACK to that scan, tab included, even if they ran several anonymous scans and a different one
+// was claimed last. Only when `next` is not a scan page does the most recently claimed scan win (the work they just did).
+// The anonymous token in the address is no longer needed once the scan is theirs, so it is dropped.
+const SCAN_PATH = /^\/scan\/[0-9a-zA-Z-]{8,}(?:\/(?:why|resume|apply|score))?\/?(?:\?[^#]*)?$/
+export function scanTarget(next, claimedScanId) {
+  if (typeof next === 'string' && SCAN_PATH.test(next)) return next.replace(/([?&])token=[^&]*&?/, '$1').replace(/[?&]$/, '')
+  return claimedScanId ? `/scan/${claimedScanId}` : (next || '/dashboard')
+}

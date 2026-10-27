@@ -485,7 +485,7 @@ describe('generateBadge scores what it delivers', () => {
       'services/design.service.js': { getDesignTokens: () => ({}), detectPaper: () => 'letter' },
       'services/badge.service.js': { generateShortCode: async () => 'C', buildVerificationUrl: () => 'https://x/v/C', hashBytes: async () => 'h' },
       'services/pdf.service.js': { generateResumePDF: async () => Buffer.from('pdf') },
-      'services/email.service.js': { sendFixDelivered: async (...a) => state.emails.push(a), sendOwnerAlert: async () => {}, sendFixFailed: async () => {} },
+      'services/email.service.js': { sendFixDelivered: async (...a) => state.emails.push(a), sendBadgeDelivered: async (...a) => state.emails.push(a), sendOwnerAlert: async () => {}, sendFixFailed: async () => {} },
     })
     return { ...m, state, db, env: { PDF_AI_LAYOUT: '1', RESUMES_BUCKET: { put: async () => {}, delete: async () => {} } } }
   }

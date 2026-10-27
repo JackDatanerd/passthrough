@@ -52,7 +52,7 @@ function BulletRow({ bullet }) {
         <span className="inline-block text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded px-1.5 py-0.5 mr-2 align-middle">
           removed
         </span>
-        <span className="text-gray-400 line-through">{bullet.before}</span>
+        <span className="text-gray-500 line-through">{bullet.before}</span>
       </li>
     )
   }
@@ -67,7 +67,7 @@ function BulletRow({ bullet }) {
   }
   return (
     <li className="text-sm py-1.5" data-testid="bullet-changed">
-      <div className="text-gray-400 line-through mb-0.5">{bullet.before}</div>
+      <div className="text-gray-500 line-through mb-0.5">{bullet.before}</div>
       <div className="text-gray-800">{bullet.after}</div>
     </li>
   )
@@ -78,7 +78,7 @@ function TagList({ items, variant }) {
   const styles = {
     unchanged: 'bg-gray-50 text-gray-600 border-gray-200',
     added:     'bg-amber-50 text-amber-800 border-amber-200',
-    removed:   'bg-gray-50 text-gray-400 border-gray-200 line-through'
+    removed:   'bg-gray-50 text-gray-500 border-gray-200 line-through'
   }
   return (
     <div className="flex flex-wrap gap-1.5">
@@ -115,7 +115,7 @@ function JobBlock({ job }) {
             </div>
             {job.titleChanged ? (
               <div className="text-xs mb-1">
-                <span className="text-gray-400 line-through mr-2">{job.beforeTitle}</span>
+                <span className="text-gray-500 line-through mr-2">{job.beforeTitle}</span>
                 <span className="text-gray-600">{job.afterTitle}</span>
               </div>
             ) : (
@@ -127,14 +127,14 @@ function JobBlock({ job }) {
                 here, on the one screen that exists to show what changed. */}
             {job.datesChanged && (
               <div className="text-xs mb-1">
-                <span className="text-gray-400 line-through mr-2">{job.beforeDates}</span>
+                <span className="text-gray-500 line-through mr-2">{job.beforeDates}</span>
                 <span className="text-gray-600">{job.afterDates}</span>
               </div>
             )}
             {job.locationChanged && (
               <div className="text-xs mb-1" data-testid="location-changed">
                 <span className="text-gray-500 mr-2">Location:</span>
-                <span className="text-gray-400 line-through mr-2">{job.beforeLocation || '(none)'}</span>
+                <span className="text-gray-500 line-through mr-2">{job.beforeLocation || '(none)'}</span>
                 <span className="text-gray-600">{job.afterLocation || '(none)'}</span>
               </div>
             )}
@@ -150,7 +150,7 @@ function ContactRow({ field, before, after }) {
   return (
     <div className="text-xs mb-1">
       <span className="text-gray-500 mr-2">{labels[field] || field}:</span>
-      <span className="text-gray-400 line-through mr-2">{before || '(none)'}</span>
+      <span className="text-gray-500 line-through mr-2">{before || '(none)'}</span>
       <span className="text-gray-700">{after || '(none)'}</span>
     </div>
   )
@@ -188,8 +188,8 @@ function DiffContent({ diff, editedByUser = false }) {
       {diff.summary.changed && (
         <div>
           <h4 className="text-sm font-semibold text-gray-800 mb-2">Summary</h4>
-          <div className="text-sm text-gray-400 line-through mb-1">{diff.summary.before || '(none)'}</div>
-          <div className="text-sm text-gray-800">{diff.summary.after || <span className="text-gray-400 italic">(removed)</span>}</div>
+          <div className="text-sm text-gray-500 line-through mb-1">{diff.summary.before || '(none)'}</div>
+          <div className="text-sm text-gray-800">{diff.summary.after || <span className="text-gray-500 italic">(removed)</span>}</div>
         </div>
       )}
 
@@ -236,7 +236,7 @@ function DiffContent({ diff, editedByUser = false }) {
                 </div>
                 {e.titleChanged ? (
                   <div className="text-xs mb-1">
-                    <span className="text-gray-400 line-through mr-2">{e.beforeTitle}</span>
+                    <span className="text-gray-500 line-through mr-2">{e.beforeTitle}</span>
                     <span className="text-gray-600">{e.afterTitle}</span>
                   </div>
                 ) : (
@@ -244,14 +244,14 @@ function DiffContent({ diff, editedByUser = false }) {
                 )}
                 {e.datesChanged && (
                   <div className="text-xs">
-                    <span className="text-gray-400 line-through mr-2">{e.beforeDates}</span>
+                    <span className="text-gray-500 line-through mr-2">{e.beforeDates}</span>
                     <span className="text-gray-600">{e.afterDates}</span>
                   </div>
                 )}
                 {e.detailsChanged && (
                   <div className="text-xs mt-1" data-testid="education-details-changed">
                     <span className="text-gray-500 mr-2">Details:</span>
-                    <span className="text-gray-400 line-through mr-2">{e.beforeDetails || '(none)'}</span>
+                    <span className="text-gray-500 line-through mr-2">{e.beforeDetails || '(none)'}</span>
                     <span className="text-gray-600">{e.afterDetails || '(none)'}</span>
                   </div>
                 )}
@@ -273,7 +273,7 @@ function DiffContent({ diff, editedByUser = false }) {
                 </div>
                 {p.descChanged && (
                   <div className="text-xs mb-1">
-                    <div className="text-gray-400 line-through">{p.beforeDesc || '(none)'}</div>
+                    <div className="text-gray-500 line-through">{p.beforeDesc || '(none)'}</div>
                     <div className="text-gray-700">{p.afterDesc}</div>
                   </div>
                 )}

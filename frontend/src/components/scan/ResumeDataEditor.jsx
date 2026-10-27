@@ -185,7 +185,7 @@ function ResumeDataSummary({ data }) {
   return (
     <div className="mt-4 text-sm text-gray-700 flex flex-col gap-3">
       <div>
-        <p className="font-medium text-gray-900">{data.name || <span className="italic text-gray-400">No name extracted</span>}</p>
+        <p className="font-medium text-gray-900">{data.name || <span className="italic text-gray-500">No name extracted</span>}</p>
         {contactParts.length > 0 && <p className="text-gray-500 text-xs mt-0.5">{contactParts.join(' · ')}</p>}
       </div>
       {data.experience?.length > 0 && (
@@ -246,7 +246,7 @@ function ResumeDataSummary({ data }) {
         </div>
       )}
       {!data.experience?.length && !data.education?.length && !data.projects?.length && !data.skills?.length && (
-        <p className="text-amber-600 text-xs">
+        <p className="text-amber-700 text-xs">
           We couldn't extract much structure from what you gave us — click "Review & edit" to fill in the gaps.
         </p>
       )}

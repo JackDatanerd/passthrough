@@ -76,7 +76,7 @@ describe('ScanForm — a long pasted job description is trimmed sensibly, not cu
     const box = screen.getByPlaceholderText(/Paste the full job description/)
     await user.click(box)
     await user.paste('requirement '.repeat(500))   // 6000 chars > 5000
-    expect(screen.getByText(/we'll trim the company intro, benefits and legal text first/)).toBeInTheDocument()
+    expect(screen.getByTestId('jd-meter-msg')).toHaveTextContent('We trim the intro and benefits, keep the requirements. Your result shows what was scored.')
     expect(screen.queryByText(/Only the first/)).not.toBeInTheDocument()
   })
 })

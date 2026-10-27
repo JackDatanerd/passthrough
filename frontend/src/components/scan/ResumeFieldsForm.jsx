@@ -138,12 +138,12 @@ function EditSection({ title, items, onAdd, onRemove, renderItem }) {
         <p className="text-sm font-medium text-gray-700">{title}</p>
         <button type="button" onClick={onAdd} className="text-xs text-blue-600 hover:underline">+ Add</button>
       </div>
-      {items.length === 0 && <p className="text-xs text-gray-400 mb-2">Nothing here yet.</p>}
+      {items.length === 0 && <p className="text-xs text-gray-500 mb-2">Nothing here yet.</p>}
       {items.map((item, i) => (
         <div key={i} className="border border-gray-200 rounded-md p-3 mb-2 relative">
           {renderItem(item, i)}
           <button type="button" onClick={() => onRemove(i)}
-            className="absolute top-2 right-2 text-xs text-red-500 hover:underline">Remove</button>
+            className="absolute top-2 right-2 text-xs text-red-600 hover:underline">Remove</button>
         </div>
       ))}
     </div>
