@@ -142,6 +142,7 @@ function scanRowToCamel(row) {
     resumeAtsPath:       row.resume_ats_path,
     resumePdfPath:       row.resume_pdf_path,
     fixGeneratedAt:      row.fix_generated_at,
+    firstDeliveredAt:    row.first_delivered_at,
     coverLetterText:     row.cover_letter_text,
     // Letters written so far / allowed for this scan's tier (migration 0104). The limit is derived, never stored, so changing
     // constants.COVER_LETTER_LIMITS applies to every scan at once.
@@ -199,6 +200,7 @@ const SERVER_ONLY_SCAN_FIELDS = [
   'resumeHashHistory', 'fixPaymentId',
   'anonTokenHash',                                       // capability secret at rest (migration 0045)
   'fixJobLockUntil', 'fixCreditRound', 'upgradeCreditGrantedAt', 'fixErrorRecoveries', 'badgeUpgradedAt',   // job bookkeeping (migrations 0026 / 0057 / 0089)
+  'firstDeliveredAt',                                    // when the FIRST delivery happened — the clock for "did it lead to an interview?" (0120); the browser is sent deliveredAt by /outcomes/pending instead
   'scanSlotSpentAt',                                     // when the free-scan slot was spent — refund bookkeeping (0072)
   'docTemplateVersion',                                  // which document look rules render this scan's files (0101) — the browser never needs it
 ]

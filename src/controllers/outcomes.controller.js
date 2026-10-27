@@ -147,7 +147,7 @@ async function submitOutcome(c) {
   if ((await reversedPayments(supabase, [scan.fix_payment_id])).size) return c.json({ success: false, message: 'This purchase was refunded or is under dispute, so there is nothing to report on.' }, 409)
 
   const { data: existing, error: exErr } = await supabase.from('scan_outcomes')
-    .select('story_status, story_display_name, story_quote, story_text, story_show_credential').eq('scan_id', v.scanId).maybeSingle()
+    .select('outcome, story_status, story_display_name, story_quote, story_text, story_show_credential').eq('scan_id', v.scanId).maybeSingle()
   if (exErr) throw exErr
 
   const now = new Date().toISOString()
@@ -160,7 +160,10 @@ async function submitOutcome(c) {
     interview_after_days: v.outcome === OUTCOMES.INTERVIEW ? (v.interviewAfterDays ?? null) : null,
     updated_at: now,
   }
-  if (!existing) row.answered_at = now
+  // answered_at is the date an answer counts from (the hot-fields windows in public_hot_categories read it). A first answer stamps
+  // it; so does an answer that BECOMES "interview": someone who said "not yet" and got the call two months later is reporting an
+  // interview today, and counting it at their first answer's date would put it outside every window, so it would never show.
+  if (!existing || (existing.outcome !== OUTCOMES.INTERVIEW && v.outcome === OUTCOMES.INTERVIEW)) row.answered_at = now
 
   // story: undefined keeps whatever is there; changing the answer away from "interview" ends a story
   // (the database refuses a story without an interview behind it, and it would no longer be true).

@@ -160,6 +160,19 @@ describe('submitOutcome', () => {
     const { c } = outcomesSetup(q => (q.table === 'scans' ? { data: deliveredScan({ fix_purchased: false }), error: null } : undefined))
     expect((await c.submitOutcome(ctxFor({ body: { scanId: SCAN, outcome: 'INTERVIEW' } }))).status).toBe(409)
   })
+  it('an answer that becomes "interview" counts from today (so the hot-fields window sees it); other changes keep the first date', async () => {
+    const upserts = []
+    const mk = (existing) => outcomesSetup(q => {
+      if (q.table === 'scans') return { data: deliveredScan(), error: null }
+      if (q.table === 'scan_outcomes' && q.op === 'select') return { data: existing, error: null }
+      if (q.table === 'scan_outcomes' && q.op === 'upsert') { upserts.push(q.values); return { data: null, error: null } }
+    }).c
+    await mk({ outcome: 'NO_INTERVIEW', story_status: 'NONE' }).submitOutcome(ctxFor({ body: { scanId: SCAN, outcome: 'INTERVIEW' } }))
+    await mk({ outcome: 'STILL_APPLYING', story_status: 'NONE' }).submitOutcome(ctxFor({ body: { scanId: SCAN, outcome: 'NO_INTERVIEW' } }))
+    await mk({ outcome: 'INTERVIEW', story_status: 'NONE' }).submitOutcome(ctxFor({ body: { scanId: SCAN, outcome: 'INTERVIEW', interviewCount: 2 } }))
+    await mk(null).submitOutcome(ctxFor({ body: { scanId: SCAN, outcome: 'NO_INTERVIEW' } }))
+    expect(upserts.map(u => 'answered_at' in u)).toEqual([true, false, false, true])
+  })
   it('409s a refunded or disputed purchase (and a delivery whose rewrite failed)', async () => {
     const { c } = outcomesSetup(q => {
       if (q.table === 'scans') return { data: deliveredScan({ fix_payment_id: 'p1' }), error: null }

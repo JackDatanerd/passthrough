@@ -255,8 +255,9 @@ describe('interview follow-up unsubscribe (infra round 6)', () => {
   it('the sweep hands the unsubscribe URL to the email', async () => {
     const sends = []
     const NOW = Date.parse('2026-10-10T12:00:00Z')
-    const row = { id: 's1', user_id: 'u1', outcome_prompt_attempts: 0, users: { email: 'a@x.y', name: 'Ann', status: 'ACTIVE', email_verified: true, deleted_at: null, notify_outcome_followup: true } }
+    const row = { id: 's1', user_id: 'u1', fix_purchased: true, fix_payment_id: null, rewrite_failed: false, first_delivered_at: '2026-08-15T00:00:00Z', outcome_prompted_at: null, outcome_prompt_attempts: 0, users: { email: 'a@x.y', name: 'Ann', status: 'ACTIVE', email_verified: true, deleted_at: null, notify_outcome_followup: true } }
     const db = createFakeSupabase(q => {
+      if (q.table === 'scans' && q.op === 'select' && q.cols && q.cols.startsWith('user_id')) return { data: [], error: null }   // nobody mailed recently
       if (q.table === 'scans' && q.op === 'select') return { data: [row], error: null }
       if (q.table === 'scan_outcomes') return { data: [], error: null }
       if (q.table === 'scans' && q.op === 'update' && q.patch.outcome_prompted_at) return { data: [{ id: 's1' }], error: null }
