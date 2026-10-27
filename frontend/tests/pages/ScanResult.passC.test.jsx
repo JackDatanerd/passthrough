@@ -80,6 +80,15 @@ describe('ScanResult — delivered resume', () => {
     expect(await screen.findByTestId('badge-below-threshold')).toHaveTextContent(/free fix credit/)
     expect(screen.queryByRole('button', { name: /Try Again/ })).not.toBeInTheDocument()
   })
+  it('warns that a better retry clears the cover letter when there is one to lose', async () => {
+    setup(delivered({ fixAtsScore: 70, fixRetryCount: 0, coverLetterText: 'Dear Hiring Manager, ...' }))
+    expect(await screen.findByTestId('retry-letter-warning')).toHaveTextContent(/cover letter/)
+  })
+  it('says nothing about a cover letter on the retry when there is none', async () => {
+    setup(delivered({ fixAtsScore: 70, fixRetryCount: 0, coverLetterText: null }))
+    expect(await screen.findByRole('button', { name: /Try Again/ })).toBeInTheDocument()
+    expect(screen.queryByTestId('retry-letter-warning')).not.toBeInTheDocument()
+  })
   it('a Fix below the bar still offers the free retry', async () => {
     setup(delivered({ fixAtsScore: 70, fixRetryCount: 0 }))
     expect(await screen.findByRole('button', { name: /Try Again/ })).toBeInTheDocument()

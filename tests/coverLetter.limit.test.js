@@ -22,10 +22,10 @@ function ctx(over = {}) {
 let t
 afterEach(() => t?.restore())
 
-function setup({ tier = 'FIX', claim = 1, claimError = null, letter, lostRace = false, throwModel = false } = {}) {
-  const state = { rpcs: [], modelCalls: 0 }
+function setup({ status = 'FIX_DELIVERED', statusAfterFirstRead = null, tier = 'FIX', claim = 1, claimError = null, letter, lostRace = false, throwModel = false } = {}) {
+  const state = { rpcs: [], modelCalls: 0, reads: 0 }
   const scan = {
-    id: 's1', user_id: 'u1', status: 'FIX_DELIVERED', fix_purchased: true, fix_tier: tier, fix_retry_count: 0,
+    id: 's1', user_id: 'u1', status, fix_purchased: true, fix_tier: tier, fix_retry_count: 0,
     job_description_text: 'JD ' + 'x'.repeat(60), rewritten_resume_data: { name: 'Jane' },
   }
   const db = createFakeSupabase(q => {
@@ -34,7 +34,11 @@ function setup({ tier = 'FIX', claim = 1, claimError = null, letter, lostRace = 
       if (q.name === 'claim_cover_letter_slot') return claimError ? { data: null, error: claimError } : { data: claim, error: null }
       return { data: null, error: null }
     }
-    if (q.table === 'scans' && q.op === 'select') return { data: scan, error: null }
+    if (q.table === 'scans' && q.op === 'select') {
+      const seen = { ...scan }
+      if (statusAfterFirstRead && state.reads++ >= 1) seen.status = statusAfterFirstRead
+      return { data: seen, error: null }
+    }
     if (q.table === 'scans' && q.op === 'update') return { data: lostRace ? [] : [{ id: 's1' }], error: null }
   })
   const { mod, restore } = loadWithStubs('controllers/scan.controller.js', {
@@ -88,6 +92,14 @@ describe('generateCoverLetter — the limit', () => {
     expect(t.state.rpcs.some(r => r.name === 'release_cover_letter_slot')).toBe(false)
   })
 
+  it('says the resume is being rebuilt, not that the limit is used up, when the slot was refused because a retry started after the page was read', async () => {
+    t = setup({ statusAfterFirstRead: 'FIX_GENERATING', claim: -1 })
+    const res = await t.mod.generateCoverLetter(ctx())
+    expect(res.status).toBe(409)
+    expect(res.body.code).toBe('RESUME_BUSY')
+    expect(res.body.message).not.toMatch(/used all/)
+    expect(t.state.modelCalls).toBe(0)
+  })
   it('refuses with 409 and never calls the model when no slot is left', async () => {
     t = setup({ tier: 'FIX_PLAIN', claim: -1 })
     const res = await t.mod.generateCoverLetter(ctx())

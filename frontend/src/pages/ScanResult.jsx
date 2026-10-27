@@ -1328,6 +1328,11 @@ export default function ScanResult() {
                         <Button onClick={handleRetryFix} loading={retryLoading} variant="secondary">
                           Try Again — Free ({MAX_FIX_RETRIES - scan.fixRetryCount} left)
                         </Button>
+                        {scan.coverLetterText && (
+                          <p className="mt-1.5 text-xs text-amber-800" data-testid="retry-letter-warning">
+                            If Try Again finds a better version, your cover letter (written from this one) is cleared. Copy it first if you want to keep it.
+                          </p>
+                        )}
                       </div>
                     ) : (
                       <p className="text-sm text-amber-800 mb-3">

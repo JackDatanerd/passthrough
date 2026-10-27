@@ -1497,6 +1497,18 @@ describe('generateFix', () => {
     expect(t.rewriteCalls[0][1]).toEqual({ name: 'Previously Rewritten' })
   })
 
+  it('a retry that delivers a different resume clears the cover letter written from the old one; a first delivery has none to clear', async () => {
+    const retry = { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Original' }, rewritten_resume_data: { name: 'Previously Rewritten' }, fix_retry_count: 1, fix_ats_score: 60, fix_tier: 'FIX', verification_code: 'EXIST01', verification_url: 'https://usepassthrough.com/v/EXIST01', cover_letter_text: 'Dear Hiring Manager, ...' }
+    t = setup({ scan: retry })
+    await t.mod.generateFix(t.env, t.db, 's1')
+    const delivered = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
+    expect(delivered).toMatchObject({ rewritten_resume_data: { name: 'Jane Rewritten' }, cover_letter_text: null })
+    t.restore()
+    t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Original' }, fix_retry_count: 0, fix_tier: 'FIX' } })
+    await t.mod.generateFix(t.env, t.db, 's1')
+    expect(t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')).not.toHaveProperty('cover_letter_text')
+  })
+
   // SECTION 7 AUDIT FIX (bug, fresh pass): a retry round can change fix_ats_score,
   // resume_hash and resume_pdf_hash on an EXISTING verification_code — a previously
   // cached badge could keep serving the stale score/status. purgeBadgeCache was only

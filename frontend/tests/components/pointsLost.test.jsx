@@ -35,8 +35,28 @@ describe('computePointsLost', () => {
   it.each([
     ['no weights from the server', { atsDetail: { keywords: {} } }],
     ['no score yet', { atsScore: null }],
-    ['every category perfect, nothing to blame', { keywordScore: 100, formatScore: 100, sectionsScore: 100, contentScore: 100 }],
+    ['a rules-only score with every category perfect (nothing to blame)', { atsScore: 99, scoredWithoutAi: true, keywordScore: 100, formatScore: 100, sectionsScore: 100, contentScore: 100 }],
   ])('returns null for %s', (_, over) => { expect(computePointsLost(scan(over))).toBeNull() })
+  it('blames the AI review, not a perfect category, when the rules are all full marks and the blended score is still low', () => {
+    const r = computePointsLost(scan({ atsScore: 88, keywordScore: 100, formatScore: 100, sectionsScore: 100, contentScore: 100,
+      atsDetail: { ...scan().atsDetail, aiMissingKeywords: ['kubernetes', 'terraform'] } }))
+    expect(r.gap).toBe(12)
+    expect(r.items).toHaveLength(1)
+    expect(r.items[0]).toMatchObject({ key: 'ai', points: 12 })
+    expect(r.items[0].reason).toContain('kubernetes')
+  })
+  it('gives the rules only their 70% share of the gap and the AI review the rest', () => {
+    // rules 80 (every category 80), AI 40 -> blended 0.7 x 80 + 0.3 x 40 = 68, gap 32 = 14 (rules) + 18 (AI)
+    const r = computePointsLost(scan({ atsScore: 68, keywordScore: 80, formatScore: 80, sectionsScore: 80, contentScore: 80 }))
+    expect(r.gap).toBe(32)
+    expect(r.items.find(i => i.key === 'ai').points).toBe(18)
+    expect(r.items.filter(i => i.key !== 'ai').reduce((a, i) => a + i.points, 0)).toBe(14)
+  })
+  it('a rules-only (provisional) score puts the whole gap on the rule categories', () => {
+    const r = computePointsLost(scan({ atsScore: 68, scoredWithoutAi: true, keywordScore: 68, formatScore: 68, sectionsScore: 68, contentScore: 68 }))
+    expect(r.items.find(i => i.key === 'ai')).toBeUndefined()
+    expect(r.items.reduce((a, i) => a + i.points, 0)).toBe(32)
+  })
   it('a perfect score has no gap and no items', () => { expect(computePointsLost(scan({ atsScore: 100 }))).toEqual({ gap: 0, items: [] }) })
   it('clamps wild category scores instead of producing negative points', () => {
     const r = computePointsLost(scan({ keywordScore: 400, formatScore: -50 }))

@@ -22,6 +22,8 @@ export const ATS_BADGE_THRESHOLD = 80
 // Mirrors constants.js's MAX_FIX_RETRIES — same duplication risk as the
 // score thresholds above; used by ScanResult.jsx's retry-count display.
 export const MAX_FIX_RETRIES = 2
+// Mirrors constants.js's ATS_RULE_WEIGHT: the share of the final score that comes from the four rule categories (the AI review is the rest).
+export const ATS_RULE_WEIGHT = 0.70
 // Mirror constants.js's FREE_SCANS_PER_DAY / ANON_SCANS_PER_HOUR. Only the fallback for the Pricing
 // page's free-tier copy: /api/pricing returns both live (Payments & Pricing round 3, G2).
 export const FREE_SCANS_PER_DAY  = 3

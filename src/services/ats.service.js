@@ -196,6 +196,13 @@ function canonicalCompounds(text) {
   return t
 }
 
+// Words that put "Go" in language position. Built letter-by-letter so the cue may be capitalised ("Strong Go",
+// "Experience with Go") while Go itself stays case-sensitive ("go" the verb is never the language).
+const GO_CUES = ['in', 'with', 'using', 'use', 'uses', 'used', 'of', 'and', 'or', 'plus', 'strong', 'proficient', 'proficiency', 'fluent',
+  'experience', 'expertise', 'knowledge', 'skills', 'skill', 'years', 'year', 'write', 'writing', 'written', 'build', 'building', 'built',
+  'develop', 'developing', 'developed', 'engineer', 'engineering', 'backend', 'back-end']
+const caseless = w => [...w].map(ch => (/[a-z]/.test(ch) ? `[${ch.toUpperCase()}${ch}]` : ch)).join('')
+const GO_AFTER_CUE = new RegExp(String.raw`(?<=\b(?:${GO_CUES.map(caseless).join('|')})[ \t]+)Go\b(?![ \t]*[-\u2013]?[ \t]*(?:to|getter|live|forward|ahead|through|over|beyond|above|between|ape|big|lean)\b)`, 'g')
 function normalizeTechTerms(text) {
   return canonicalCompounds(toUsSpelling(decodeHtmlEntities(String(text ?? ''))))
     // Aliases people use interchangeably (round 5, G1): normalised to ONE spelling on both sides, so a resume saying
@@ -232,6 +239,11 @@ function normalizeTechTerms(text) {
     // of skills" — so "Go to market", "R&D", "Plan C" and "Jane R. Doe" are
     // not misread as programming languages.
     .replace(new RegExp(LIST_PREV + String.raw`Go(?=[ \t]*(?:[,;:/)|]|$)|[ \t]+(?:and|or|&)[ \t])`, 'gm'), '$1$2 golang ')
+    // The list rule above only sees "Go" at the start of a line or after punctuation, so "Experience with Go and Python",
+    // "We use Go", "5 years of Go" and "Go developer" never named the language (a two-letter token is dropped as noise).
+    // Case-sensitive on purpose ("go" the verb is lower-case) and guarded against "Go to market" / "Go-getter".
+    .replace(GO_AFTER_CUE, ' golang ')
+    .replace(/\bGo(?=[ \t]+(?:developers?|engineers?|programmers?|programming|language|lang|microservices?|services?|backend|codebase|modules?|routines?|concurrency|toolchain|runtime|stack|experience|expertise|proficiency|skills?)\b)/g, ' golang ')
     // BUG FIX (Scan/ATS section audit): unlike the Go pattern immediately
     // above (whose lookahead explicitly includes `|$`), this lookahead only
     // ever matched a following delimiter — so "C" as the LAST item in a list
@@ -1330,7 +1342,7 @@ const SENIORITY_PATTERNS = [
 // somebody ELSE's level, not the role's own.
 // SCAN/ATS (fix round): "led by our CEO", "founded by the former CTO", "under the Chief Financial Officer" name
 // someone else's level too.
-const OTHER_PERSON_CLAUSE = /\b(?:report(?:s|ing)?(?:\s+directly)?\s+to|(?:work(?:s|ing)?|partner(?:s|ing)?|collaborat\w+)(?:\s+closely)?\s+with|(?:led|founded|run|headed|owned|backed|chaired)\s+by|under\s+(?:the\s+)?(?=(?:vp|vice president|c[tefmo]o|chief|director|head of)\b))\b[^.;\n]{0,60}/g
+const OTHER_PERSON_CLAUSE = /\b(?:report(?:s|ing)?(?:\s+directly)?\s+to|(?:assistant|secretary|advis[eo]r|aide|liaison)\s+to\s+(?:the\s+)?(?=(?:vp|vice president|c[tefmo]o|chief|director|head of)\b)|(?:work(?:s|ing)?|partner(?:s|ing)?|collaborat\w+)(?:\s+closely)?\s+with|(?:led|founded|run|headed|owned|backed|chaired)\s+by|under\s+(?:the\s+)?(?=(?:vp|vice president|c[tefmo]o|chief|director|head of)\b))\b[^.;\n]{0,60}/g
 // Years-of-experience requirement, read only where it is plainly a requirement:
 // "N years" (or "N-M years", "N+ years") followed by experience wording, or
 // introduced by minimum / at least / requires. The first "N years" anywhere used

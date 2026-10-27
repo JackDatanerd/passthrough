@@ -177,3 +177,28 @@ describe('describeWeakAreas', () => {
     expect(notes.join(' ')).toMatch(/kubernetes|terraform/)
   })
 })
+
+describe('Go the language, and seniority of an assistant to an executive (scan/ATS fresh pass)', () => {
+  const ats = require('../src/services/ats.service')
+  it.each([
+    'Experience with Go and Python', 'We use Go, Rust', 'Strong Go', '5 years of Go', 'Go developer', 'Proficiency in Go.', 'Python and Go',
+  ])('reads "Go" in "%s" as the language', phrase => {
+    expect(ats.normalizeTechTerms(phrase)).toMatch(/golang/)
+  })
+  it.each(['Go-to-market strategy', 'Go to market', 'Go getter', 'Ready to Go Big', 'we go live in May', 'Go forward with the plan'])('leaves "%s" alone', phrase => {
+    expect(ats.normalizeTechTerms(phrase)).not.toMatch(/golang/)
+  })
+  it('puts Go in the job keywords, and matches it to a resume that says Golang', () => {
+    const jd = 'Backend Developer\nRequirements\n- Experience with Go and Python'
+    expect([...ats.extractWeightedKeywords(jd).keys()]).toContain('golang')
+    const r = ats.scoreResume('Jo\njo@x.com\nSKILLS\nGolang, Python\nEXPERIENCE\n- Built services in Go for 3 years', jd)
+    expect(r.detail.keywords.matched).toContain('Go')
+    expect(r.detail.keywords.missing).not.toContain('Go')
+  })
+  it('does not read "assistant to the CEO" as an executive role', () => {
+    expect(ats.detectSeniority('Executive Assistant to the CEO\nSupport the CEO daily.')).toBe('mid')
+    expect(ats.detectSeniority('Assistant to the VP of Sales')).toBe('mid')
+    expect(ats.detectSeniority('VP Engineering')).toBe('executive')
+    expect(ats.detectSeniority('Chief of Staff')).toBe('executive')
+  })
+})

@@ -1550,6 +1550,11 @@ async function generateCoverLetter(ctx) {
   const letterLimit = c.coverLetterLimitFor(scan.fixTier)
   const slot = await claimCoverLetterSlot(supabase, scan, user.id, letterLimit)
   if (!slot.ok) {
+    // claim_cover_letter_slot answers -1 both for "all letters used" and for "not FIX_DELIVERED right now" (a retry or an
+    // edit is rebuilding the resume): only the first is a limit.
+    const { data: now } = await supabase.from('scans').select('status, cover_letter_count').eq('id', scan.id).maybeSingle()
+    if (now && now.status !== 'FIX_DELIVERED')
+      return ctx.json({ success: false, code: 'RESUME_BUSY', message: 'Your resume is being rebuilt right now. Try the letter again once it finishes.' }, 409)
     return ctx.json({ success: false, code: 'COVER_LETTER_LIMIT', coverLetterLimit: letterLimit,
       message: `You've used all ${letterLimit} cover letters that come with this resume. You can still edit and download the one you have.` }, 409)
   }
@@ -3550,6 +3555,7 @@ async function generateFixRun(env, supabase, scanId, leaseToken = null) {
     // true, and regeneratePdf can backfill a matching PDF. Carry the old PDF forward only
     // when the retry kept the previous round's content (bestDocxBytes null).
     const carriedForward = isRetry && !bestDocxBytes
+    const resumeChanged = JSON.stringify(finalData) !== JSON.stringify(scan.rewrittenResumeData || scan.userEditedResumeData || scan.originalResumeData || null)
     const keepPriorPdf   = !pdfKey && carriedForward
     const finalPdfKey  = pdfKey || (keepPriorPdf ? scan.resumePdfPath : null) || null
     const finalPdfHash = pdfKey ? pdfHash : (keepPriorPdf ? (scan.resumePdfHash || null) : null)
@@ -3589,6 +3595,9 @@ async function generateFixRun(env, supabase, scanId, leaseToken = null) {
       // An upgrade run ends here: the marker is cleared and the Badge-era edit (now folded into original_resume_data)
       // is not left behind to be mistaken for an edit of THIS delivery.
       ...(upgradeRound ? { badge_upgraded_at: null, user_edited_resume_data: null } : {}),
+      // A letter is written from the resume it sits beside (editing the delivered resume clears it for the same reason).
+      // A retry or upgrade that delivers a different resume would otherwise leave a letter describing bullets that are gone.
+      ...((isRetry || upgradeRound) && resumeChanged ? { cover_letter_text: null } : {}),
       status: 'FIX_DELIVERED'
     }).eq('id', scanId).eq('status', 'FIX_GENERATING').select('id')
     // This write was never checked: a failed update used to fall straight
