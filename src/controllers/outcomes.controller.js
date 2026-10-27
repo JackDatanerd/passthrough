@@ -49,10 +49,13 @@ async function reversedPayments(supabase, paymentIds) {
 }
 
 // GET /api/outcomes/pending
-//   pending   up to 3 fixes to ask about now (see evaluateAsk): delivered 14..120 days ago and never answered, or a "still
-//             applying" answer that is 30+ days old
-//   answers   the person's recent answers, so any of them can be changed (My Story shows them)
-//   stories   the state of the stories they have shared
+//   pending     up to 3 fixes to ask about now (see evaluateAsk): delivered 14..120 days ago and never answered, a "still applying"
+//               that is 30+ days old, or a "not yet" that is 30+ days old and was never revisited
+//   reportable  delivered fixes with no answer that are not being asked about right now (too early / past the limit), so My Story
+//               can let the person report an interview on them at any time
+//   answers     the person's recent answers, so any of them can be changed (My Story shows them); `locked` when the purchase was
+//               refunded or disputed
+//   stories     the state of the stories they have shared
 async function pendingOutcomes(c) {
   const user = c.get('user')
   const supabase = getSupabase(c.env)
@@ -60,51 +63,60 @@ async function pendingOutcomes(c) {
 
   const { data: outs, error: oErr } = await supabase.from('scan_outcomes')
     .select('scan_id, outcome, interview_count, interview_after_days, story_status, story_display_name, story_quote, answered_at, updated_at, ' +
-      'scans(job_title, role_category, fix_tier, first_delivered_at, fix_generated_at)')
+      'scans(job_title, role_category, fix_tier, fix_payment_id, first_delivered_at, fix_generated_at)')
     .eq('user_id', user.id).order('updated_at', { ascending: false }).limit(ANSWERS_READ)
   if (oErr) throw oErr
   const outcomes = new Map((outs || []).map(r => [r.scan_id, r]))
 
-  // Read the person's delivered fixes newest first, a page at a time, until three are askable: an answered scan must never push an
-  // unanswered one out of view (it used to: the newest 25 were read and THEN the answered ones dropped).
+  // Read the person's delivered fixes newest first, a page at a time, until we have what we need: up to three to ask about now,
+  // and up to OUTCOME_REPORTABLE_SHOWN to offer "report an interview" on (delivered, live, not answered, and not being asked right
+  // now — too early, or past the age limit). An answered scan must never push an unanswered one out of view.
   const pending = []
-  const oldest = iso(nowMs - constants.OUTCOME_REASK_MAX_AGE_DAYS * DAY_MS)
-  const newest = iso(nowMs - constants.OUTCOME_DASHBOARD_AFTER_DAYS * DAY_MS)
-  for (let page = 0; page < PENDING_MAX_PAGES && pending.length < PENDING_SHOWN; page++) {
+  const reportable = []
+  for (let page = 0; page < PENDING_MAX_PAGES && (pending.length < PENDING_SHOWN || reportable.length < constants.OUTCOME_REPORTABLE_SHOWN); page++) {
     const { data: scans, error } = await supabase.from('scans')
       .select('id, user_id, job_title, role_category, fix_tier, ats_score, fix_ats_score, fix_purchased, fix_payment_id, rewrite_failed, first_delivered_at, fix_generated_at')
-      .eq('user_id', user.id).eq('fix_purchased', true)
-      .not('first_delivered_at', 'is', null).lte('first_delivered_at', newest).gte('first_delivered_at', oldest)
+      .eq('user_id', user.id).eq('fix_purchased', true).not('first_delivered_at', 'is', null)
       .order('first_delivered_at', { ascending: false }).order('id', { ascending: true })
       .range(page * PENDING_PAGE, page * PENDING_PAGE + PENDING_PAGE - 1)
     if (error) throw error
     const rows = scans || []
-    const askable = rows.filter(s => evaluateAsk({ scan: s, outcome: outcomes.get(s.id) || null }, nowMs).dashboard.ask)
-    const reversed = await reversedPayments(supabase, askable.map(s => s.fix_payment_id))
-    for (const s of askable) {
-      if (reversed.has(s.fix_payment_id) || pending.length >= PENDING_SHOWN) continue
-      pending.push({
+    const cand = []
+    for (const s of rows) {
+      const outcome = outcomes.get(s.id) || null
+      const v = evaluateAsk({ scan: s, outcome }, nowMs).dashboard
+      if (v.ask) cand.push({ s, kind: 'ask', outcome })
+      else if (!outcome && (v.reason === 'TOO_EARLY' || v.reason === 'TOO_OLD')) cand.push({ s, kind: 'report', outcome })
+    }
+    const reversed = await reversedPayments(supabase, cand.map(x => x.s.fix_payment_id))
+    for (const { s, kind, outcome } of cand) {
+      if (reversed.has(s.fix_payment_id)) continue
+      const item = {
         scanId: s.id, jobTitle: s.job_title || null, roleCategory: s.role_category || null, fixTier: s.fix_tier || null,
-        scoreBefore: s.ats_score ?? null, scoreAfter: s.fix_ats_score ?? null,
-        deliveredAt: s.first_delivered_at || s.fix_generated_at, reask: outcomes.has(s.id),
-      })
+        scoreBefore: s.ats_score ?? null, scoreAfter: s.fix_ats_score ?? null, deliveredAt: s.first_delivered_at,
+      }
+      if (kind === 'ask') { if (pending.length < PENDING_SHOWN) pending.push({ ...item, reask: !!outcome, previous: outcome ? outcome.outcome : null }) }
+      else if (reportable.length < constants.OUTCOME_REPORTABLE_SHOWN) reportable.push(item)
     }
     if (rows.length < PENDING_PAGE) break
   }
 
   const asked = new Set(pending.map(p => p.scanId))
-  const answers = (outs || []).filter(r => r.scans && !asked.has(r.scan_id)).slice(0, ANSWERS_SHOWN).map(r => ({
+  const shown = (outs || []).filter(r => r.scans && !asked.has(r.scan_id)).slice(0, ANSWERS_SHOWN)
+  // A refunded or disputed purchase's answer can be read but no longer changed (submitOutcome refuses it).
+  const lockedPayments = await reversedPayments(supabase, shown.map(r => r.scans.fix_payment_id))
+  const answers = shown.map(r => ({
     scanId: r.scan_id, outcome: r.outcome, interviewCount: r.interview_count ?? null, interviewAfterDays: r.interview_after_days ?? null,
     storyStatus: r.story_status || STORY_STATUS.NONE, jobTitle: r.scans.job_title || null, roleCategory: r.scans.role_category || null,
     fixTier: r.scans.fix_tier || null, deliveredAt: r.scans.first_delivered_at || r.scans.fix_generated_at || null,
-    answeredAt: r.answered_at, updatedAt: r.updated_at,
+    answeredAt: r.answered_at, updatedAt: r.updated_at, locked: lockedPayments.has(r.scans.fix_payment_id),
   }))
 
   const stories = (outs || []).filter(r => r.story_status && r.story_status !== STORY_STATUS.NONE)
     .sort((a, b) => String(b.answered_at).localeCompare(String(a.answered_at))).slice(0, 10)
 
   return c.json({ success: true, data: {
-    pending, answers,
+    pending, answers, reportable,
     stories: stories.map(r => ({ scanId: r.scan_id, status: r.story_status, displayName: r.story_display_name, quote: r.story_quote, answeredAt: r.answered_at })),
   } })
 }
@@ -147,17 +159,27 @@ async function submitOutcome(c) {
   if ((await reversedPayments(supabase, [scan.fix_payment_id])).size) return c.json({ success: false, message: 'This purchase was refunded or is under dispute, so there is nothing to report on.' }, 409)
 
   const { data: existing, error: exErr } = await supabase.from('scan_outcomes')
-    .select('outcome, story_status, story_display_name, story_quote, story_text, story_show_credential').eq('scan_id', v.scanId).maybeSingle()
+    .select('outcome, interview_count, interview_after_days, story_status, story_display_name, story_quote, story_text, story_show_credential').eq('scan_id', v.scanId).maybeSingle()
   if (exErr) throw exErr
 
   const now = new Date().toISOString()
+  // Interview details a re-answer does not mention are kept (tapping "yes" again used to wipe them), never carried to another answer.
+  const wasInterview = !!existing && existing.outcome === OUTCOMES.INTERVIEW
+  const interviewCount = v.outcome !== OUTCOMES.INTERVIEW ? null : (v.interviewCount !== undefined ? v.interviewCount : (wasInterview ? existing.interview_count : null)) ?? null
+  const interviewAfterDays = v.outcome !== OUTCOMES.INTERVIEW ? null : (v.interviewAfterDays !== undefined ? v.interviewAfterDays : (wasInterview ? existing.interview_after_days : null)) ?? null
+  // The public story shows these two numbers, so once it is published they are part of what an admin approved.
+  const publishedNumbersChange = wasInterview && existing.story_status === STORY_STATUS.APPROVED
+    && v.outcome === OUTCOMES.INTERVIEW && (interviewCount !== (existing.interview_count ?? null) || interviewAfterDays !== (existing.interview_after_days ?? null))
+  if (publishedNumbersChange && v.story === undefined) {
+    return c.json({ success: false, message: 'Your story is published with these numbers. Edit the story to change them — it goes back for review.' }, 409)
+  }
   const row = {
     scan_id: v.scanId,
     user_id: user.id,
     role_category: scan.role_category || null,
     outcome: v.outcome,
-    interview_count: v.outcome === OUTCOMES.INTERVIEW ? (v.interviewCount ?? null) : null,
-    interview_after_days: v.outcome === OUTCOMES.INTERVIEW ? (v.interviewAfterDays ?? null) : null,
+    interview_count: interviewCount,
+    interview_after_days: interviewAfterDays,
     updated_at: now,
   }
   // answered_at is the date an answer counts from (the hot-fields windows in public_hot_categories read it). A first answer stamps
@@ -170,6 +192,8 @@ async function submitOutcome(c) {
   let storyPatch = {}
   if (v.story !== undefined) storyPatch = nextStoryState(existing, v.story)
   else if (v.outcome !== OUTCOMES.INTERVIEW && existing && existing.story_status && existing.story_status !== STORY_STATUS.NONE) storyPatch = nextStoryState(existing, null)
+  // Same words but different numbers is still a change to what was approved: back to review.
+  if (publishedNumbersChange && storyPatch.story_status === STORY_STATUS.APPROVED) storyPatch = { ...storyPatch, story_status: STORY_STATUS.PENDING, story_moderated_at: null, story_moderated_by: null }
   Object.assign(row, storyPatch)
 
   const { error: upErr } = await supabase.from('scan_outcomes').upsert(row, { onConflict: 'scan_id' })

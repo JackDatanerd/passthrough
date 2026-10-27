@@ -15,7 +15,7 @@ module.exports = {
   // migration ends by writing its number to system_state.schema_version (see 0059); the Worker
   // compares the two (lib/health.js). Bump it in the same commit as the migration —
   // the schema-version test in tests/crossCutting.round1.test.js fails when the newest migration and this value disagree.
-  EXPECTED_SCHEMA_VERSION: 121,
+  EXPECTED_SCHEMA_VERSION: 122,
 
   // Standard (post-promo) prices — these are what priceForTier() falls back
   // to once PROMO_ENDS_AT passes, and what the frontend shows crossed-out as
@@ -195,6 +195,11 @@ module.exports = {
   // "Still applying" is an honest "ask me later": the dashboard asks again this long after that answer was given, for up to a
   // year after the first delivery. (It is never emailed a second time.)
   OUTCOME_REASK_AFTER_DAYS: 30,
+  // "Not yet" is asked once more on the dashboard this long after it was given (never again if that answer was already revisited),
+  // within OUTCOME_ASK_MAX_AGE_DAYS of the delivery: it is the commonest day-14 answer and the one most likely to be out of date.
+  OUTCOME_NOT_YET_REASK_AFTER_DAYS: 30,
+  // How many delivered fixes My Story offers "report an interview" on (any age; the answer is never asked for).
+  OUTCOME_REPORTABLE_SHOWN: 10,
   OUTCOME_REASK_MAX_AGE_DAYS: 365,
   // Follow-up emails per sweep run, and attempts per scan before we stop trying.
   OUTCOME_EMAIL_BATCH: 40,

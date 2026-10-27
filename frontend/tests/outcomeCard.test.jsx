@@ -250,3 +250,37 @@ describe('an answer is never final', () => {
     await waitFor(() => expect(api.put).toHaveBeenCalledWith('/outcomes', { scanId: SCAN, outcome: 'STILL_APPLYING' }))
   })
 })
+
+describe('reporting an interview, a "not yet" re-ask, and a locked answer', () => {
+  const report = (over = {}) => ({ scanId: SCAN, jobTitle: 'Product Manager', roleCategory: 'product_management', fixTier: 'FIX', deliveredAt: '2026-10-05T10:00:00Z', ...over })
+
+  it('a "not yet" that comes back says so', async () => {
+    load({ pending: [pending({ reask: true, previous: 'NO_INTERVIEW' })], answers: [], reportable: [], stories: [] })
+    render(<OutcomeCard />)
+    expect(await screen.findByText('You told us “not yet”. Any news?')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Not yet' })).toBeEnabled()
+  })
+  it('My Story offers "I got an interview" on a fix that is not being asked about; only "yes" is offered, and it sends INTERVIEW', async () => {
+    load({ pending: [], answers: [], reportable: [report()], stories: [] })
+    render(<OutcomeCard showAnswers />)
+    expect(await screen.findByText('Got an interview already?')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'I got an interview' }))
+    expect(screen.queryByRole('button', { name: 'Not yet' })).toBeNull()               // "not yet" at day 3 would be a meaningless answer
+    expect(screen.queryByRole('button', { name: 'Still applying' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, I got an interview' }))
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/outcomes', { scanId: SCAN, outcome: 'INTERVIEW' }))
+  })
+  it('the dashboard does not show the report list, only My Story does', async () => {
+    load({ pending: [], answers: [], reportable: [report()], stories: [] })
+    const { container } = render(<OutcomeCard />)
+    await waitFor(() => expect(api.get).toHaveBeenCalled())
+    expect(container).toBeEmptyDOMElement()
+  })
+  it('a refunded purchase\'s answer is shown but cannot be changed, and says why', async () => {
+    load({ pending: [], answers: [{ scanId: SCAN, outcome: 'NO_INTERVIEW', storyStatus: 'NONE', jobTitle: 'PM', roleCategory: 'product_management', fixTier: 'FIX', deliveredAt: '2026-08-01T10:00:00Z', locked: true }], reportable: [], stories: [] })
+    render(<OutcomeCard showAnswers />)
+    expect(await screen.findByText('You told us: Not yet')).toBeInTheDocument()
+    expect(screen.getByText(/refunded or is under dispute/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Change my answer' })).toBeNull()
+  })
+})

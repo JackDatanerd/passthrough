@@ -83,7 +83,10 @@ function isAskable(scan, userId, { purchaseLive = true } = {}) {
 // re-check each row here), and the admin simulator that answers "why is / isn't this scan being asked, and when will it be?".
 //
 //   dashboard   delivered >= 14 days ago and <= 120 days ago, never answered. A "still applying" answer is asked again 30 days
-//               after it was given (for up to a year after delivery); any other answer is final unless the person reopens it.
+//               after it was given (for up to a year after delivery); a "not yet" is asked once more 30 days after it was given
+//               (within 120 days of delivery) unless it was already revisited; a "yes" is final unless the person reopens it.
+//   reportable  any delivered, live fix with no answer that is NOT being asked right now (too early, or past the age limit): My
+//               Story lets the person report an interview on it at any time. Only "yes" is offered there.
 //   email       delivered 30..120 days ago, never answered, never mailed, under 3 attempts, the person is active, verified and
 //               has not switched the follow-up off, and no other follow-up went to them in the last 30 days.
 //
@@ -94,15 +97,17 @@ const DAY = 24 * 60 * 60 * 1000
 const when = (ms) => new Date(ms).toISOString()
 const ms = (v) => { const t = v ? Date.parse(v) : NaN; return Number.isFinite(t) ? t : null }
 
-function deliveredAtMs(scan) { return ms(scan && (scan.first_delivered_at || scan.fix_generated_at)) }
+// When the person first received a REAL resume from us (migration 0121 — a failed rewrite, or a badge not yet upgraded, does not
+// count). Null means "not delivered yet" for this purpose: there is deliberately no fallback to fix_generated_at.
+function deliveredAtMs(scan) { return ms(scan && scan.first_delivered_at) }
 
 function evaluateAsk({ scan, outcome = null, purchaseLive = true, user = null, recentlyEmailed = false }, nowMs = Date.now()) {
   const no = (reason, at = null) => ({ ask: false, reason, at: at == null ? null : when(at) })
   const base = (() => {
     if (!scan) return 'NO_SCAN'
     if (scan.fix_purchased !== true) return 'NOT_PURCHASED'
-    if (deliveredAtMs(scan) == null) return 'NOT_DELIVERED'
     if (scan.rewrite_failed === true) return 'REWRITE_FAILED'
+    if (deliveredAtMs(scan) == null) return 'NOT_DELIVERED'
     if (purchaseLive === false) return 'PURCHASE_REVERSED'
     return null
   })()
@@ -111,6 +116,14 @@ function evaluateAsk({ scan, outcome = null, purchaseLive = true, user = null, r
     if (base) return no(base)
     const d = deliveredAtMs(scan), age = nowMs - d
     if (outcome) {
+      if (outcome.outcome === OUTCOMES.NO_INTERVIEW) {
+        // Once: only an answer that was never revisited (updated_at is still its first answered_at) is asked again.
+        const first = ms(outcome.answered_at), upd = ms(outcome.updated_at)
+        if (first == null || upd == null || upd - first > 60 * 1000) return no('ANSWERED')
+        if (age > c.OUTCOME_ASK_MAX_AGE_DAYS * DAY) return no('TOO_OLD')
+        const due = first + c.OUTCOME_NOT_YET_REASK_AFTER_DAYS * DAY
+        return nowMs < due ? no('REASK_NOT_DUE', due) : { ask: true, reason: 'REASK_NOT_YET', at: null }
+      }
       if (outcome.outcome !== OUTCOMES.STILL_APPLYING) return no('ANSWERED')
       if (age > c.OUTCOME_REASK_MAX_AGE_DAYS * DAY) return no('TOO_OLD')
       const due = (ms(outcome.updated_at) ?? ms(outcome.answered_at) ?? nowMs) + c.OUTCOME_REASK_AFTER_DAYS * DAY

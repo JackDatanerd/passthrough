@@ -67,7 +67,9 @@ export function StoryForm({ scanId, onDone, onCancel, interview, initial, submit
 }
 
 // `current` (an outcome) is set when the person is changing an answer they already gave: that option is not offered again.
-function Question({ item, onAnswered, current = null }) {
+// `onlyYes` is for a fix we are not asking about (too early, or past the limit): the person may tell us about an interview, but
+// "not yet" there would be a meaningless answer that also switches the real question off.
+function Question({ item, onAnswered, current = null, onlyYes = false }) {
   const [step, setStep] = useState('ask')        // ask | saved
   const [count, setCount] = useState('')
   const [days, setDays] = useState('')
@@ -114,12 +116,12 @@ function Question({ item, onAnswered, current = null }) {
       {step === 'ask' && (
         <>
           <p className="font-semibold text-gray-900 mb-3">
-            {item.reask ? 'You told us you were still applying. Any news?' : current ? 'What is the answer now?' : (item.fixTier === 'BADGE' ? 'Did your credential lead to an interview?' : 'Did it lead to an interview?')}
+            {onlyYes ? 'Got an interview?' : item.reask ? (item.previous === 'NO_INTERVIEW' ? 'You told us “not yet”. Any news?' : 'You told us you were still applying. Any news?') : current ? 'What is the answer now?' : (item.fixTier === 'BADGE' ? 'Did your credential lead to an interview?' : 'Did it lead to an interview?')}
           </p>
           <div className="flex flex-wrap gap-2">
             {current !== 'INTERVIEW' && <Button size="sm" pending={busy} onClick={yes}>Yes, I got an interview</Button>}
-            {current !== 'NO_INTERVIEW' && <Button size="sm" variant="secondary" pending={busy} onClick={() => answer('NO_INTERVIEW')}>Not yet</Button>}
-            {current !== 'STILL_APPLYING' && <Button size="sm" variant="secondary" pending={busy} onClick={() => answer('STILL_APPLYING')}>Still applying</Button>}
+            {!onlyYes && current !== 'NO_INTERVIEW' && <Button size="sm" variant="secondary" pending={busy} onClick={() => answer('NO_INTERVIEW')}>Not yet</Button>}
+            {!onlyYes && current !== 'STILL_APPLYING' && <Button size="sm" variant="secondary" pending={busy} onClick={() => answer('STILL_APPLYING')}>Still applying</Button>}
           </div>
         </>
       )}
@@ -171,7 +173,9 @@ function AnswerRow({ answer, onChanged }) {
         {answer.jobTitle ? `${answer.jobTitle} · ` : ''}{answer.roleCategory ? `${roleLabel(answer.roleCategory)} · ` : ''}delivered {formatDate(answer.deliveredAt)}
       </p>
       <p className="font-semibold text-gray-900 mt-0.5">You told us: {ANSWER_TEXT[answer.outcome] || answer.outcome}</p>
-      {!changing ? (
+      {answer.locked ? (
+        <p className="text-xs text-gray-500 mt-2">This purchase was refunded or is under dispute, so this answer can no longer be changed.</p>
+      ) : !changing ? (
         <Button type="button" size="sm" variant="secondary" className="mt-2" onClick={() => setChanging(true)}>Change my answer</Button>
       ) : (
         <div className="mt-3">
@@ -185,6 +189,21 @@ function AnswerRow({ answer, onChanged }) {
           <Button type="button" size="sm" variant="ghost" className="mt-2" onClick={() => setChanging(false)}>Cancel</Button>
         </div>
       )}
+    </div>
+  )
+}
+
+// A delivered fix we are not asking about yet (or any more): an interview can still be reported on it, at any age. Only "yes" is offered.
+function ReportRow({ item, onReported }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-4 text-sm">
+      <p className="text-gray-500">
+        {item.jobTitle ? `${item.jobTitle} · ` : ''}{item.roleCategory ? `${roleLabel(item.roleCategory)} · ` : ''}{item.fixTier === 'BADGE' ? 'Verified credential' : 'fixed resume'} delivered {formatDate(item.deliveredAt)}
+      </p>
+      {!open
+        ? <Button type="button" size="sm" variant="secondary" className="mt-2" onClick={() => setOpen(true)}>I got an interview</Button>
+        : <div className="mt-3"><Question item={item} onlyYes onAnswered={(msg) => { setOpen(false); onReported(msg) }} /></div>}
     </div>
   )
 }
@@ -221,7 +240,8 @@ export default function OutcomeCard({ showStories = true, showAnswers = false, o
   const pending = state?.pending || []
   const stories = showStories ? (state?.stories || []) : []
   const answers = showAnswers ? (state?.answers || []) : []
-  if (!pending.length && !stories.length && !answers.length && !note) return null
+  const reportable = showAnswers ? (state?.reportable || []) : []
+  if (!pending.length && !stories.length && !answers.length && !reportable.length && !note) return null
 
   return (
     <section id="outcome" aria-label="Tell us how it went" className="scroll-mt-4 rounded-xl border border-blue-200 bg-blue-50 p-5 flex flex-col gap-3">
@@ -233,6 +253,13 @@ export default function OutcomeCard({ showStories = true, showAnswers = false, o
       {pending.map(item => (
         <Question key={item.scanId} item={item} onAnswered={(msg) => { setNote(msg); load(); onAnswered?.() }} />
       ))}
+      {reportable.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <h3 className="text-sm font-semibold text-gray-900">Got an interview already?</h3>
+          <p className="text-sm text-gray-500 -mt-2">You do not have to wait for us to ask. Tell us about any of your delivered resumes.</p>
+          {reportable.map(r => <ReportRow key={r.scanId} item={r} onReported={(msg) => { setNote(msg); load(); onAnswered?.() }} />)}
+        </div>
+      )}
       {answers.length > 0 && (
         <div className="flex flex-col gap-3">
           <h3 className="text-sm font-semibold text-gray-900">Your answers</h3>

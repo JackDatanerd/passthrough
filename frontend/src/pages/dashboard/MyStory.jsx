@@ -151,7 +151,7 @@ export default function MyStory() {
         {stories && stories.length === 0 && (
           <div className="rounded-xl border border-dashed border-gray-200 p-8 text-center">
             <p className="text-gray-600">No stories yet.</p>
-            <p className="text-sm text-gray-500 mt-1">When a fixed resume leads to an interview, you can tell us about it here. We ask 14 days after your fix first arrives, and you can change an answer any time.</p>
+            <p className="text-sm text-gray-500 mt-1">When a fixed resume leads to an interview, you can tell us about it here. We ask 14 days after your fix first arrives, you can tell us about an interview any time, and you can change an answer any time.</p>
             <Link to="/dashboard" className="inline-block mt-3 text-sm text-blue-700 hover:text-blue-900">Back to your scans</Link>
           </div>
         )}

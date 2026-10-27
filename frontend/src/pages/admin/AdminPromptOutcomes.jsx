@@ -35,9 +35,9 @@ function table(caption, rows, minResponses) {
 // email use (lib/outcomes.js evaluateAsk), run against the real scan, now and N days ahead — so the conditions can be simulated without
 // editing any data.
 const REASONS = {
-  ASK: 'Asked on the dashboard / My Story now.', REASK_STILL_APPLYING: 'Asked again: "still applying" was answered 30+ days ago.',
+  ASK: 'Asked on the dashboard / My Story now.', REASK_NOT_YET: 'Asked again: "not yet" was answered 30+ days ago and never revisited.', REASK_STILL_APPLYING: 'Asked again: "still applying" was answered 30+ days ago.',
   SEND: 'The follow-up email will go out on the next hourly run.', TOO_EARLY: 'Too early — not yet due.', TOO_OLD: 'Too old — past the age limit.',
-  ANSWERED: 'Already answered.', REASK_NOT_DUE: 'Answered "still applying"; the re-ask is not due yet.', ALREADY_PROMPTED: 'The email was already sent for this scan.',
+  ANSWERED: 'Already answered.', REASK_NOT_DUE: 'Answered "not yet" / "still applying"; the re-ask is not due yet.', ALREADY_PROMPTED: 'The email was already sent for this scan.',
   ATTEMPTS_EXHAUSTED: 'The email failed to send too many times.', NOT_PURCHASED: 'No purchased fix on this scan.', NOT_DELIVERED: 'The fix has not been delivered.',
   REWRITE_FAILED: 'The rewrite failed, so the resume was handed back unchanged — nothing to ask about.', PURCHASE_REVERSED: 'The purchase was refunded or is disputed.',
   NO_OWNER: 'The scan has no account.', NO_USER: 'The account could not be read.', NO_EMAIL: 'The account has no email address.', ACCOUNT_DELETED: 'The account was deleted.',
