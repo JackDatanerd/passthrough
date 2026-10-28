@@ -106,7 +106,20 @@ const isUkSpelling = jdText => (String(jdText || '').match(/\b(?:organis\w+|prog
 //   3  the signature skeleton: the same four presets, but the PDF is drawn by pdfSignature.service.js - a designed header with the
 //      credential seal, role / employer / dates hierarchy, a distinct header and heading treatment per preset, and spacing that
 //      follows how full the page is. Looks 1 and 2 still render on the original skeleton, so nothing delivered moves.
-const LATEST_LOOK = 3
+//   4  the hallmark: look 3's presets, inks and page skeleton, but the credential is a logo-derived tile with a drawn check in the header,
+//      an optional proof block (QR code and one sentence) at the foot of the last page and an optional running footer carrying the
+//      verification code. WHICH of the three marks a document carries is the owner's choice (scans.doc_marks, normalizeMarks below).
+//      Look 3 still renders exactly as delivered (tests/docLook4.test.js pins it by hash).
+const LATEST_LOOK = 4
+
+// The three marks look 4 can carry. A missing, malformed or partial value means "on": a mark is only ever off because the owner turned it off.
+const MARK_KEYS = ['header', 'colophon', 'footer']
+function normalizeMarks(v) {
+  const o = v && typeof v === 'object' && !Array.isArray(v) ? v : {}
+  const out = {}
+  for (const k of MARK_KEYS) out[k] = o[k] !== false
+  return out
+}
 
 // Version 2. A preset fixes the type (pairing and size) and the range of inks; the role category - already detected from the
 // posting and stored on the scan - decides which preset a document gets, so nothing here is random per document and nothing
@@ -136,7 +149,7 @@ function resolveLook(v) {
   return Number.isInteger(n) && n >= 1 && n <= LATEST_LOOK ? n : 1
 }
 
-function getDesignTokens(userId, scanId, industry = 'default', { jdText = '', paper = null, version = 1 } = {}) {
+function getDesignTokens(userId, scanId, industry = 'default', { jdText = '', paper = null, version = 1, marks = null } = {}) {
   const look = resolveLook(version)
   if (look >= 2) {
     // Looks 2 and 3 share the presets (the ink and type are the same); look 3 differs in the skeleton the PDF is drawn on.
@@ -150,7 +163,9 @@ function getDesignTokens(userId, scanId, industry = 'default', { jdText = '', pa
       fonts:   font,
       paper:   resolvePaper(paper, jdText),
       preset:  id,
-      version: look
+      version: look,
+      // Look 4 only: which marks the owner wants. Looks 2 and 3 carry no `marks` key at all, so their tokens (and the HTML built from them) are unchanged.
+      ...(look >= 4 ? { marks: normalizeMarks(marks) } : {})
     }
   }
   // Version 1 - FROZEN. Do not edit this branch or the tables it reads.
@@ -166,4 +181,4 @@ function getDesignTokens(userId, scanId, industry = 'default', { jdText = '', pa
   }
 }
 
-module.exports = { getDesignTokens, resolveLook, presetFor, LATEST_LOOK, PRESETS, PRESET_BY_CATEGORY, PALETTES, FONTS, detectPaper, paperForLocation, resolvePaper, cleanPaperChoice, isUkSpelling, PAPER: { letter: { format: 'Letter', css: 'Letter', width: '8.5in', minHeight: '9.85in', docx: { width: 12240, height: 15840 } }, a4: { format: 'A4', css: 'A4', width: '210mm', minHeight: '268mm', docx: { width: 11906, height: 16838 } } } }
+module.exports = { getDesignTokens, normalizeMarks, MARK_KEYS, resolveLook, presetFor, LATEST_LOOK, PRESETS, PRESET_BY_CATEGORY, PALETTES, FONTS, detectPaper, paperForLocation, resolvePaper, cleanPaperChoice, isUkSpelling, PAPER: { letter: { format: 'Letter', css: 'Letter', width: '8.5in', minHeight: '9.85in', docx: { width: 12240, height: 15840 } }, a4: { format: 'A4', css: 'A4', width: '210mm', minHeight: '268mm', docx: { width: 11906, height: 16838 } } } }

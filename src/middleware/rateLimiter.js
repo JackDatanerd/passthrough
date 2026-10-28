@@ -692,6 +692,14 @@ const resumeStructure = makeLimiter({
   message: msg('Too many requests. Please wait a moment.')
 })
 
+// Look 4: changing which Passthrough marks a delivered resume carries re-renders both files (a headless-browser render). Its own bucket, so
+// toggling a box can neither starve nor be starved by regenerate-pdf (same fate-sharing rule as the other render routes).
+const docMarks = makeLimiter({
+  keyBy: byAccount,
+  windowSeconds: 15 * 60, max: 8, keyPrefix: 'rl:docmarks',
+  message: msg('Too many changes. Please wait a moment.')
+})
+
 const pdfRegen = makeLimiter({
   keyBy: byAccount,   // signed-in callers get their own budget (CGNAT/office fairness); anonymous ones stay per-IP
   windowSeconds: 15 * 60, max: 8, keyPrefix: 'rl:pdfregen',
@@ -1189,7 +1197,7 @@ async function forgetTrustedDevices(env, email, keepFor = null) {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, followUpOptOut, verifyQr, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, coverLetter, resumeStructure, pdfRegen, draftPdf, coverLetterPdf, draftDownload, coverLetterDownload, profilePdf, profileDocx, retryFix, redeemCredit, statsRead, clientError, outcomeWrite, adminElevate, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, webhookResend, click,
+  general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, followUpOptOut, verifyQr, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, coverLetter, resumeStructure, pdfRegen, docMarks, draftPdf, coverLetterPdf, draftDownload, coverLetterDownload, profilePdf, profileDocx, retryFix, redeemCredit, statsRead, clientError, outcomeWrite, adminElevate, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, webhookResend, click,
   partnerRead, partnerProgram, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, partnerRecover, partnerReset, partnerExport, referralAttribution, verifyRead, verifyReport, isBypassed,
   isScanPollRequest, isHistoryPurgeRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, rememberTrustedDevice, isTrustedDevice, forgetTrustedDevices, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,

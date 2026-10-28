@@ -107,7 +107,7 @@ function buildStyles(d, color, headFont = 'Calibri', bodyColor, lang = 'en-US') 
   }
 }
 
-async function generateAtsDocx(resumeData, verificationUrl, { verified = true, paper, accent, serif = false, text: bodyText } = {}) {
+async function generateAtsDocx(resumeData, verificationUrl, { verified = true, paper, accent, serif = false, text: bodyText, credential = true } = {}) {
   const color = accentHex(accent)
   const bodyColor = textHex(bodyText)
   const linkInk = bodyColor || LINK_BLUE
@@ -146,10 +146,12 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
   // The credential line: a real link to the verification page, on its own line (it used to trail the contact line and
   // wrap awkwardly). Omitted entirely (not just left blank) when there's no verification link for this tier — see
   // FIX_PLAIN in scan.controller.js's generateFix. The label stays plain text so it extracts as before.
+  // `credential: false` is the owner's choice (look 4, scans.doc_marks.header): the line is left out like it is for a tier with no link.
+  const showCredential = !!verificationUrl && credential !== false
   rows.forEach((row, ri) => children.push(new Paragraph({
-    spacing: { after: ri < rows.length - 1 || verificationUrl ? 20 : 60 }, children: contactRuns(row, d.small, linkInk),
+    spacing: { after: ri < rows.length - 1 || showCredential ? 20 : 60 }, children: contactRuns(row, d.small, linkInk),
   })))
-  if (verificationUrl) {
+  if (showCredential) {
     const label = `${verified ? 'Passthrough Verified' : 'Passthrough Scan Report'}: `
     const href = hrefFor(verificationUrl)
     children.push(new Paragraph({

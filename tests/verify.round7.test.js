@@ -156,10 +156,10 @@ describe('share card', () => {
     expect(chunks[0].data.readUInt32BE(0)).toBe(CARD_W)
     expect(chunks[0].data.readUInt32BE(4)).toBe(CARD_H)
     expect([...chunks[1].data.subarray(6, 9)]).toEqual([0x15, 0x80, 0x3d])
-    const rowBytes = Math.ceil(CARD_W / 4)
+    const rowBytes = Math.ceil(CARD_W / 2)   // 4-bit since look 4 (the tile needs blue, gold and greys)
     const raw = zlib.inflateSync(chunks[2].data)
     expect(raw.length).toBe(CARD_H * (1 + rowBytes))
-    const px = (x, y) => (raw[y * (1 + rowBytes) + 1 + (x >> 2)] >> (6 - (x & 3) * 2)) & 3
+    const px = (x, y) => (raw[y * (1 + rowBytes) + 1 + (x >> 1)] >> ((x & 1) ? 0 : 4)) & 15
     expect(px(10, 10)).toBe(2)       // top bar
     expect(px(10, 300)).toBe(0)      // white
     let dark = 0

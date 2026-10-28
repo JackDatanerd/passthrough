@@ -30,6 +30,8 @@ router.post('/:id/upgrade-to-fix', auth, rl.redeemCredit, validateUuidParam(), c
 router.post('/:id/retry-fix',    auth, rl.retryFix, validateUuidParam(), c.retryFix)
 // FEATURE (Auth/Scan round): re-render a PDF that failed to generate at delivery.
 router.post('/:id/regenerate-pdf', auth, rl.pdfRegen, validateUuidParam(), c.regeneratePdf)
+// Look 4: which Passthrough marks (header badge, proof block, running footer) the owner's delivered files carry. Re-renders both files.
+router.patch('/:id/doc-marks', auth, rl.docMarks, validateUuidParam(), c.updateDocMarks)
 router.patch('/:id/verify-visibility', auth, validateUuidParam(), c.updateVerifyVisibility)
 router.get( '/:id/download',     auth,        validateUuidParam(), c.downloadFile)
 // Owner-only removal of one scan and everything stored for it (see deleteScan).

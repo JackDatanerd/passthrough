@@ -44,6 +44,7 @@ import { clearDraftIfSent, loadBrainDumpDraft } from '../lib/brainDumpDraft'
 import Alert from '../components/ui/Alert'
 import ConfirmDialog from '../components/ui/ConfirmDialog'
 import Checkbox from '../components/ui/Checkbox'
+import DocMarksPanel from '../components/scan/DocMarksPanel'
 
 // These used to be a single `TERMINAL` array serving two different jobs at
 // once: "when should we stop polling" and "which statuses render the
@@ -1380,6 +1381,12 @@ export default function ScanResult() {
                       </span>
                     )}
                   </p>
+                )}
+                {/* Look 4: the owner chooses which Passthrough marks the files carry. Only for a signed-in owner, a layout that has marks
+                    (scan.docMarksAvailable) and a resume that has a verification link; a page Passthrough took down cannot be changed here. */}
+                {user && scan.userId && user.id === scan.userId && scan.docMarksAvailable && scan.verificationUrl && scan.fixTier !== 'FIX_PLAIN'
+                  && !(scan.verificationStatus === 'REVOKED' && scan.verificationRevokedReason !== 'OWNER') && (
+                  <DocMarksPanel scan={scan} verified={credentialEarned(scan)} onChanged={fetchScan} />
                 )}
                 <Alert className="mb-3">{dlError}</Alert>
                 <div className="flex flex-col sm:flex-row gap-3">

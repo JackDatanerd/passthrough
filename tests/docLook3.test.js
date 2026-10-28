@@ -47,7 +47,7 @@ describe('looks 1 and 2 render exactly as they were delivered', () => {
     expect(pdfTemplate.buildResumeHTML(resume(), getDesignTokens('u', 's', 'legal', { version: 2 }), URL_, {})).toContain('body::before')
   })
   it('the design service names look 3 in the tokens, with the same ink a person already had under look 2', () => {
-    expect(LATEST_LOOK).toBe(3)
+    expect(LATEST_LOOK).toBeGreaterThanOrEqual(3)
     for (const c of Object.values(CAT)) {
       const two = getDesignTokens('person-9', 'sx', c, { version: 2 }), three = getDesignTokens('person-9', 'sx', c, { version: 3 })
       expect(three).toMatchObject({ version: 3, preset: two.preset })

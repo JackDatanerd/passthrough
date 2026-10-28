@@ -888,7 +888,7 @@ describe('downloadDraft', () => {
     t = setup()
     await t.mod.downloadDraft(baseCtx())
     // the third argument is the page size taken from the posting (Letter unless it reads as UK)
-    expect(t.getGenerateArgs()).toEqual([{ name: 'Jane' }, null, { paper: 'letter', accent: expect.stringMatching(/^#[0-9A-Fa-f]{6}$/), serif: expect.any(Boolean), text: expect.stringMatching(/^#[0-9A-Fa-f]{6}$/) }])  // + the palette colour the PDF uses
+    expect(t.getGenerateArgs()).toEqual([{ name: 'Jane' }, null, { paper: 'letter', accent: expect.stringMatching(/^#[0-9A-Fa-f]{6}$/), serif: expect.any(Boolean), text: expect.stringMatching(/^#[0-9A-Fa-f]{6}$/), credential: expect.any(Boolean) }])  // + the palette colour the PDF uses
   })
 })
 
@@ -1714,7 +1714,7 @@ describe('generateFix', () => {
       'services/email.service.js': { sendFixDelivered: async () => {}, sendFixDeliveredPlain: async () => {}, sendFixFailed: async () => {}, sendOwnerAlert: async () => {} },
     })
     await loaded.mod.generateFix(env, db, 's1')
-    expect(docxArgs).toEqual({ verified: false, paper: 'letter', serif: false })   // + the PDF's look (accent colour, serif headings) when the tokens exist
+    expect(docxArgs).toMatchObject({ verified: false, paper: 'letter', serif: false })   // + the PDF's look (accent colour, serif headings) when the tokens exist
     loaded.restore()
   })
 

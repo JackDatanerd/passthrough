@@ -1236,3 +1236,13 @@ Operator notes for the newest migrations. Apply each migration before deploying 
 #      (dry run without --apply first). Until it has run, old plain-text rows still read fine; they are just not yet encrypted.
 # Without the secret the Worker REFUSES to save a tax ID (503, "Tax IDs can't be saved right now") rather than store one in clear, and
 # /health warns. Everything else on the payout page still saves.
+
+# DOCUMENT LOOK 4 — THE HALLMARK AND OWNER-CHOSEN MARKS (migration 0126 — deploy the Worker FIRST, then apply the migration; EXPECTED_SCHEMA_VERSION is now 126.)
+# New scans get look 4: the Passthrough tile (logo tile + gold check when Verified, grey tile with no check otherwise) in the resume header, an
+# optional proof block (QR + one sentence) at the foot of the last page, and an optional running footer carrying the verification code. The owner ticks
+# which of the three their downloads carry (ScanResult -> "Show Passthrough on your resume", PATCH /api/scan/:id/doc-marks); all three start ticked.
+# Applying rebuilds the .docx and the PDF from the stored resume: no re-scoring, no AI call, and the verification link/code do not change.
+# Existing scans stay on the look they were delivered in (looks 1-3 render byte-for-byte as before) and do not show the ticks.
+# ORDER: a Worker that predates look 4 reads the new default as look 1, so the Worker goes out before the migration.
+# The badge (SVG/PNG) and the 1200x630 share card now lead with the same tile; the PNG badge and the card are 4-bit indexed images instead of 2-bit.
+# Cover letters are untouched (their query does not select doc_marks, so the Worker is safe to deploy before the column exists).

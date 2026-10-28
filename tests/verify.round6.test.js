@@ -181,11 +181,11 @@ describe('ROUND-6 FEATURE GAP: the badge as a PNG', () => {
     const width = ihdr.readUInt32BE(0), height = ihdr.readUInt32BE(4)
     expect(height).toBe(40)
     expect(width).toBeGreaterThan(200)
-    expect([ihdr[8], ihdr[9]]).toEqual([2, 3])                                   // 2-bit, indexed
+    expect([ihdr[8], ihdr[9]]).toEqual([4, 3])                                   // 4-bit, indexed (look 4: the tile needs more than 4 colours)
     const raw = zlib.inflateSync(chunks[3].data)
-    expect(raw.length).toBe(height * (1 + Math.ceil(width / 4)))
+    expect(raw.length).toBe(height * (1 + Math.ceil(width / 2)))
     expect([...chunks[1].data.subarray(6, 9)]).toEqual([0x15, 0x80, 0x3d])       // the value colour
-    expect(png.length).toBeLessThan(8000)
+    expect(png.length).toBeLessThan(10000)   // 4-bit with the tile: was 8000 at 2-bit
   })
   it('is deterministic, widens with its text, and survives characters it has no glyph for', () => {
     const a = renderBadgePng('Passthrough', 'scan 72/100', '#b45309')
@@ -197,15 +197,16 @@ describe('ROUND-6 FEATURE GAP: the badge as a PNG', () => {
   })
   it('ink really lands on the canvas: both halves have text pixels, corners are transparent', () => {
     const chunks = parsePng(renderBadgePng('Passthrough', 'revoked', '#6b7280'))
-    const width = chunks[0].data.readUInt32BE(0), rowBytes = Math.ceil(width / 4)
+    const width = chunks[0].data.readUInt32BE(0), rowBytes = Math.ceil(width / 2)
     const raw = zlib.inflateSync(chunks[3].data)
-    const px = (x, y) => (raw[y * (1 + rowBytes) + 1 + (x >> 2)] >> (6 - (x & 3) * 2)) & 3
+    const px = (x, y) => (raw[y * (1 + rowBytes) + 1 + (x >> 1)] >> ((x & 1) ? 0 : 4)) & 15
     expect(px(0, 0)).toBe(0)                                                      // rounded corner
     expect(px(width - 1, 39)).toBe(0)
     let textPixels = 0
     for (let y = 0; y < 40; y++) for (let x = 0; x < width; x++) if (px(x, y) === 3) textPixels++
     expect(textPixels).toBeGreaterThan(150)
-    expect(px(3, 20)).toBe(1)                                                     // label background
+    expect(px(43, 3)).toBe(1)                                                     // label background (right of the 40px tile and its seam)
+    expect(px(20, 3)).toBe(5)                                                     // the tile: grey for a badge that is not Verified
     expect(px(width - 3, 20)).toBe(2)                                             // value background
   })
 

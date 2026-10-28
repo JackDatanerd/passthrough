@@ -10,6 +10,7 @@ import Spinner from '../components/ui/Spinner'
 import Form from '../components/ui/Form'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
+import VerifiedMark from '../components/layout/VerifiedMark'
 import { formatDate, formatTimeOfDay, downloadBlob } from '../lib/utils'
 import CopyButton from '../components/ui/CopyButton'
 import { ATS_BADGE_THRESHOLD } from '../lib/scoreThresholds'
@@ -525,18 +526,14 @@ export default function Verify() {
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 text-center">
               {isVerified ? (
                 <>
-                  <div className="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-4">
-                    <span className="text-green-600 text-3xl">✓</span>
-                  </div>
+                  <VerifiedMark verified size={64} className="mx-auto mb-4" />
                   <h1 className="text-2xl font-bold text-gray-900 mb-1">
                     Passthrough Verified
                   </h1>
                 </>
               ) : (
                 <>
-                  <div className="w-16 h-16 rounded-full bg-amber-100 flex items-center justify-center mx-auto mb-4">
-                    <span className="text-amber-600 text-3xl">○</span>
-                  </div>
+                  <VerifiedMark verified={false} size={64} className="mx-auto mb-4" />
                   <h1 className="text-2xl font-bold text-gray-900 mb-1">
                     Passthrough Scan Report
                   </h1>

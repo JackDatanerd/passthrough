@@ -17,7 +17,8 @@
 //     (lib/docFit.js), so a page never looks half-finished or has two stray lines on a second page.
 
 const { hrefFor, displayUrl } = require('../lib/links')
-const { densityFor, letterDensityFor, estimateLoad, capacityFor, airinessFor } = require('../lib/docFit')
+const { densityFor, letterDensityFor, estimateLoad, capacityFor, airinessFor, signatureFit } = require('../lib/docFit')
+const { renderQrInline } = require('../lib/qr')
 const { stripBullet } = require('../lib/bulletText')
 const { contactRows, contactItems } = require('../lib/contactLayout')
 const { FONT_FACE_CSS } = require('../lib/embeddedFonts')
@@ -26,6 +27,66 @@ const { canonDates } = require('../lib/dateFormat')
 // The credential's check is DRAWN (U+2713 is in neither Arial nor Liberation Sans and printed as an empty box, and it keeps a stray
 // symbol out of the text layer).
 const CHECK_SVG = '<svg class="ck" viewBox="0 0 10 10" width="9" height="9" aria-hidden="true"><path d="M1.6 5.4l2.4 2.4 4.4-5.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+
+// ── look 4: the hallmark ─────────────────────────────────────────────────────────────────────────────────────────────────
+// The credential as a mark: the Passthrough tile (the logo's filter bars) with a gold check when - and only when - the page says
+// Verified; the same tile in grey with no check for a scan report. Vector shapes only, no text inside the drawing (the words next to it are
+// real text), aria-hidden. This is the COMPACT cut (header and proof-block sizes); the full cut is for 14 mm and up and lives in the frontend.
+// Colours are fixed whatever the preset: only the words beside the tile take the preset's ink.
+const TILE_BARS = '<path d="M9.5 6.5v4M9.5 21.5v4M22.5 6.5v4M22.5 21.5v4" stroke="%BARS%" stroke-width="3" stroke-linecap="round" fill="none"/>'
+const TILE_CHECK = '<path d="M7.5 16.4l5.8 5.6L25 10.6" stroke="#FFE27A" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>'
+function tileSvg(verified, cls = 'tile') {
+  return `<svg class="${cls}" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><rect width="32" height="32" rx="8" fill="${verified ? '#1E40AF' : '#6B7280'}"/>` +
+    `${TILE_BARS.replace('%BARS%', verified ? '#FFFFFF' : '#D1D5DB')}${verified ? TILE_CHECK : ''}</svg>`
+}
+const markOn = (marks, k) => !marks || marks[k] !== false          // a mark is on unless the owner turned it off
+const codeOf = href => String(href || '').split(/[?#]/)[0].split('/').filter(Boolean).pop()?.replace(/[^A-Za-z0-9]/g, '').slice(0, 16) || ''
+
+function hallmarkHtml(href, verified, h) {
+  return `<a class="seal${verified ? '' : ' plain'}" href="${h.esc(href)}">${tileSvg(verified)}<span class="txt"><span class="t">${verified ? 'Passthrough Verified' : 'Passthrough Scan Report'}</span>` +
+    `<span class="u">${h.esc(displayUrl(href))}</span></span></a>`
+}
+
+// The proof block at the foot of the LAST page. 'full' = QR code + a sentence; 'line' = one line (what signatureFit leaves room for on a nearly full page).
+// The sentence says what Passthrough did and where to check; scanning the code opens the page, and confirming THIS copy is a second step there
+// (the page itself says that only a check of the file in hand can catch an edited copy), so the sentence does not claim the code proves the file.
+function colophonHtml(href, verified, tier, h) {
+  const addr = h.esc(displayUrl(href))
+  const label = verified ? 'Passthrough Verified' : 'Passthrough Scan Report'
+  if (tier === 'line')
+    return `<div class="colophon line"><a href="${h.esc(href)}">${tileSvg(verified)}<span class="cl">${label}</span><span class="addr">${addr}</span></a></div>`
+  const sentence = verified
+    ? 'This resume was run through Passthrough&#8217;s ATS scan. Scan the code to see its current verification, then use &#8220;Check a file&#8221; on that page to confirm this copy matches.'
+    : 'This resume was scanned by Passthrough. It did not reach the standard for Passthrough Verified. Scan the code to see the report.'
+  return `<div class="colophon"><a class="qrlink" href="${h.esc(href)}">${renderQrInline(href)}</a><div class="ct"><div class="cl">${tileSvg(verified)}<span>${label}</span></div>` +
+    `<p>${sentence}</p><p class="addr">${addr}</p></div></div>`
+}
+
+function hallmarkCss(preset, P, rule) {
+  return `
+/* look 4: the hallmark lockup replaces the outlined seal (.top .seal outranks the preset skins' .seal rules) */
+.top .seal { flex-direction: row; align-items: center; gap: 7pt; text-align: left; padding: 0; border: 0; border-radius: 0; background: none; max-width: none; margin-bottom: 5pt; color: ${P} }
+.top .seal .tile { width: 8.4mm; height: 8.4mm; flex: none; display: block }
+.top .seal .txt { display: flex; flex-direction: column; gap: 2pt; white-space: nowrap }
+.top .seal .t { font-size: 8.2pt; font-weight: 700; letter-spacing: .9pt; line-height: 1.1; color: ${P} }
+.top .seal .u { font-size: 7.4pt; letter-spacing: .05pt; line-height: 1.1; color: #4B5563 }
+.top .seal.plain .t { color: #4B5563 }
+${preset === 'traditional' ? '.top .seal { margin: 7pt 0 0; justify-content: center }' : ''}
+/* the proof block: the last thing on the last page; never split across pages */
+.colophon { display: flex; align-items: center; gap: 13pt; margin-top: 24pt; padding-top: 11pt; border-top: .75pt solid ${rule}; break-inside: avoid; page-break-inside: avoid }
+.colophon .qrlink { flex: none; display: block }
+.colophon .qr { width: 19mm; height: 19mm; display: block }
+.colophon .ct { display: flex; flex-direction: column; gap: 3pt; max-width: 128mm }
+.colophon .cl { display: flex; align-items: center; gap: 5pt; font-size: 7.6pt; font-weight: 700; letter-spacing: .9pt; text-transform: uppercase; color: ${P} }
+.colophon .cl .tile { width: 5.2mm; height: 5.2mm; display: block }
+.colophon p { font-size: 8pt; line-height: 1.45; color: #374151 }
+.colophon .addr { font-weight: 600; color: ${P}; font-size: 7.6pt }
+.colophon.line { margin-top: 20pt; padding-top: 7pt }
+.colophon.line a { display: flex; align-items: center; gap: 6pt }
+.colophon.line .tile { width: 5.2mm; height: 5.2mm; display: block }
+.colophon.line .cl { font-size: 7.6pt; font-weight: 700; letter-spacing: .9pt; text-transform: uppercase; color: ${P} }
+.colophon.line .addr { font-size: 7.6pt; font-weight: 400; color: #4B5563 }`
+}
 
 const PRESET_IDS = ['traditional', 'professional', 'modern', 'creative']
 const hex6 = v => { const m = /^#?([0-9a-f]{6})$/i.exec(String(v || '')); return m ? parseInt(m[1], 16) : null }
@@ -84,7 +145,7 @@ h2::after { content: ""; position: absolute; left: 0; bottom: -1.4pt; width: 30p
 }
 
 // One stylesheet for the resume and the cover letter, parameterised by the tokens and a spacing scale `f` (1 = the base rhythm).
-function styles({ palette, fonts, stack, paper, preset, bPt, f, compact, margin, lineHeight, foot }) {
+function styles({ palette, fonts, stack, paper, preset, bPt, f, compact, margin, lineHeight, foot, look4 = false }) {
   const P = palette.primary
   const rule = mixWhite(P, 0.55, '#9CA3AF')
   const tint = mixWhite(P, 0.9, '#EEF2F7')
@@ -137,13 +198,15 @@ li::marker { color: ${P}; font-size: .9em }
 .detail { margin-top: 1.5pt; color: #374151 }
 .link { font-size: ${Math.max(round(bPt - 1, 1), 8.5)}pt; margin-top: 1.5pt }
 p, li, h1, .role, .org, .dates, .summary, .skills, .detail { unicode-bidi: plaintext }
-${skin(preset, c)}`
+${skin(preset, c)}${look4 ? hallmarkCss(preset, P, rule) : ''}`
 }
 
 // The continuation-page footer as a CSS content value: the name (sanitised into a string literal), then "Page n of m".
-const footerOf = (h, name) => {
+const footerOf = (h, name, credential = null) => {
   const n = h.cssStr(name)
-  return `"${n ? n + '  \\00B7  ' : ''}Page " counter(page) " of " counter(pages)`
+  // Look 4's running footer: the name, the credential and its code, so a page that is photocopied or forwarded on its own still points back.
+  const parts = [n, credential && credential.code ? `${credential.verified ? 'Passthrough Verified' : 'Passthrough Scan Report'}  \\00B7  ${credential.code}` : ''].filter(Boolean)
+  return `"${parts.length ? parts.join('  \\00B7  ') + '  \\00B7  ' : ''}Page " counter(page) " of " counter(pages)`
 }
 
 function safePreset(designTokens) {
@@ -161,16 +224,22 @@ function buildSignatureResumeHTML(data, designTokens, verificationUrl, { verifie
   const paper = paperOf(designTokens)
   // The load of the page decides its rhythm: just over a page is tightened, a sparse page is given room (never both).
   const forced = designTokens?.density === 'compact' || designTokens?.density === 'normal' ? designTokens.density : null
-  const density = forced || densityFor(d, paper.key, 'pdf', 3)
+  // Look 4 (the hallmark): the owner's marks decide what is drawn, and how much room the proof block needs is part of the fit decision.
+  const href = safeHref(verificationUrl)
+  const look4 = Number(designTokens?.version) >= 4
+  const marks = look4 ? designTokens?.marks : null
+  const fit = look4 ? signatureFit(d, paper.key, { colophon: !!(href && markOn(marks, 'colophon')) }) : null
+  const density = forced || (fit ? fit.density : densityFor(d, paper.key, 'pdf', 3))
   const compact = density === 'compact'
-  const f = forced ? 1 : airinessFor(estimateLoad(d, 3), capacityFor(paper.key, 'pdf', 3))
+  const f = forced ? 1 : (fit ? fit.f : airinessFor(estimateLoad(d, 3), capacityFor(paper.key, 'pdf', 3)))
   const bPt = round(num(fonts.bPt, 10.5) - (compact ? 0.5 : 0), 1)
   const lineHeight = compact ? 1.38 : round(1.46 + (f - 1) * 0.12, 2)
 
-  const href = safeHref(verificationUrl)
-  const seal = href
-    ? `<a class="seal${verified ? '' : ' plain'}" href="${esc(href)}"><span class="t">${verified ? CHECK_SVG + 'Passthrough Verified' : 'Passthrough Scan Report'}</span><span class="u">${esc(displayUrl(href))}</span></a>`
-    : ''
+  const seal = !href ? ''
+    : look4 ? (markOn(marks, 'header') ? hallmarkHtml(href, verified, h) : '')
+    : `<a class="seal${verified ? '' : ' plain'}" href="${esc(href)}"><span class="t">${verified ? CHECK_SVG + 'Passthrough Verified' : 'Passthrough Scan Report'}</span><span class="u">${esc(displayUrl(href))}</span></a>`
+  const colophon = look4 && href && fit.tier ? colophonHtml(href, verified, fit.tier, h) : ''
+  const credential = look4 && href && markOn(marks, 'footer') ? { code: codeOf(href), verified } : null
 
   const section = (title, inner) => inner ? `<section><h2>${esc(title)}</h2>${inner}</section>` : ''
   const bullets = items => { const b = list(items).map(str).filter(Boolean); return b.length ? `<ul>${b.map(x => `<li dir="auto">${esc(stripBullet(x))}</li>`).join('')}</ul>` : '' }
@@ -231,14 +300,14 @@ function buildSignatureResumeHTML(data, designTokens, verificationUrl, { verifie
     (experience ? section('Volunteer Experience', volunteer) : '') + section('Awards', bullets(d.awards)) +
     section('Publications', bullets(d.publications)) + section('Languages', languagesHtml)
 
-  const css = styles({ palette, fonts, stack, paper, preset, bPt, f, compact, margin: '17mm', lineHeight, foot: footerOf(h, d.name) })
+  const css = styles({ palette, fonts, stack, paper, preset, bPt, f, compact, margin: '17mm', lineHeight, foot: footerOf(h, d.name, credential), look4 })
   return `<!DOCTYPE html>
 <html lang="${paper.key === 'a4' ? 'en-GB' : 'en-US'}"><head><meta charset="utf-8"><title>${esc(d.name || 'Resume')}</title>
 <style>
 ${css}
 </style></head><body><div class="page">
 <header class="top"><h1>${esc(d.name || '')}</h1>${contactBlock(d, h)}${seal}</header>
-${summary ? section('Summary', summary) : ''}${body}
+${summary ? section('Summary', summary) : ''}${body}${colophon}
 </div></body></html>`
 }
 

@@ -573,14 +573,28 @@ async function lookupByHash(c) {
 
 const esc = s => String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]))
 
+// The Passthrough tile (same geometry as the resume's hallmark and the PNG badge): blue tile with white bars and the gold check
+// for a Verified badge, grey tile with light bars and NO check for everything else. A 1px white seam keeps it from melting into
+// the dark label. The check is drawn only when the badge says Verified - the same rule as the page and the resume.
+function badgeTileSvg(verified) {
+  // Same 32-unit drawing as the resume's compact cut (pdfSignature.service.js tileSvg), scaled to 20px, then the seam.
+  return `<svg width="20" height="20" viewBox="0 0 32 32"><rect width="32" height="32" fill="${verified ? '#1E40AF' : '#6B7280'}"/>` +
+    `<path d="M9.5 6.5v4M9.5 21.5v4M22.5 6.5v4M22.5 21.5v4" stroke="${verified ? '#FFFFFF' : '#D1D5DB'}" stroke-width="3" stroke-linecap="round" fill="none"/>` +
+    (verified ? '<path d="M7.5 16.4l5.8 5.6L25 10.6" stroke="#FFE27A" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>' : '') +
+    '</svg><rect x="20" width="1" height="20" fill="#fff"/>'
+}
+
 function renderBadge(label, value, color) {
   const w = t => Math.round(String(t).length * 6.6 + 14)
-  const lw = w(label), vw = w(value), total = lw + vw
+  const T = 21                                   // tile + seam
+  const lw = w(label), vw = w(value), total = T + lw + vw
+  const verified = label === 'Passthrough Verified'
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${total}" height="20" role="img" aria-label="${esc(label)}: ${esc(value)}">` +
     `<title>${esc(label)}: ${esc(value)}</title>` +
-    `<rect width="${lw}" height="20" fill="#374151"/><rect x="${lw}" width="${vw}" height="20" fill="${color}"/>` +
+    badgeTileSvg(verified) +
+    `<rect x="${T}" width="${lw}" height="20" fill="#374151"/><rect x="${T + lw}" width="${vw}" height="20" fill="${color}"/>` +
     `<g fill="#fff" font-family="Verdana,DejaVu Sans,sans-serif" font-size="11" text-anchor="middle">` +
-    `<text x="${lw / 2}" y="14">${esc(label)}</text><text x="${lw + vw / 2}" y="14">${esc(value)}</text></g></svg>`
+    `<text x="${T + lw / 2}" y="14">${esc(label)}</text><text x="${T + lw + vw / 2}" y="14">${esc(value)}</text></g></svg>`
 }
 
 // ROUND-2 AUDIT (Section 7): the badge is now
@@ -658,9 +672,9 @@ function cardSpec(label, value, color, code) {
   if (v === 'revoked') return { headline: 'VERIFICATION REVOKED', sub: 'THIS PAGE IS NO LONGER VALID', footer, color }
   if (v === 'removed') return { headline: 'PASSTHROUGH', sub: 'THIS PAGE WAS REMOVED BY ITS OWNER', footer, color }
   if (v === 'not found') return { headline: 'PASSTHROUGH', sub: 'VERIFICATION NOT FOUND', footer, color }
-  if (label === 'Passthrough Verified') return { headline: 'PASSTHROUGH VERIFIED', big: v, sub: 'ATS SCORE - RESUME FILE NOT MODIFIED', footer, color }
+  if (label === 'Passthrough Verified') return { headline: 'PASSTHROUGH VERIFIED', big: v, sub: 'ATS SCORE - RESUME FILE NOT MODIFIED', footer, color, mark: 'verified' }
   const score = /(\d+\/100)/.exec(v)
-  return { headline: 'PASSTHROUGH SCAN REPORT', big: score ? score[1] : '', sub: 'ATS SCAN SCORE - NOT VERIFIED', footer, color }
+  return { headline: 'PASSTHROUGH SCAN REPORT', big: score ? score[1] : '', sub: 'ATS SCAN SCORE - NOT VERIFIED', footer, color, mark: 'neutral' }
 }
 
 function drawBadge(format, label, value, color, code) {

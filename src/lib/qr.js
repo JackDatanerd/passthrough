@@ -37,6 +37,23 @@ function renderQrSvg(text, { scale = 8 } = {}) {
     `<rect width="${size}" height="${size}" fill="#fff"/><path d="${d}" fill="#000"/></svg>`
 }
 
+// The same code as an INLINE svg for an HTML page (the look-4 resume PDF): no width/height, so CSS sizes it; the quiet zone is inside
+// the viewBox; no <title>, no text; aria-hidden because the page already prints the address as real text next to it.
+function renderQrInline(text, className = 'qr') {
+  const { n, dark } = build(text)
+  const size = n + QUIET_MODULES * 2
+  let d = ''
+  for (let r = 0; r < n; r++) {
+    let run = 0
+    for (let c = 0; c <= n; c++) {
+      if (c < n && dark(r, c)) { run++; continue }
+      if (run) { d += `M${c - run + QUIET_MODULES} ${r + QUIET_MODULES}h${run}v1h-${run}z`; run = 0 }
+    }
+  }
+  return `<svg class="${className}" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges" aria-hidden="true" focusable="false">` +
+    `<rect width="${size}" height="${size}" fill="#fff"/><path d="${d}" fill="#000"/></svg>`
+}
+
 function renderQrPng(text, { scale = 8 } = {}) {
   const { n, dark } = build(text)
   const size = (n + QUIET_MODULES * 2) * scale
@@ -66,4 +83,4 @@ function renderQrPng(text, { scale = 8 } = {}) {
   return out
 }
 
-module.exports = { renderQrSvg, renderQrPng }
+module.exports = { renderQrSvg, renderQrPng, renderQrInline }

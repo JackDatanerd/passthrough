@@ -107,9 +107,50 @@ function chunk(type, data) {
   return out
 }
 
-// Palette indices: 0 transparent (rounded corners), 1 label background, 2 value background, 3 text.
+// ── the Passthrough tile, rasterised (look 4's mark) ─────────────────────────────────────────────────────────────────────
+// The same drawing as frontend/src/components/layout/VerifiedMark.jsx and the resume PDF's tile (32-unit grid), turned into palette
+// indices because this file has no rasteriser. tileCoverage(size, { cut, verified, square }) -> Uint8Array(size*size) of:
+//   0 outside the tile, 1 tile body, 2 filter bars, 3 check line.
+// `square` leaves the corners to the caller (the badge strip rounds its own outer corners); otherwise the tile has its own 25% radius.
+// Hard edges (a palette image has no alpha to anti-alias with): the shapes are tested at the pixel centre, which at 40 px or more reads cleanly.
+const BARS_FULL = [[11, 6.5, 11, 12.5], [11, 19.5, 11, 25.5], [21, 6.5, 21, 12.5], [21, 19.5, 21, 25.5]]
+const BARS_COMPACT = [[9.5, 6.5, 9.5, 10.5], [9.5, 21.5, 9.5, 25.5], [22.5, 6.5, 22.5, 10.5], [22.5, 21.5, 22.5, 25.5]]
+const CHECK_FULL = [[4.5, 16, 11.9, 16], [11.9, 16, 15.8, 20.4], [15.8, 20.4, 26.2, 9.8]]
+const CHECK_COMPACT = [[7.5, 16.4, 13.3, 22], [13.3, 22, 25, 10.6]]
+const distToSegment = (px, py, [x1, y1, x2, y2]) => {
+  const dx = x2 - x1, dy = y2 - y1, len2 = dx * dx + dy * dy
+  const t = len2 ? Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / len2)) : 0
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy))
+}
+function tileCoverage(size, { cut = 'compact', verified = true, square = false } = {}) {
+  const full = cut === 'full'
+  const bars = full ? BARS_FULL : BARS_COMPACT, check = full ? CHECK_FULL : CHECK_COMPACT
+  const barR = (full ? 2.6 : 3) / 2, checkR = (full ? 2.7 : 3.6) / 2
+  const out = new Uint8Array(size * size)
+  const k = 32 / size, rx = 8
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = (x + 0.5) * k, v = (y + 0.5) * k
+      if (!square) {   // rounded square, radius 8 of 32
+        const cx = u < rx ? rx : u > 32 - rx ? 32 - rx : u, cy = v < rx ? rx : v > 32 - rx ? 32 - rx : v
+        if ((u - cx) ** 2 + (v - cy) ** 2 > rx * rx) continue
+      }
+      let code = 1
+      if (bars.some(b => distToSegment(u, v, b) <= barR)) code = 2
+      if (verified && check.some(c => distToSegment(u, v, c) <= checkR)) code = 3
+      out[y * size + x] = code
+    }
+  }
+  return out
+}
+
+// Palette indices (4-bit): 0 transparent (rounded corners), 1 label background, 2 value background, 3 white (text, bars), 4 tile blue, 5 tile grey,
+// 6 gold (the check), 7 light grey (the not-verified tile's bars).
 function renderBadgePng(label, value, valueColor = '#6b7280') {
-  const lw = textWidth(label) + PAD * 2
+  // Look 4: the tile leads the strip (a check only when the badge says Verified - the same rule as the SVG: label 'Passthrough Verified').
+  const tileW = HEIGHT   // a square the height of the strip
+  const verified = label === 'Passthrough Verified'
+  const lw = tileW + textWidth(label) + PAD * 2
   const vw = textWidth(value) + PAD * 2
   const width = lw + vw
   const px = new Uint8Array(width * HEIGHT)   // one palette index per pixel
@@ -139,24 +180,35 @@ function renderBadgePng(label, value, valueColor = '#6b7280') {
       cx += ADVANCE
     }
   }
-  drawText(label, PAD)
+  drawText(label, tileW + PAD)
   drawText(value, lw + PAD)
 
-  // 2 bits per pixel, each row prefixed with filter type 0.
-  const rowBytes = Math.ceil(width / 4)
+  // The tile, over the left square. Outer corners were already cut above; a 1 px white seam (half a CSS pixel) separates it from the label.
+  const cover = tileCoverage(tileW, { cut: 'compact', verified, square: true })
+  const bodyIdx = verified ? 4 : 5, barIdx = verified ? 3 : 7
+  for (let y = 0; y < HEIGHT; y++) {
+    for (let x = 0; x < tileW; x++) {
+      if (px[y * width + x] === 0) continue          // the rounded outer corner stays transparent
+      const code = cover[y * tileW + x]
+      px[y * width + x] = x === tileW - 1 ? 3 : code === 3 ? 6 : code === 2 ? barIdx : bodyIdx
+    }
+  }
+
+  // 4 bits per pixel, each row prefixed with filter type 0.
+  const rowBytes = Math.ceil(width / 2)
   const raw = new Uint8Array(HEIGHT * (1 + rowBytes))
   for (let y = 0; y < HEIGHT; y++) {
     const base = y * (1 + rowBytes)
-    for (let x = 0; x < width; x++) raw[base + 1 + (x >> 2)] |= px[y * width + x] << (6 - (x & 3) * 2)
+    for (let x = 0; x < width; x++) raw[base + 1 + (x >> 1)] |= px[y * width + x] << ((x & 1) ? 0 : 4)
   }
 
   const [r, g, b] = parseColor(valueColor)
   const ihdr = new Uint8Array(13)
   const dv = new DataView(ihdr.buffer)
   dv.setUint32(0, width); dv.setUint32(4, HEIGHT)
-  ihdr[8] = 2; ihdr[9] = 3; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0   // 2-bit, indexed colour
-  const plte = Uint8Array.from([0, 0, 0, 0x37, 0x41, 0x51, r, g, b, 255, 255, 255])
-  const trns = Uint8Array.from([0, 255, 255, 255])
+  ihdr[8] = 4; ihdr[9] = 3; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0   // 4-bit, indexed colour
+  const plte = Uint8Array.from([0, 0, 0, 0x37, 0x41, 0x51, r, g, b, 255, 255, 255, 0x1e, 0x40, 0xaf, 0x6b, 0x72, 0x80, 0xff, 0xe2, 0x7a, 0xd1, 0xd5, 0xdb])
+  const trns = Uint8Array.from([0])
   const parts = [
     Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]),
     chunk('IHDR', ihdr), chunk('PLTE', plte), chunk('tRNS', trns), chunk('IDAT', zlibStored(raw)), chunk('IEND', new Uint8Array(0)),
@@ -182,7 +234,7 @@ function fitScale(text, maxScale, maxWidth) {
   return Math.max(1, Math.min(maxScale, Math.floor(maxWidth / (n * (GLYPH_W + 1) - 1))))
 }
 
-function renderSharePng({ headline = '', big = '', sub = '', footer = '', color = '#6b7280' } = {}) {
+function renderSharePng({ headline = '', big = '', sub = '', footer = '', color = '#6b7280', mark = null } = {}) {   // mark: 'verified' | 'neutral' | null
   const px = new Uint8Array(CARD_W * CARD_H)   // palette index 0 = white
   const fill = (x0, y0, w, h, idx) => { for (let y = y0; y < y0 + h; y++) px.fill(idx, y * CARD_W + x0, y * CARD_W + x0 + w) }
   function draw(text, x, y, scale, idx) {
@@ -198,24 +250,37 @@ function renderSharePng({ headline = '', big = '', sub = '', footer = '', color 
   const inner = CARD_W - CARD_MARGIN * 2
   fill(0, 0, CARD_W, 28, 2)                    // status colour bar
   fill(0, CARD_H - 28, CARD_W, 28, 2)
-  const hs = fitScale(headline, 9, inner)
-  draw(headline, CARD_MARGIN, 120, hs, 2)
-  if (big) { const bs = fitScale(big, 26, inner); draw(big, CARD_MARGIN, 120 + GLYPH_H * hs + 56, bs, 1) }
+  // Look 4: the tile leads the headline (full cut, with a check only for 'verified'; grey and empty for anything else).
+  const TILE = 150, tileGap = 40
+  const headX = mark ? CARD_MARGIN + TILE + tileGap : CARD_MARGIN
+  if (mark) {
+    const cover = tileCoverage(TILE, { cut: 'full', verified: mark === 'verified' })
+    const body = mark === 'verified' ? 4 : 6, bars = mark === 'verified' ? 0 : 7
+    for (let y = 0; y < TILE; y++)
+      for (let x = 0; x < TILE; x++) {
+        const code = cover[y * TILE + x]
+        if (code) px[(92 + y) * CARD_W + CARD_MARGIN + x] = code === 3 ? 5 : code === 2 ? bars : body
+      }
+  }
+  const hs = fitScale(headline, 9, CARD_W - CARD_MARGIN - headX)
+  draw(headline, headX, mark ? 92 + Math.round((TILE - GLYPH_H * hs) / 2) : 120, hs, 2)
+  if (big) { const bs = fitScale(big, mark ? 20 : 26, inner); draw(big, CARD_MARGIN, mark ? 92 + TILE + 28 : 120 + GLYPH_H * hs + 56, bs, 1) }
   if (sub) draw(sub, CARD_MARGIN, 440, fitScale(sub, 6, inner), 3)
   if (footer) draw(footer, CARD_MARGIN, 520, fitScale(footer, 6, inner), 3)
 
-  const rowBytes = Math.ceil(CARD_W / 4)
+  const rowBytes = Math.ceil(CARD_W / 2)
   const raw = new Uint8Array(CARD_H * (1 + rowBytes))
   for (let y = 0; y < CARD_H; y++) {
     const base = y * (1 + rowBytes)
-    for (let x = 0; x < CARD_W; x++) raw[base + 1 + (x >> 2)] |= px[y * CARD_W + x] << (6 - (x & 3) * 2)
+    for (let x = 0; x < CARD_W; x++) raw[base + 1 + (x >> 1)] |= px[y * CARD_W + x] << ((x & 1) ? 0 : 4)
   }
   const [r, g, b] = parseColor(color)
   const ihdr = new Uint8Array(13)
   const dv = new DataView(ihdr.buffer)
   dv.setUint32(0, CARD_W); dv.setUint32(4, CARD_H)
-  ihdr[8] = 2; ihdr[9] = 3
-  const plte = Uint8Array.from([255, 255, 255, 0x11, 0x18, 0x27, r, g, b, 0x6b, 0x72, 0x80])
+  ihdr[8] = 4; ihdr[9] = 3   // 4-bit indexed
+  // 0 white, 1 dark text, 2 status colour, 3 muted text, 4 tile blue, 5 gold, 6 tile grey, 7 light grey (the not-verified tile's bars)
+  const plte = Uint8Array.from([255, 255, 255, 0x11, 0x18, 0x27, r, g, b, 0x6b, 0x72, 0x80, 0x1e, 0x40, 0xaf, 0xff, 0xe2, 0x7a, 0x6b, 0x72, 0x80, 0xd1, 0xd5, 0xdb])
   const parts = [
     Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]),
     chunk('IHDR', ihdr), chunk('PLTE', plte), chunk('IDAT', zlibStored(raw)), chunk('IEND', new Uint8Array(0)),
@@ -226,4 +291,4 @@ function renderSharePng({ headline = '', big = '', sub = '', footer = '', color 
   return out
 }
 
-module.exports = { renderBadgePng, renderSharePng, textWidth, HEIGHT, SCALE, CARD_W, CARD_H, chunk, zlibStored }
+module.exports = { renderBadgePng, renderSharePng, tileCoverage, textWidth, HEIGHT, SCALE, CARD_W, CARD_H, chunk, zlibStored }

@@ -1145,8 +1145,9 @@ function coverLetterFileStem(resumeData) { return fileStems.coverLetterStem(resu
 // look never fails a delivery.
 function lookFor(scan, id) {
   try {
-    const t = designService.getDesignTokens(scan.userId || id || scan.id, id || scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText, version: scan.docTemplateVersion })
-    return { accent: t?.palette?.primary, serif: isSerifHeading(t?.fonts?.heading), text: t?.palette?.text }
+    const t = designService.getDesignTokens(scan.userId || id || scan.id, id || scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText, version: scan.docTemplateVersion, marks: scan.docMarks })
+    // `credential` is the owner's header-mark choice (look 4): false leaves the Word file's credential line out. Looks 1-3 carry no marks, so it stays on.
+    return { accent: t?.palette?.primary, serif: isSerifHeading(t?.fonts?.heading), text: t?.palette?.text, credential: t?.marks ? t.marks.header !== false : true }
   } catch (_) { return {} }
 }
 
@@ -1422,7 +1423,7 @@ async function updateDeliveredResume(ctx) {
   let resumeHash, pdfKey, pdfHash
   try {
     resumeHash = await badgeService.hashBytes(docxBytes)
-    const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: paperChoice, version: scan.docTemplateVersion })
+    const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: paperChoice, version: scan.docTemplateVersion, marks: scan.docMarks })
     ;({ pdfKey, pdfHash } = await renderDeliveredPdf(ctx.env, scan.id, resumeData, designTokens, verificationUrl, credentialVerified, version, { hash: !isPlain }))
   } catch (renderErr) {
     await deleteSuperseded(ctx.env, [docxKey], [])
@@ -1525,6 +1526,91 @@ async function updateDeliveredResume(ctx) {
     fixAtsDetail: buildAtsDetail(editReport),
     coverLetterText: null
   } })
+}
+
+// PATCH /api/scan/:id/doc-marks   { header?: boolean, colophon?: boolean, footer?: boolean }
+// Look 4 (migration 0124): the owner chooses which Passthrough marks their delivered files carry - the header badge, the proof block (QR
+// code + sentence) on the last page, the running footer with the verification code. Both files are re-drawn from the stored resume and the
+// superseded files' fingerprints move to the history ("earlier version", never "modified"), exactly as an owner edit does - but nothing is
+// re-scored (the content is the same; only what is printed about Passthrough changes) and no model is called, so it costs a render and
+// nothing else. The check on a mark is still decided by the page: a mark that is on shows "Verified" only if the scan really is.
+const docMarksBody = z.object({ header: z.boolean().optional(), colophon: z.boolean().optional(), footer: z.boolean().optional() }).strict()
+async function updateDocMarks(ctx) {
+  const user = ctx.get('user')
+  const supabase = getSupabase(ctx.env)
+  const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
+  if (error) throw error
+  const scan = scanRowToCamel(row)
+  if (!scan || scan.userId !== user.id) return ctx.json({ success: false, message: 'Access denied.' }, 403)
+  if (!scan.fixPurchased || scan.status !== 'FIX_DELIVERED')
+    return ctx.json({ success: false, message: 'Your resume must be delivered before its badges can be changed.' }, 400)
+  if (scan.verificationStatus === 'REVOKED' && scan.verificationRevokedReason !== REVOKE_REASON.OWNER)
+    return ctx.json({ success: false, message: 'This resume was taken down by Passthrough and can\'t be changed here.' }, 403)
+  if (!(await purchaseIsLive(supabase, scan))) return ctx.json(PURCHASE_REVERSED, 403)
+  if (scan.fixTier === 'FIX_PLAIN' || !scan.verificationUrl)
+    return ctx.json({ success: false, message: 'This resume has no verification link, so there is no badge to show.' }, 400)
+  if (!scan.docMarksAvailable)
+    return ctx.json({ success: false, code: 'NO_MARKS_ON_THIS_LAYOUT', message: 'This resume was delivered in an earlier layout that has no badge options.' }, 409)
+
+  let raw
+  try { raw = await ctx.req.json() } catch (_) { return ctx.json({ success: false, message: 'Invalid request body.' }, 400) }
+  const parsed = docMarksBody.safeParse(raw)
+  if (!parsed.success || Object.keys(parsed.data).length === 0)
+    return ctx.json({ success: false, message: 'Choose which badges to show: header, proof block, footer.' }, 400)
+  const before = designService.normalizeMarks(scan.docMarks)
+  const merged = { ...before, ...parsed.data }
+  if (designService.MARK_KEYS.every(k => merged[k] === before[k]))
+    return ctx.json({ success: true, data: { docMarks: before, changed: false } })
+
+  const data = scan.rewrittenResumeData || scan.originalResumeData
+  if (!data) return ctx.json({ success: false, message: 'No resume content is stored for this scan.' }, 400)
+  const jdText = safeSlice(scan.jobDescriptionText || '', c.MAX_JD_CHARS)
+  const paper = scan.paperSize || designService.detectPaper(jdText)
+  const verificationUrl = scan.verificationUrl
+  const credentialVerified = typeof scan.fixAtsScore === 'number' && scan.fixAtsScore >= c.ATS_BADGE_THRESHOLD
+  const withMarks = { ...scan, docMarks: merged }
+
+  const version = cryptoLib.randomToken(6)
+  const docxKey = storage.atsDocxKey(scan.id, version)
+  let docxBytes
+  try { docxBytes = await docxService.generateAtsDocx(data, verificationUrl, { verified: credentialVerified, paper, ...lookFor(withMarks) }) }
+  catch (e) { console.error(`[WARN] updateDocMarks: docx for ${scan.id} failed:`, e.message); return ctx.json({ success: false, message: 'We couldn\'t rebuild your files just now. Nothing was changed - please try again in a minute.' }, 502) }
+  await ctx.env.RESUMES_BUCKET.put(docxKey, docxBytes, { httpMetadata: { contentType: DOCX_MIME } })
+  let resumeHash, pdfKey, pdfHash
+  try {
+    resumeHash = await badgeService.hashBytes(docxBytes)
+    const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: scan.paperSize, version: scan.docTemplateVersion, marks: merged })
+    ;({ pdfKey, pdfHash } = await renderDeliveredPdf(ctx.env, scan.id, data, designTokens, verificationUrl, credentialVerified, version, { hash: true }))
+  } catch (renderErr) {
+    await deleteSuperseded(ctx.env, [docxKey], [])
+    throw renderErr
+  }
+  if (!pdfKey) {
+    // Both files or neither: a Word file that says one thing next to a PDF that says another is worse than an unchanged pair.
+    await deleteSuperseded(ctx.env, [docxKey], [])
+    return ctx.json({ success: false, message: 'We couldn\'t rebuild your PDF just now. Nothing was changed - please try again in a minute.' }, 502)
+  }
+
+  // Same optimistic write as an owner edit: only while the delivery is still exactly the one these files were drawn from.
+  const retrySeen = scan.fixRetryCount ?? 0
+  let q = supabase.from('scans').update({
+    doc_marks:           merged,
+    resume_ats_path:     docxKey,
+    resume_pdf_path:     pdfKey,
+    resume_pdf_hash:     pdfHash,
+    resume_hash:         resumeHash,
+    resume_hash_history: nextHashHistory(scan),
+  }).eq('id', scan.id).eq('status', 'FIX_DELIVERED').eq('fix_retry_count', retrySeen)
+  q = scan.resumeAtsPath ? q.eq('resume_ats_path', scan.resumeAtsPath) : q.is('resume_ats_path', null)
+  const { data: updated, error: updErr } = await q.select('id')
+  if (updErr) { await deleteSuperseded(ctx.env, [docxKey, pdfKey], []); throw updErr }
+  if (Array.isArray(updated) && updated.length === 0) {
+    await deleteSuperseded(ctx.env, [docxKey, pdfKey], [])
+    return ctx.json({ success: false, message: 'Your resume changed while this was being rebuilt. Refresh the page and try again.' }, 409)
+  }
+  await deleteSuperseded(ctx.env, [scan.resumeAtsPath, scan.resumePdfPath], [docxKey, pdfKey])
+  if (scan.verificationCode) await purgeBadgeCache(scan.verificationCode)
+  return ctx.json({ success: true, data: { docMarks: merged, changed: true, hasPdf: true } })
 }
 
 // Cover-letter slots (migration 0104). A letter is a paid model call, so each scan may have only so many written (constants.
@@ -2875,7 +2961,7 @@ async function regeneratePdf(ctx) {
   const isPlain = scan.fixTier === 'FIX_PLAIN'
   const verificationUrl = isPlain ? null : (scan.verificationUrl || null)
   const credentialVerified = !isPlain && typeof scan.fixAtsScore === 'number' && scan.fixAtsScore >= c.ATS_BADGE_THRESHOLD
-  const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: scan.paperSize, version: scan.docTemplateVersion })
+  const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: scan.paperSize, version: scan.docTemplateVersion, marks: scan.docMarks })
   const version = cryptoLib.randomToken(6)
   const { pdfKey, pdfHash, error: pdfError } = await renderDeliveredPdf(ctx.env, scan.id, data, designTokens, verificationUrl, credentialVerified, version, { hash: !isPlain })
   if (!pdfKey) {
@@ -3570,7 +3656,7 @@ async function generateFixRun(env, supabase, scanId, leaseToken = null) {
     })
     const resumeHash = isPlain ? null : await badgeService.hashBytes(docxBytes)
 
-    const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: scan.paperSize, version: scan.docTemplateVersion })
+    const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: scan.paperSize, version: scan.docTemplateVersion, marks: scan.docMarks })
     const { pdfKey, pdfHash } = await renderDeliveredPdf(env, scanId, finalData, designTokens, verificationUrl, credentialVerified, version, { hash: !isPlain })
 
     // SECTION 7 AUDIT FIX (bug): a PDF render failure is deliberately non-fatal — the
@@ -3848,7 +3934,7 @@ async function generateBadgeRun(env, supabase, scanId) {
     })
     const resumeHash = await badgeService.hashBytes(docxBytes)
 
-    const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: scan.paperSize, version: scan.docTemplateVersion })
+    const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: scan.paperSize, version: scan.docTemplateVersion, marks: scan.docMarks })
     const { pdfKey, pdfHash } = await renderDeliveredPdf(env, scanId, finalData, designTokens, verificationUrl, credentialVerified, version, { hash: true })
 
     // SECTION 7 AUDIT FIX (bug): same class of bug as generateFix (see its own comment) —
@@ -4022,6 +4108,6 @@ module.exports = {
   __test,
   createScan, getScanStatus, getScan, initiateFix, redeemCredit, upgradeBadgeToFix, retryFix, regeneratePdf: ledgered(regeneratePdf), updateVerifyVisibility, downloadFile, getScanHistory, deleteScan,
   updateResumeData: ledgered(updateResumeData), rescoreAi: ledgered(rescoreAi), downloadDraft, downloadDraftPdf,
-  structureResume: ledgered(structureResume), retryScan, updateDeliveredResume: ledgered(updateDeliveredResume), generateCoverLetter: ledgered(generateCoverLetter), saveCoverLetter, downloadCoverLetter, downloadCoverLetterPdf,  // section audit: "generate a resume from scratch"
+  structureResume: ledgered(structureResume), retryScan, updateDeliveredResume: ledgered(updateDeliveredResume), updateDocMarks, generateCoverLetter: ledgered(generateCoverLetter), saveCoverLetter, downloadCoverLetter, downloadCoverLetterPdf,  // section audit: "generate a resume from scratch"
   runAtsScan, generateFix, generateBadge, revertBadgeUpgrade  // exported for webhook + payments + cron
 }

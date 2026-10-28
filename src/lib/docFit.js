@@ -70,6 +70,43 @@ function densityFor(data, paper = 'letter', target = 'pdf', look = 1) {
   return load > cap && load <= cap * limit ? 'compact' : 'normal'
 }
 
+// ── look 4: room for the proof block ─────────────────────────────────────────────────────────────────────────────────────
+// The proof block (QR code + one sentence, pdfSignature.service.js) is ~28 mm tall and sits at the foot of the LAST page. A page that
+// is already full must not push it onto a page of its own, so the same estimate that picks the density also picks how much of the block
+// there is room for: 'full' (QR + sentence), 'line' (one line: tile, "Passthrough Verified", address) or nothing. Heights are in the same
+// line units as estimateLoad and were measured the same way (tests/docLook4.test.js documents the sweep).
+const COLOPHON = { full: 7.5, line: 2.6 }
+
+/**
+ * signatureFit(data, 'a4'|'letter', { colophon }) -> { tier: 'full'|'line'|null, density: 'normal'|'compact', f }
+ * One decision for the whole look-4 page: the block's height counts toward the load, so a page that only just fits without it is
+ * tightened to make room for it, and one that cannot be tightened enough loses the QR (then the line, then the block) instead of spilling.
+ */
+function signatureFit(data, paper = 'letter', { colophon = false } = {}) {
+  const load = estimateLoad(data, 3), cap = capacityFor(paper, 'pdf', 3), lim = SQUEEZE_LIMIT_SIG.pdf
+  const onePage = load <= cap * lim
+  let tier = null
+  if (colophon) {
+    // The estimate cannot say exactly where a page breaks (entries are kept whole, and a page squeezes by an amount the estimate only
+    // brackets), so every page count the real renderer could land on is tried and the WORST last page decides. Measured against real
+    // Chromium renders over 144 resumes (both papers, all four presets): a single guess spilled the block onto its own page in 5 of them.
+    const fits = t => {
+      const lo = Math.max(1, Math.ceil(load / (cap * PAGE_SQUEEZE_MAX))), hi = Math.max(1, Math.ceil(load / cap))
+      for (let pages = lo; pages <= hi; pages++) {
+        const fill = load - cap * (pages - 1) + (pages > 1 ? WHOLE_ENTRY_SLACK : 0)
+        if (fill + COLOPHON[t] > (pages === 1 ? cap * lim : cap)) return false
+      }
+      return true
+    }
+    tier = ['full', 'line'].find(fits) || null
+  }
+  const total = load + (tier ? COLOPHON[tier] : 0)
+  const density = onePage && total > cap ? 'compact' : 'normal'
+  return { tier, density, f: airinessFor(total, cap) }
+}
+const PAGE_SQUEEZE_MAX = 1.2     // the most a real render has been seen to hold beyond the nominal page
+const WHOLE_ENTRY_SLACK = 6      // entries are not split across pages, so a later page can end earlier than its load says
+
 /** How much room a short page is given, as a spacing multiplier: 1 once a page is mostly full, up to 1.3 for a nearly empty one. */
 function airinessFor(load, cap) {
   const r = Number(load) / Number(cap)
@@ -94,4 +131,4 @@ function letterDensityFor(text, paper = 'letter', target = 'pdf') {
   return words > cap && words <= cap * t.limit ? 'compact' : 'normal'
 }
 
-module.exports = { airinessFor, letterDensityFor, LETTER_WORDS, estimateLoad, densityFor, capacityFor, CAPACITY_A4, SQUEEZE_LIMIT }
+module.exports = { airinessFor, signatureFit, COLOPHON, SQUEEZE_LIMIT_SIG, letterDensityFor, LETTER_WORDS, estimateLoad, densityFor, capacityFor, CAPACITY_A4, SQUEEZE_LIMIT }

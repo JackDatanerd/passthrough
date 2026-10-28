@@ -171,6 +171,10 @@ function scanRowToCamel(row) {
     seniorityLevel:      row.seniority_level,
     // Which document look rules render this scan's files (migration 0101): 1 for every scan from before the column. Internal - not in CLIENT_SCAN_FIELDS.
     docTemplateVersion:  row.doc_template_version ?? 1,
+    // Look 4 (migration 0124): which Passthrough marks the owner wants on their files, and whether this scan's look has any marks to choose
+    // (looks 1-3 do not). The browser gets both; it never needs the look number itself.
+    docMarks:            row.doc_marks ?? null,
+    docMarksAvailable:   Number(row.doc_template_version ?? 1) >= 4,
     userId:              row.user_id,
     // sha256 of the bearer token, never the token itself (migration 0045)
     anonTokenHash:       row.anon_token,
@@ -217,6 +221,7 @@ const CLIENT_SCAN_FIELDS = [
   'anonExpiresAt', 'contactName', 'contactEmail', 'inputMode', 'rawBrainDumpText', 'originalResumeData',
   'rewrittenResumeData', 'userEditedResumeData', 'quantificationPrompts', 'createdAt', 'updatedAt', 'fixCreditHeld',
   'scanStartedAt', 'scanStage', 'fixProgress',           // waiting-screen telemetry (0088); no resume content in either
+  'docMarks', 'docMarksAvailable',                       // the owner's choice of marks on their files (0124) and whether this scan's look has any
 ]
 // Allow-list: only CLIENT_SCAN_FIELDS get out, whatever else scanRowToCamel grows.
 function toClientScan(scan) {
