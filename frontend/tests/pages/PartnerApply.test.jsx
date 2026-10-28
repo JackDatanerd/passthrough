@@ -10,7 +10,8 @@ import PartnerApply from '../../src/pages/PartnerApply'
 // even though the page handles it. Calls are recorded by hand instead.
 const h = vi.hoisted(() => ({ calls: [], impl: null }))
 vi.mock('../../src/lib/api', () => ({
-  default: { post: (...args) => { h.calls.push(args); return h.impl(...args) } },
+  // GET /partners/program carries the terms version the page must send back (Partners round 41); it is not a recorded call.
+  default: { get: () => Promise.resolve({ data: { data: { termsVersion: '2026-10b' } } }), post: (...args) => { h.calls.push(args); return h.impl(...args) } },
   getErrorMessage: (e, f) => e?.response?.data?.message || e?.message || f,
 }))
 vi.mock('../../src/components/layout/Navbar', () => ({ default: () => null }))
@@ -38,7 +39,7 @@ describe('PartnerApply', () => {
     await fill()
     await submit()
     expect(await screen.findByText(/application received/i)).toBeInTheDocument()
-    expect(h.calls).toEqual([['/partners/apply', { name: 'Ann Coach', email: 'ann@x.co', acceptTerms: true }]])
+    expect(h.calls).toEqual([['/partners/apply', { name: 'Ann Coach', email: 'ann@x.co', acceptTerms: true, termsVersion: '2026-10b' }]])
   })
 
   it('shows the server error and stays on the form', async () => {

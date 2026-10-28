@@ -1,0 +1,27 @@
+SECTION 4 (PARTNERS / REFERRAL) — ROUND 43 (independent pass, base 58c9497)
+
+APPLY MIGRATION 0123 BEFORE DEPLOYING THE WORKER. EXPECTED_SCHEMA_VERSION is now 123.
+
+BUGS
+B1  Migration 0108 rewrote increment_referral_code_usage and dropped what 0100 had added: when a sale was already refunded
+    at the moment its usage counter was bumped, usage_released_at was no longer stamped. The row ended up counted but
+    "unreleased" with nothing added to uses_so_far, so the next release_referral_code_usage_for_ledger call (a redelivered
+    refund webhook takes that path) took a slot off the code that was never put on - a limited code could be sold one
+    time too many. 0123 restores the stamp (keeping 0108's "charge the sale's CURRENT code") and stamps the rows 0108
+    already left in that state.
+    (0123_partners_section4_round43.sql; tests/migrations.0123.pglite.test.js)
+B2  Partner-facing money added cents of different currencies together and labelled the sum with the platform currency
+    (reachable once the platform currency is changed). The yearly statement now returns one block per currency
+    (top-level figures stay the platform currency; the rest are in data.currencies) and the page shows one block each and
+    a per-currency CSV. The dashboard returns unpaidByCurrency + mixedCurrency and shows a notice with each currency's
+    amount. Conversion rows (dashboard and paged list) carry their own currency, used by the page and its CSV.
+    (partners.controller.js getPartnerStatement / buildStatementCurrencies / unpaidByCurrency / conversionRowOf,
+    PartnerDashboard.jsx; tests/partners.round43.test.js, frontend/tests/partnerDashboard.round43.test.jsx)
+
+TEST FIX
+    frontend/tests/pages/PartnerApply.test.jsx mocked api without get(), so every test in it failed since round 41 made the
+    page fetch the terms version. The mock now answers GET /partners/program and the expected POST carries termsVersion.
+
+NOT CHANGED / KNOWN
+    frontend/tests/adminHotCategories.test.jsx, home.page.test.jsx, homeAdminPreview.test.jsx fail at the base commit
+    too (homepage hot-category area, not Section 4).

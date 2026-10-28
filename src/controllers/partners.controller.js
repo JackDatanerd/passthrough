@@ -70,6 +70,19 @@ function pendingCents(ledgerRows) {
   return (ledgerRows || []).filter(l => !l.payout_id).reduce((sum, l) => sum + l.commission_amount_cents, 0)
 }
 
+// Unpaid commission per currency. Cents of different currencies must never be added together: the admin screens flag a partner whose
+// unpaid ledger spans currencies (the platform currency was changed), and the partner's own pages now say so too. A row with no
+// currency of its own belongs to the platform currency.
+function unpaidByCurrency(ledgerRows, fallbackCurrency) {
+  const out = {}
+  for (const l of ledgerRows || []) {
+    if (l.payout_id) continue
+    const cur = String(l.currency || fallbackCurrency).toUpperCase()
+    out[cur] = (out[cur] || 0) + (Number(l.commission_amount_cents) || 0)
+  }
+  return out
+}
+
 // Buckets raw commission_ledger rows into the last `count` twice-monthly
 // cycles (see lib/cycles.js) — gross/commission/paid/unpaid totals per
 // cycle, so "how much is owed for a specific cycle" is an actual number
@@ -2137,6 +2150,8 @@ function conversionRowOf(row, codeTextById) {
     grossAmountCents:      row.gross_amount_cents,
     commissionRate:        row.commission_rate == null ? null : Number(row.commission_rate),
     commissionAmountCents: row.commission_amount_cents,
+    // Each row's own currency (null = the platform currency): a partner's ledger can span currencies after a currency change.
+    currency:              row.currency ?? null,
     paid:                  !!row.payout_id,
     // Round 10: which payout settled this row (the dashboard's payout list carries the same id), so a partner can open
     // "the sales behind this payout" and reconcile what they received.
@@ -2235,7 +2250,7 @@ async function getPartnerDashboard(ctx) {
   if (!partner) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)
   // Round 27: the ledger is read in keyset pages (see loadLedgerForPartner), not embedded in the partner query.
   partner.commission_ledger = await loadLedgerForPartner(supabase, partner.id,
-    'id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, reverses_ledger_id, adjusts_ledger_id, reversal_reason, kind, adjustment_reason, attribution_source, attribution_sub, created_at, payments(status)')
+    'id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, currency, payout_id, reverses_ledger_id, adjusts_ledger_id, reversal_reason, kind, adjustment_reason, attribution_source, attribution_sub, created_at, payments(status)')
 
   const ledger = partner.commission_ledger || []
   const codes  = partner.referral_codes || []
@@ -2324,6 +2339,10 @@ async function getPartnerDashboard(ctx) {
     // PartnerDashboard.jsx's Pending/Paid stats and per-tier prices always
     // rendered as USD regardless of what's actually configured.
     currency:       c.activeCurrency(ctx.env),
+    // Unpaid commission per currency. When the platform currency has been changed the ledger can hold more than one, and the
+    // headline totals add raw cents; the page uses these two fields to say so and to show each currency on its own.
+    unpaidByCurrency: unpaidByCurrency(ledger, c.activeCurrency(ctx.env)),
+    mixedCurrency:    Object.keys(unpaidByCurrency(ledger, c.activeCurrency(ctx.env))).length > 1,
     // Per-code conversions + conversion rate (clicks -> sales), net of refunds.
     // partnerId is an internal id with no partner-facing purpose — dropped here (round 5).
     referralCodes:  (await attachSignupCounts(supabase, attachCodeStats(codes.map(referralCodeRowToCamel), ledger, codes))).map(({ partnerId, ...rc }) => ({
@@ -2423,7 +2442,7 @@ async function getPartnerConversions(ctx) {
   // `unpaid=true` to what is still waiting. A malformed id matches nothing rather than erroring.
   const wantedPayoutId = ctx.req.query('payoutId')
   let ledgerQuery = supabase.from('commission_ledger')
-    .select('id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, reverses_ledger_id, reversal_reason, kind, adjustment_reason, attribution_sub, created_at', { count: 'exact' })
+    .select('id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, currency, payout_id, reverses_ledger_id, reversal_reason, kind, adjustment_reason, attribution_sub, created_at', { count: 'exact' })
     .eq('partner_id', partner.id)
   if (wantedPayoutId) ledgerQuery = UUID_RE.test(wantedPayoutId) ? ledgerQuery.eq('payout_id', wantedPayoutId) : ledgerQuery.eq('id', '00000000-0000-0000-0000-000000000000')
   else if (ctx.req.query('unpaid') === 'true') ledgerQuery = ledgerQuery.is('payout_id', null)
@@ -3808,8 +3827,9 @@ function statementYearOf(ctx) {
   const asked = Number(ctx.req.query('year'))
   return Number.isInteger(asked) && asked >= STATEMENT_YEAR_MIN && asked <= now ? asked : now
 }
-// The ledger rows of one UTC calendar year folded into twelve months. Sales and reversals are kept apart so a refund reads as a refund;
-// money is per currency because a partner's ledger can span more than one.
+// The ledger rows of one UTC calendar year folded into twelve months. Sales and reversals are kept apart so a refund reads as a refund.
+// Money is folded for ONE currency at a time (the caller filters the rows): a partner's ledger can span more than one after the
+// platform currency was changed, and cents of different currencies must never be added together.
 function foldStatementMonths(rows, year) {
   const months = Array.from({ length: 12 }, (_, i) => ({ month: i + 1, sales: 0, grossCents: 0, commissionCents: 0, reversalCents: 0, adjustmentCents: 0, netCents: 0 }))
   for (const r of rows) {
@@ -3823,6 +3843,29 @@ function foldStatementMonths(rows, year) {
     m.netCents += cents
   }
   return months
+}
+// One statement block per currency the partner has earned or been paid in that year. The platform currency always comes first (and is
+// present even when empty), so the response keeps its old single-currency shape for the common case.
+function buildStatementCurrencies(ledger, payouts, year, activeCurrency) {
+  const curOf = v => String(v || activeCurrency).toUpperCase()
+  const active = String(activeCurrency).toUpperCase()
+  const seen = new Set([active])
+  for (const r of ledger) {
+    const at = new Date(r.created_at)
+    if (!Number.isNaN(at.getTime()) && at.getUTCFullYear() === year) seen.add(curOf(r.currency))
+  }
+  for (const p of payouts) seen.add(curOf(p.currency))
+  const order = [active, ...[...seen].filter(cu => cu !== active).sort()]
+  return order.map(currency => {
+    const months = foldStatementMonths(ledger.filter(r => curOf(r.currency) === currency), year)
+    const paid = payouts.filter(p => curOf(p.currency) === currency)
+    return {
+      currency, months,
+      earnedCents: months.reduce((sum, m) => sum + m.netCents, 0),
+      paidCents: paid.reduce((sum, p) => sum + (Number(p.amount_cents) || 0), 0),
+      payoutCount: paid.length
+    }
+  })
 }
 async function getPartnerStatement(ctx) {
   noStore(ctx)
@@ -3838,12 +3881,14 @@ async function getPartnerStatement(ctx) {
       .is('voided_at', null).gte('paid_at', `${year}-01-01T00:00:00.000Z`).lt('paid_at', `${year + 1}-01-01T00:00:00.000Z`).order('paid_at', { ascending: true })
   ])
   if (payoutsRes.error) throw payoutsRes.error
-  const months = foldStatementMonths(ledger, year)
-  const paidCents = (payoutsRes.data || []).reduce((sum, p) => sum + (Number(p.amount_cents) || 0), 0)
+  const activeCurrency = c.activeCurrency(ctx.env)
+  const currencies = buildStatementCurrencies(ledger, payoutsRes.data || [], year, activeCurrency)
+  const main = currencies[0]   // the platform currency
   return ctx.json({ success: true, data: {
-    year, currency: c.activeCurrency(ctx.env), name: partner.name,
-    months, earnedCents: months.reduce((sum, m) => sum + m.netCents, 0), paidCents,
-    payoutCount: (payoutsRes.data || []).length,
+    year, currency: activeCurrency, name: partner.name,
+    // The platform currency's figures keep the original top-level fields; any other currency is in `currencies`.
+    months: main.months, earnedCents: main.earnedCents, paidCents: main.paidCents, payoutCount: main.payoutCount,
+    currencies,
     taxCountry: partner.tax_country ?? null,
     taxIdOnFile: !!partner.tax_id,
     // Statement years the partner can ask for: from the first year they have any ledger row or payout.
@@ -4010,7 +4055,7 @@ module.exports = {
   adminResendPayoutLink, adminRegeneratePayoutLink, adminGetPartnerLinks, adminRecordPayout,
   adminCreateReferralCode, adminUpdateReferralCode, adminVoidPayout, adminRecordPayoutBatch,
   adminListReferralCodes, adminListPayouts, adminPartnersOverview, adminPayoutRunExport,
-  getPartnerStatement, requestPartnerCode, adminListCodeRequests, adminResolveCodeRequest, adminTaxSummary, foldStatementMonths,
+  getPartnerStatement, requestPartnerCode, adminListCodeRequests, adminResolveCodeRequest, adminTaxSummary, foldStatementMonths, buildStatementCurrencies, unpaidByCurrency,
   getPartnerByToken, submitPayoutDetails, getPartnerDashboard, getPartnerConversions, getProgramTerms, requestPayoutLink, updatePartnerNotifications, trackClick,
   applyAsPartner, adminListApplications, adminApproveApplication, adminRejectApplication,
   recoverPartnerLinks, adminAnonymizePartner,

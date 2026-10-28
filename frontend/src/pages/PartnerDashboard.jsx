@@ -445,7 +445,7 @@ function ConversionsSection({ token, initial, total, currency, payouts = [], cod
           r.isReversal ? 'Reversal' : r.paid ? 'Paid' : 'Pending',
           r.paid && paidOnById.get(r.payoutId) ? String(paidOnById.get(r.payoutId)).slice(0, 10) : '',
           r.isAdjustment ? (r.adjustmentReason || '') : '',
-          currency || '',
+          r.currency || currency || '',
           r.sub || '',
         ]),
       ])
@@ -487,7 +487,7 @@ function ConversionsSection({ token, initial, total, currency, payouts = [], cod
       ) : (
         <div>
           <ul className="flex flex-col gap-2 mb-2">
-            {loaded.map(cv => <ConversionRow key={cv.id} conversion={cv} currency={currency} />)}
+            {loaded.map(cv => <ConversionRow key={cv.id} conversion={cv} currency={cv.currency || currency} />)}
           </ul>
           <div className="flex items-center gap-3">
             {typeof total === 'number' && total > loaded.length && (
@@ -706,16 +706,25 @@ function AnnualStatement({ token, currency }) {
       .catch(() => { if (alive) setState('error') })
     return () => { alive = false }
   }, [token, year])
+  // One block per currency: amounts in different currencies are never added together. An older response without `currencies` is one block.
+  const cur = currency || data?.currency
+  const blocks = data ? (Array.isArray(data.currencies) && data.currencies.length
+    ? data.currencies
+    : [{ currency: cur, months: data.months, earnedCents: data.earnedCents, paidCents: data.paidCents, payoutCount: data.payoutCount }]) : []
+  // A currency with nothing in this year is left out, except when that would leave nothing to show at all.
+  const shown = blocks.filter(b => b.earnedCents !== 0 || b.paidCents !== 0 || b.payoutCount > 0 || b.months.some(m => m.sales > 0 || m.netCents !== 0))
+  const visible = shown.length ? shown : blocks.slice(0, 1)
   function download() {
     if (!data) return
-    downloadCsv(`passthrough-statement-${data.year}.csv`, [
-      ['Month (UTC)', 'Sales', 'Sale total', 'Commission earned', 'Refund reversals', 'Adjustments', 'Net', 'Currency'],
-      ...data.months.map(m => [`${data.year}-${String(m.month).padStart(2, '0')}`, m.sales, m.grossCents / 100, m.commissionCents / 100, m.reversalCents / 100, m.adjustmentCents / 100, m.netCents / 100, currency || data.currency || '']),
-      ['Total earned (net)', '', '', '', '', '', data.earnedCents / 100, currency || data.currency || ''],
-      ['Paid out in the year', '', '', '', '', '', data.paidCents / 100, currency || data.currency || ''],
-    ])
+    const rows = [['Month (UTC)', 'Sales', 'Sale total', 'Commission earned', 'Refund reversals', 'Adjustments', 'Net', 'Currency']]
+    for (const b of visible) {
+      const code = b.currency || cur || ''
+      rows.push(...b.months.map(m => [`${data.year}-${String(m.month).padStart(2, '0')}`, m.sales, m.grossCents / 100, m.commissionCents / 100, m.reversalCents / 100, m.adjustmentCents / 100, m.netCents / 100, code]))
+      rows.push(['Total earned (net)', '', '', '', '', '', b.earnedCents / 100, code])
+      rows.push(['Paid out in the year', '', '', '', '', '', b.paidCents / 100, code])
+    }
+    downloadCsv(`passthrough-statement-${data.year}.csv`, rows)
   }
-  const cur = currency || data?.currency
   return <section data-testid="annual-statement">
     <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
       <h2 className="text-lg font-semibold text-gray-900">Yearly statement</h2>
@@ -728,16 +737,22 @@ function AnnualStatement({ token, currency }) {
     </div>
     {state === 'loading' && <p className="text-xs text-gray-500">Loading…</p>}
     {state === 'error' && <p aria-live="polite" className="text-xs text-red-600">Could not load the statement — please try again.</p>}
-    {state === 'ready' && data && <div className="border border-gray-200 rounded-xl bg-white p-4">
-      <div className="flex gap-6 flex-wrap text-sm">
-        <div><span className="block text-xs text-gray-500">Earned in {data.year} (net of refunds)</span><span className="font-semibold text-gray-900">{fmtCents(data.earnedCents, cur)}</span></div>
-        <div><span className="block text-xs text-gray-500">Paid out in {data.year}</span><span className="font-semibold text-gray-900">{fmtCents(data.paidCents, cur)}</span> <span className="text-xs text-gray-400">({data.payoutCount} payout{data.payoutCount === 1 ? '' : 's'})</span></div>
-      </div>
-      <ul className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-1 text-xs text-gray-600">
-        {data.months.filter(m => m.sales > 0 || m.netCents !== 0).map(m => <li key={m.month} className="flex justify-between"><span>{MONTH_LABELS[m.month - 1]}</span><span>{fmtCents(m.netCents, cur)}</span></li>)}
-      </ul>
-      <p className="text-xs text-gray-400 mt-3">
-        {data.taxCountry || data.taxIdOnFile ? 'Your tax details are on file.' : 'No tax details on file — you can add them on your payout-details page.'} Months are in UTC. Amounts paid out may differ from amounts earned in the same year.
+    {state === 'ready' && data && <div className="border border-gray-200 rounded-xl bg-white p-4 flex flex-col gap-4">
+      {visible.map(b => {
+        const bc = b.currency || cur
+        return <div key={bc} data-testid={`statement-${bc}`}>
+          {visible.length > 1 && <p className="text-xs font-semibold text-gray-700 mb-1">{bc}</p>}
+          <div className="flex gap-6 flex-wrap text-sm">
+            <div><span className="block text-xs text-gray-500">Earned in {data.year} (net of refunds)</span><span className="font-semibold text-gray-900">{fmtCents(b.earnedCents, bc)}</span></div>
+            <div><span className="block text-xs text-gray-500">Paid out in {data.year}</span><span className="font-semibold text-gray-900">{fmtCents(b.paidCents, bc)}</span> <span className="text-xs text-gray-400">({b.payoutCount} payout{b.payoutCount === 1 ? '' : 's'})</span></div>
+          </div>
+          <ul className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-1 text-xs text-gray-600">
+            {b.months.filter(m => m.sales > 0 || m.netCents !== 0).map(m => <li key={m.month} className="flex justify-between"><span>{MONTH_LABELS[m.month - 1]}</span><span>{fmtCents(m.netCents, bc)}</span></li>)}
+          </ul>
+        </div>
+      })}
+      <p className="text-xs text-gray-400">
+        {data.taxCountry || data.taxIdOnFile ? 'Your tax details are on file.' : 'No tax details on file — you can add them on your payout-details page.'} Months are in UTC. Amounts paid out may differ from amounts earned in the same year.{visible.length > 1 ? ' Each currency is shown on its own; they are never added together.' : ''}
       </p>
     </div>}
   </section>
@@ -925,6 +940,14 @@ export default function PartnerDashboard() {
               {data.creditCents > 0 && (
                 <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600" data-testid="refund-credit">
                   A credit of {fmtCents(data.creditCents, data.currency)} (refunds or balance adjustments) will be taken off your next payout.
+                </div>
+              )}
+
+              {data.mixedCurrency && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900" data-testid="mixed-currency">
+                  Your unpaid commission is in more than one currency. Each payout settles one currency at a time, and the totals on this page add the
+                  amounts together without converting them, so rely on the breakdown:{' '}
+                  {Object.entries(data.unpaidByCurrency || {}).map(([cur, cents]) => fmtCents(cents, cur)).join(' · ')}.
                 </div>
               )}
 
