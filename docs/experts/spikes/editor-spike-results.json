@@ -1,0 +1,127 @@
+{
+  "generated": "2026-10-28T03:49:58.139Z",
+  "honestLimits": [
+    "The three resumes are synthetic.",
+    "PDF rendered from the app's resume HTML by wkhtmltopdf; production uses Cloudflare Browser Rendering (not available here)."
+  ],
+  "resumes": {
+    "us_software": {
+      "checks": {
+        "lockedValuesNotInMaskedBody": true,
+        "roundTripExact": true,
+        "expertEditAccepted": true,
+        "everyViolationRefused": true,
+        "diffMatchesManual": true,
+        "editedRestoreNoMissing": true,
+        "lockedValuesSurviveEdit": true,
+        "wordRendersAndHasLockedValues": true,
+        "pdfRendersAndHasLockedValues": true,
+        "scorerTextHasNoMarkers": true
+      },
+      "leaked": [],
+      "editErrors": [],
+      "refusals": {
+        "change the email": "refused",
+        "change an employer": "refused",
+        "change dates": "refused",
+        "type an email address": "refused",
+        "type a phone number": "refused",
+        "type a web address": "refused",
+        "drop a job": "refused",
+        "remove the name": "refused"
+      },
+      "diffPaths": [
+        "experience.0.bullets.3",
+        "experience.1.bullets.1",
+        "skills.4",
+        "summary"
+      ],
+      "manualExpected": [
+        "experience.0.bullets.3",
+        "experience.1.bullets.1",
+        "skills.4",
+        "summary"
+      ],
+      "wordBytes": 10376,
+      "pdfPages": 1,
+      "pdfBytes": 351172
+    },
+    "uk_academic": {
+      "checks": {
+        "lockedValuesNotInMaskedBody": true,
+        "roundTripExact": true,
+        "expertEditAccepted": true,
+        "everyViolationRefused": true,
+        "diffMatchesManual": true,
+        "editedRestoreNoMissing": true,
+        "lockedValuesSurviveEdit": true,
+        "wordRendersAndHasLockedValues": true,
+        "pdfRendersAndHasLockedValues": true,
+        "scorerTextHasNoMarkers": true
+      },
+      "leaked": [],
+      "editErrors": [],
+      "refusals": {
+        "change the email": "refused",
+        "change an employer": "refused",
+        "change dates": "refused",
+        "type an email address": "refused",
+        "type a phone number": "refused",
+        "type a web address": "refused",
+        "drop a job": "refused",
+        "remove the name": "refused"
+      },
+      "diffPaths": [
+        "awards.1",
+        "summary"
+      ],
+      "manualExpected": [
+        "awards.1",
+        "summary"
+      ],
+      "wordBytes": 10262,
+      "pdfPages": 1,
+      "pdfBytes": 327274
+    },
+    "nairobi_ops": {
+      "checks": {
+        "lockedValuesNotInMaskedBody": true,
+        "roundTripExact": true,
+        "expertEditAccepted": true,
+        "everyViolationRefused": true,
+        "diffMatchesManual": true,
+        "editedRestoreNoMissing": true,
+        "lockedValuesSurviveEdit": true,
+        "wordRendersAndHasLockedValues": true,
+        "pdfRendersAndHasLockedValues": true,
+        "scorerTextHasNoMarkers": true
+      },
+      "leaked": [],
+      "editErrors": [],
+      "refusals": {
+        "change the email": "refused",
+        "change an employer": "refused",
+        "change dates": "refused",
+        "type an email address": "refused",
+        "type a phone number": "refused",
+        "type a web address": "refused",
+        "drop a job": "refused",
+        "remove the name": "refused"
+      },
+      "diffPaths": [
+        "experience.0.bullets.0",
+        "skills.3",
+        "summary"
+      ],
+      "manualExpected": [
+        "experience.0.bullets.0",
+        "skills.3",
+        "summary"
+      ],
+      "wordBytes": 10157,
+      "pdfPages": 1,
+      "pdfBytes": 279129
+    }
+  },
+  "verdict": "PASS"
+}

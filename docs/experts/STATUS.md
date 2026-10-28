@@ -7,14 +7,15 @@ Contract: `passthrough-experts-spec-pack-index.docx` (read first), `passthrough-
 - Phase 0B (non-code groundwork) was built on commit `59f6d4a` (26 Oct 2026, 22:20 +03:00, "Scan/ATS: stop foreign stop words ..."). The files read for Phase 0B tasks 4 and 9 were read at `4f261ac`; the only change between `4f261ac` and `59f6d4a` is the ATS service, its test and a CHANGES file, none of which Phase 0B reads.
 - Phase 0A was built on commit `ae07e09` (26 Oct 2026, 13:34 +03:00, "Partners round 41 ...") and is committed as `4f261ac`.
 - Earlier drafts were checked against `7388d37` and `38817f2` (24 Oct). Between `7388d37` and `ae07e09` no file this work touches or depends on changed.
-- Next free migration at the time: **0119** (files, ledger and `EXPECTED_SCHEMA_VERSION` all stood at 118).
+- **Phase 1 (concierge pilot) was built on commit `%s`** (28 Oct 2026, 06:44 +03:00, "Partners section 4 round 43 ..."), after four earlier re-clones as the repo moved (bases `6473c79`, `6c2aa26`, `0ba3616`, `491c7f5`). Next free migration at that time: **0124** (files and ledger stood at 123; `EXPECTED_SCHEMA_VERSION` 123).
+- Next free migration at the Phase 0A time: **0119** (files, ledger and `EXPECTED_SCHEMA_VERSION` all stood at 118).
 
 ## Phases
 
 | Phase | Name | State |
 |---|---|---|
 | 0 | Demand test and groundwork | **0A (demand test code) committed as `4f261ac`; deployment not confirmed.** **0B (non-code groundwork) delivered as drafts in `docs/experts/phase0/`; most items still need the owner or counsel (checklist below).** |
-| 1 | Concierge pilot | not started |
+| 1 | Concierge pilot | **Built, behind a flag (off), not deployed. Gate = the pilot's results (section 22), which only the owner can produce.** See "Phase 1" below. |
 | 2 | MVP platform, invite only | not started |
 | 3 | Marketplace mechanics | not started |
 | 4 | Grades and quality | not started |
@@ -55,6 +56,97 @@ A fake door for **Human rewrite**, behind one flag, waitlist only. No payment, n
 7. **Events list:** engineering spec 16 refers to an event catalogue "in the design specification". None exists in the pack; the six events in the owner's brief were used.
 8. **Waitlist button wording and placement** follow the owner's brief ("Human rewrite", secondary, beside the AI Fix). Prices shown are US dollars.
 9. **Migration is additive only**: two `create table`, their indexes, row level security on with no policy, `revoke all` from anon/authenticated, the ledger row and the `schema_version` upsert. No function is added, so there is nothing to revoke execute on.
+
+
+## Phase 1: plan (written before building)
+
+**Goal.** A small, hand-picked group of experts serves real paid orders, with a human dispatching, so the owner learns price, quality, on-time delivery and margin before the marketplace is built.
+
+**Built (all behind `EXPERTS_ENABLED`, off by default):**
+1. A human product kind in the existing checkout path: a payment row with `product_kind` and **no scan**, a job created at checkout in `awaiting_payment` with the brief, frozen documents and a unique payment id; it moves to `offered` on confirmed payment, once. Prices and pay come from the settings row, never code.
+2. The human line skips the whole code path (no code, usage slot, attribution, commission, welcome code or promo price). The human order code imports none of it, and a test proves it with every code type and the promo window active.
+3. The brief form with supporting materials (6.3), the 18+ tick, third-party rights tick and optional improvement consent (6.2), using the Phase 0 wording.
+4. Admin inbox inside the existing admin area: list, filter by state, view the brief, assign by hand, review, deliver, record minutes and costs, refund, accept, expert accounts, manual payouts, the pilot summary.
+5. **Expert accounts: the minimum.** Hand-created by the operator (temporary password shown once), password plus authenticator-app code, a separate token secret, no self-registration. Pilot workbench: structured editor, locked contact fields and read-only anchors enforced **on the server**, up to three questions, submit for review.
+6. Pilot recording fields on the job (active minutes, questions, revision, time to delivery, score before and after, rating, cost), job events, the operator's review of every delivery (Appendix F.3), client emails (order received, question, delivered; a refund uses the existing refund email), one revision round, the 72-hour acceptance rule and earnings written once on acceptance, retention and deletion of job files, and an audit row for every expert or staff view of client content.
+
+**FLAG (needs the owner), where the plan goes beyond or differs from the specs:**
+- The engineering spec puts expert two-factor columns, sessions and the expert realm in Phase 2. The pilot needs the **minimum** of them: two-factor on `expert_accounts`, stateless tokens revoked by a token version, **no `expert_sessions` table, no recovery codes** (the operator resets two-factor by hand), no idle timeout. Phase 2 replaces this.
+- Expert pages are a lazy chunk of the existing frontend with their own API client and storage key, not a separate site (engineering spec 2.3 splits them in Phase 2).
+- The brief says "settings table"; the app has none, so the settings are one row of `system_state` (key `human_pilot`), the same table the promo config uses.
+- Polish has no turnaround in either spec, so it is built but **switched off** in the settings.
+
+**Out (not built):** claim queue, offer cascade, strikes, grades, graders, payout automation, applications and the paid test flow, disputes console, the assistant, public explainer pages, marketplace settings UI, `expert_sessions`, recovery codes, a late-credit tool (the credit is recorded, not issued).
+
+**Decision rule used.** If the editor spike passes, build the structured document path; if not, the operator-redaction fallback. If the realm spike fails, stop. **Both spikes passed, so the structured path was built.**
+
+## Phase 1: spikes (code under `docs/experts/spikes/`, throwaway)
+
+| Spike | Pass criteria (product spec 22.4) | Result |
+|---|---|---|
+| Editor: lock fields, track changes, render both files (`editor-spike.cjs`, results in `editor-spike-results.json`) | Locked values round-trip exactly; the diff matches a manual check; Word and PDF both render | **PASS** on three resumes, 10 checks each: the masked body holds no contact value; restore(lock(x)) equals x; the expert's edit is accepted; all 8 violations (change email, employer, dates; type an email, a phone, a web address; drop a job; remove the name) are refused; the diff paths equal the manual list; Word (LibreOffice render) and PDF (wkhtmltopdf, read back by OCR) contain the restored values and no marker. |
+| Realm and token coexistence (`realm-spike.cjs`, results in `realm-spike-results.json`) | Cross-realm tokens rejected; no change to the existing admin tests | **PASS**: expert tokens fail the main auth middleware (and so the admin area) and main tokens fail the expert middleware, on signature alone; a shared or short secret refuses to run; **no existing admin or auth test file was changed**, and the pilot adds **no** failure to them (the existing failures in that set also fail on the untouched base). |
+
+**Limits of the spikes (say so before you rely on them):** the three resumes are **synthetic** (no real customer resume is available here); the PDF came from the app's own resume HTML through wkhtmltopdf, **not Cloudflare Browser Rendering**, so it proves the HTML is complete and prints, not that Cloudflare's renderer matches; the Word file was checked in LibreOffice, not Microsoft Word.
+
+## Phase 1: what exists
+
+- **Flag:** Worker variable `EXPERTS_ENABLED`, on only for the exact string `true`. While off, `/api/human/*`, `/api/expert/*` and `/api/admin/human/*` answer the app's ordinary 404, the hourly sweep step does nothing, and the offer card is unchanged (the new link also needs the **build-time** variable `VITE_EXPERTS_ENABLED=true`, so with it unset the page makes no extra request at all).
+- **Who may order:** `EXPERTS_ALLOWED_EMAILS` (comma list of account emails, or `*`). Unset = nobody.
+- **Expert realm secrets:** `EXPERT_JWT_SECRET` (at least 32 characters, **different from** `JWT_SECRET`; otherwise expert sign-in answers 503). `TAX_ID_ENCRYPTION_KEY` must be set (the locked values and the two-factor secrets are sealed with it).
+- **Settings (system_state `human_pilot`, seeded by migration 0124):** the prices and pay from product spec 16 / engineering spec 15: polish $59 / $25 (**off**), 7-day $89 / $50, 48-hour $119 / $70, 24-hour $149 / $90 (offered, as the owner chose), cover letter +$29 / +$18; **pilot cap 15 paid orders**; 24-hour pending expiry; 72-hour acceptance; 7-day revision window; revision clock 24 / 48 hours; three questions, 24 hours to answer; 3-day earnings hold; $25 minimum payout; two open jobs per expert; 90-day retention.
+- **Migration 0124** (`supabase/migrations/0124_experts_phase1_pilot.sql`): additive. One nullable column on `payments` (`product_kind`); 11 new tables with row level security and no grant to anon or authenticated; 19 functions, execute revoked from public, anon and authenticated and granted to the service role; the settings seed; the ledger row and the schema version (last statements).
+- **Money moves only on defined transitions, each idempotent in the database:** payment confirmed (`offered`, once), accept (exactly one pay row; a unique index is the last guard), refund (one reversal row), payout (one per idempotency key). Prices and pay are stored on the job row at checkout.
+- **An expert reads or writes a client's content only through two database functions** (`human_job_expert_read`, `human_job_expert_save`, plus `human_job_expert_baseline`); each refuses unless the job is assigned to that expert and in a working state, and logs the attempt. Access ends when the revision window after delivery closes.
+- **The existing hourly sweep** gets one flag-gated call (`humanSweep`): expire unanswered questions, auto-accept at 72 hours, close unpaid orders past 24 hours, retention. No new trigger.
+
+## Phase 1: decisions made
+
+1. **Payment rows have `scan_id = null`.** The existing checkout, the orphan sweep and the fix claim all key on a payment's scan, so a human payment tied to a scan would be mistaken for an AI Fix (and a second pending payment on one scan is blocked by `payments_scan_id_pending_uidx`). The job holds the scan link instead.
+2. **Two small guarded edits in `fulfillment.service.js`:** `settlePayment` hands a human payment to `humanSettle` before the AI path runs (so no scan claim, queue, commission, fix receipt or auto-refund), and `reversePayment` closes the job when a human payment is refunded. The webhook controller, `verifyPayment` and the refund service are untouched.
+3. **Refund email:** a refund uses the existing `payment_reversed` email (it already says the payment was refunded), so only three templates were added: order received, question, delivered.
+4. **Currency:** human orders are sold only while the active payment currency is USD; the settings are in US dollars.
+5. **Brief wording** is `docs/experts/phase0/06-checkout-wording` as written. Two lines are the Phase 0 document's own "to confirm" lines, shown as written: the sentence that the expert may be in a different country, and the lateness line, "we credit you the rush premium automatically" (the credit is not automated in Phase 1; see Known gaps).
+6. **Operator reviews every delivery** (Appendix F.3): the expert submits to `in_review`; the operator reads the restored resume, confirms or sends back, then delivers. A revision goes through the same review (a transition the engineering spec's table does not list: `revision` to `in_review`).
+7. **No invented facts:** every figure in the delivered text must be in the original, the AI draft, the brief, an answered question or a supporting file, or the operator confirms it (or overrides with a written reason, logged).
+8. **Links** given as supporting material are kept for the operator only: nothing here can fetch and mask a web page, so an expert never sees one.
+
+## Phase 1: tests
+
+Full suite on the final tree (npx vitest run, both backend and frontend projects): 604 files, 8812 tests (1 todo):
+  8805 passed, 6 failed, 1 todo.
+  The 6 failures are the SAME 6 that fail on the untouched base commit (re-run there to confirm): frontend/tests/adminHotCategories (1),
+  home.page (1), homeAdminPreview (4). The pilot adds no failure.
+New tests, 175 in 9 files (all passing):
+  tests/migrations.0124.pglite.test.js  24  (real Postgres via PGlite: only-adds, RLS, every function closed to anon / authenticated,
+                                             assignment has one winner, expert read / save gate and its audit rows, one pay row, one
+                                             reversal, one payout per key, question pause arithmetic, one revision, rating once,
+                                             auto-accept)
+  tests/humanLibs.test.js               31  (locking and restore, validation, diff, fact check, two-factor vectors from RFC 6238, settings)
+  tests/human.settle.test.js            10  (settlement and reversal hooks: confirm once, repeats change nothing, nothing of the AI-fix
+                                             path runs, an AI-fix payment still takes the old path, flag off = no extra query)
+  tests/human.orders.test.js            24  (flag off = ordinary 404 for every path; allow-list; checkout; NO code path with five code
+                                             kinds and a promo window; cap; refusals)
+  tests/expert.test.js                  23  (sign-in, lockout, replay, realms separate, locks enforced server-side, assigned-job gate)
+  tests/human.admin.test.js             22  (review, delivery, step-up, expert accounts, payouts, summary, hourly sweep and retention)
+  tests/human.flagoff.test.js           19  (the money and auth files do not know the feature; mounting; sweep no-op; Paystack callback)
+  frontend/tests/human/customer.test.jsx 11, expert-admin.test.jsx 11  (jsdom)
+Existing tests changed: ONE line in tests/email.registry.test.js (the three new senders), required by that test. Acceptance criteria
+of Appendix H that apply to Phase 1 are covered by the files above: atomic assignment, assigned-job-only reads and logged attempts,
+deadline pause, earnings once on acceptance, locked fields, no invented facts, flag off changes nothing.
+Frontend production build (vite build): succeeds.
+
+## Phase 1: known gaps (full list in `CHANGES-experts-phase-1.txt`, section 7)
+
+- Not verified from here: a live Supabase database, a real browser, real Paystack, a deployment, email delivery, Cloudflare Browser Rendering (PDF), R2, Microsoft Word. The spike resumes are synthetic.
+- A card dispute does not move the job to `disputed` (inbox shows the payment status). The cap check is not atomic. The rush-premium credit and the 48-hour-late refund are not automated.
+- No recovery codes, expert sessions table, idle timeout or in-app accept/decline for experts. Customers cancel in the app only until an expert is assigned.
+- Supporting links are operator-only. The Human Rewrite Addendum and the Terms / Privacy changes are not in the app and must be live before the first paid order.
+- Reported, not fixed: six frontend tests in three files that already fail on the untouched base (the hot-categories "sample numbers" text).
+
+## Phase 1: to do before the first paid order (owner)
+
+The dry run in `docs/experts/phase1/dry-run-checklist.md`, then the list at the end of `CHANGES-experts-phase-1.txt`. The operating procedure mapped to the screens is `docs/experts/phase1/operating-checklist.md`.
 
 ## Open questions (need the owner)
 

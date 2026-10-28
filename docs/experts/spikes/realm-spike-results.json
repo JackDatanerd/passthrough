@@ -1,0 +1,36 @@
+{
+  "existingAdminAuthTestFiles": 16,
+  "existingTestFilesModifiedByThePilot": [],
+  "existingRun": {
+    "failed": 5,
+    "passed": 624,
+    "exit": 1,
+    "failingHere": [
+      "frontend/tests/adminHotCategories.test.jsx > AdminHotCategories — the counts > shows every field against the threshold, and says the homepage is on its sample table when none qualify",
+      "frontend/tests/homeAdminPreview.test.jsx > homepage — admin preview of the Hot categories simulation > a visitor who is not signed in never sees it, even with the value sitting in their storage",
+      "frontend/tests/homeAdminPreview.test.jsx > homepage — admin preview of the Hot categories simulation > an ordinary signed-in user never sees it either",
+      "frontend/tests/homeAdminPreview.test.jsx > homepage — admin preview of the Hot categories simulation > a simulation with no field over the line falls back to the sample table, exactly as visitors would see",
+      "frontend/tests/homeAdminPreview.test.jsx > homepage — admin preview of the Hot categories simulation > \"End preview\" removes it from the page and from storage"
+    ],
+    "failingOnPristineBase": [
+      "frontend/tests/adminHotCategories.test.jsx > AdminHotCategories — the counts > shows every field against the threshold, and says the homepage is on its sample table when none qualify",
+      "frontend/tests/homeAdminPreview.test.jsx > homepage — admin preview of the Hot categories simulation > a visitor who is not signed in never sees it, even with the value sitting in their storage",
+      "frontend/tests/homeAdminPreview.test.jsx > homepage — admin preview of the Hot categories simulation > an ordinary signed-in user never sees it either",
+      "frontend/tests/homeAdminPreview.test.jsx > homepage — admin preview of the Hot categories simulation > a simulation with no field over the line falls back to the sample table, exactly as visitors would see",
+      "frontend/tests/homeAdminPreview.test.jsx > homepage — admin preview of the Hot categories simulation > \"End preview\" removes it from the page and from storage"
+    ],
+    "newFailuresAddedByThePilot": []
+  },
+  "crossRealmRun": {
+    "failed": 0,
+    "passed": 4,
+    "exit": 0
+  },
+  "claims": [
+    "expert tokens are signed with EXPERT_JWT_SECRET (must differ from JWT_SECRET, at least 32 chars) and carry aud=passthrough-experts, typ=expert, stage",
+    "the main auth middleware verifies with JWT_SECRET only, so an expert token fails on its signature; the admin area sits behind that middleware",
+    "the expert middleware verifies with EXPERT_JWT_SECRET only, so a main-app token (admin included) fails on its signature",
+    "no shared table, no shared session store, no change to middleware/auth.js, adminOnly.js or lib/jwt.js"
+  ],
+  "verdict": "PASS"
+}

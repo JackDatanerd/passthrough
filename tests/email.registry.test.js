@@ -35,6 +35,7 @@ const CALLS = {
   sendFixDeliveredPlain: ['u@x.y', 'Ann'], sendFixFailed: ['u@x.y', 'Ann'], sendOutcomeFollowUp: ['u@x.y', 'Ann'],
   sendPaymentReceipt: ['u@x.y', 'Ann', { fixTier: 'FIX', amountCents: 4900, currency: 'USD', reference: 'ref1', createdAt: '2026-10-05T23:30:00Z' }],
   sendPaymentReversed: ['u@x.y', 'Ann', { amountCents: 4900, currency: 'USD', reference: 'ref1', reason: 'REFUND', verificationRevoked: true }],
+  sendHumanOrderReceived: ['u@x.y', 'Ann', { jobNumber: 'HJ-ABC234', tier: 'forty_eight_hour', promisedAt: '2026-11-03T10:00:00Z' }], sendHumanDelivered: ['u@x.y', 'Ann', { jobNumber: 'HJ-ABC234', acceptHours: 72 }], sendHumanQuestion: ['u@x.y', 'Ann', { jobNumber: 'HJ-ABC234', answerHours: 24 }],
   sendPartnerPayoutDetailsRequest: ['p@x.y', 'P', 'https://u'], sendPayoutSent: ['p@x.y', 'P', 1000, 'USD'], sendReferralCodeCreated: ['p@x.y', 'P', 'CODE', 'https://d'],
   sendPayoutDetailsChanged: ['p@x.y', 'P', 'BANK'], sendPartnerLinkRegenerated: ['p@x.y', 'P', 'https://u'], sendPartnerEmailChanged: ['p@x.y', 'P', 'o@x.y', 'n@x.y'],
   sendPartnerConversionEarned: ['p@x.y', 'P', 'CODE', 500, 'USD', 'https://d'],

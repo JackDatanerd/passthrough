@@ -1,0 +1,216 @@
+PASSTHROUGH EXPERTS, PHASE 1: THE CONCIERGE PILOT
+=================================================
+
+Base commit : df44f210de4175f50bb497eacf800951015e22dc   (28 Oct 2026, 06:44 +03:00)
+              "Partners section 4 round 43: restore usage release stamp (0123) ..."
+Delivered as: a patch cut from that commit AND a tarball (top-level folder passthrough/).
+Flag        : EXPERTS_ENABLED (Worker variable) and VITE_EXPERTS_ENABLED (frontend build). OFF by default.
+New migration: 0124_experts_phase1_pilot.sql   (next free number was 0124: files and ledger stood at 123)
+Phase 0 gate: MET (date not given; STATUS.md records "MET, date not given").
+Repo        : it was public for this work. MAKE IT PRIVATE AGAIN.
+
+The code on the base commit wins over any document. Where the documents and the code disagreed, the difference is listed below
+under DECISIONS AND DIFFERENCES.
+
+-------------------------------------------------------------------------------------------------------------------------------
+1. WHAT WAS BUILT (all behind the flag)
+-------------------------------------------------------------------------------------------------------------------------------
+Payments / checkout
+  * A human product kind in the existing Paystack checkout: payments.product_kind (human_polish | human_seven_day |
+    human_forty_eight_hour | human_twenty_four_hour), scan_id NULL, prices read from the settings row, never hard-coded.
+  * The pending job is created at checkout in awaiting_payment with the brief, the frozen documents and a unique payment id
+    (human_jobs.payment_id is UNIQUE); it moves to offered on confirmed payment, exactly once (human_job_confirm_payment).
+    The verify call, the webhook, the sweeps and an admin recheck all land on it; every repeat changes nothing.
+  * Refund goes through the existing refund path; the existing refund webhook then reverses the payment, which closes the job and
+    reverses any earnings once (human_job_reverse).
+Codes
+  * The human line skips the whole code path: no code resolution, usage slot, attribution, commission, welcome code or promo price.
+    The order code imports none of that code; a test proves it with five code kinds and the promo window active.
+Brief and consents
+  * Brief form with supporting materials (product spec 6.3): target role, seniority, job posting, region, tone, keep/avoid, career
+    story, notes, up to three top results, up to 3 files (Word / text PDF, 5 MB) and 5 links. The 18+ tick, third-party rights tick
+    and optional improvement consent (6.2) use the wording of docs/experts/phase0/06-checkout-wording (see DECISIONS 5).
+Admin inbox (existing admin area, same auth, step-up on money and privacy routes)
+  * Admin > Human orders: Orders (list, filter by state, counts, pilot capacity, brief, assign by hand, take back, review and deliver,
+    send back, record minutes / costs / late credit, mark accepted, refund), Experts (create, switch on/off, agreement signed, reset
+    two-factor / password, available / on-hold / paid, record a manual payout), Summary (the pilot numbers).
+Expert accounts and workbench (the minimum; see DECISIONS 1)
+  * Hand-created accounts; password plus authenticator code; its own token secret; no self-registration.
+  * Workbench: structured editor; locked contact fields, third-party details and employer / dates / school anchors are enforced
+    SERVER-SIDE (the browser is not the lock); up to three questions; submit for the operator's review.
+  * An expert reads or writes a client's content only through database functions (human_job_expert_read / _save / _baseline) that
+    refuse, and log the attempt, unless the job is assigned to that expert and in a working state.
+Pilot recording
+  * On the job row: active edit seconds (counted while typing, idle excluded), operator minutes override, questions, revision,
+    paid / delivered times, score before and after, rating, other cost, late credit; job_events for every transition.
+Client emails
+  * Order received, expert question, delivered (new templates and senders, registered in the repo's email registry test).
+    A refund uses the existing payment_reversed email.
+Operator review and delivery (Appendix F.3)
+  * Expert submits to in_review; the operator reads the restored resume, sees the re-score and any figure that is in nothing the
+    customer gave us, then delivers (Word + PDF built by the app) or sends back with a note.
+One revision, the 72-hour rule, earnings
+  * One revision round (24-hour tier: 24 h clock, others 48 h, within 7 days, same expert). Silence for 72 hours is accepted by the
+    hourly tick. Earnings are written ONCE on acceptance (a unique index is the last guard), held 3 days, reversed once on refund.
+Retention, deletion, audit
+  * Job files, working documents, locked values and supporting files are deleted after the retention period (90 days after the job
+    ends), at once for a deleted account's finished jobs, and for unpaid orders after 24 hours. Every expert or staff view of client
+    content and every denied attempt is written to expert_audit_log.
+
+NOT BUILT (as instructed): claim queue, offer cascade, strikes, grades, graders, payout automation, applications and the paid test
+flow, disputes console, the assistant, public explainer pages, marketplace settings UI.
+
+-------------------------------------------------------------------------------------------------------------------------------
+2. SPIKES AND THE PATH TAKEN
+-------------------------------------------------------------------------------------------------------------------------------
+Code and results: docs/experts/spikes/ (throwaway; editor-spike-results.json, realm-spike-results.json).
+  EDITOR SPIKE: PASS. Pass criteria (product spec 22.4): locked values round-trip exactly; the diff matches a manual check; Word and
+    PDF both render. Three resumes x ten checks passed (masked body leaks nothing; restore(lock(x)) == x; the expert's edit accepted;
+    8 violations refused; diff paths == the manual list; Word render and PDF render contain the restored values and no marker).
+    PATH TAKEN: the STRUCTURED DOCUMENT path (the fallback of operator-made redacted copies was NOT needed).
+  REALM SPIKE: PASS. Pass criteria: cross-realm tokens rejected; no change to the existing admin tests. Expert tokens fail the main
+    auth middleware (so the admin area) and main tokens fail the expert middleware, on signature alone. No existing admin / auth test
+    file was changed; the pilot adds no failure to them.
+  LIMITS: the three resumes are SYNTHETIC; the PDF came from the app's resume HTML through wkhtmltopdf (read back by OCR), NOT
+    Cloudflare Browser Rendering; the Word file was rendered in LibreOffice, not Microsoft Word.
+
+-------------------------------------------------------------------------------------------------------------------------------
+3. EXISTING FILES TOUCHED, AND WHY
+-------------------------------------------------------------------------------------------------------------------------------
+Money path (the riskiest; kept small and tested hard)
+  src/services/fulfillment.service.js  +16  Two guarded hooks. (1) settlePayment: `if (row.product_kind) return humanSettle...` before
+        the AI-fix path, so a human payment never reaches scan claim, queue, commission, fix receipt or auto-refund. (2) reversePayment:
+        a refunded human payment closes its job (looks the job up only while the flag is on, for callers that load a partial row).
+        product_kind is NULL on every payment made before this, so nothing else reaches either branch.
+  src/services/paystack.service.js     +3 -2  initializeTransaction takes an optional callbackUrl; omitted = the old value exactly.
+Not touched: payments.controller.js, webhooks.controller.js, refund.service.js, reconcile.service.js, middleware/auth.js,
+adminOnly.js, lib/jwt.js (a test asserts the money and auth files do not mention the feature).
+Registration and wiring
+  src/index.js                  +2 requires, +2 route mounts, the humanSweep function, and ONE call to it inside the existing
+        retentionSweep job (NOT an eleventh scheduled job: tests pin the count at ten). No change to wrangler.toml or the scheduler.
+  src/routes/admin.routes.js    mounts the admin human routes (inside the existing admin auth).
+  src/config/constants.js       EXPECTED_SCHEMA_VERSION 123 -> 124.      src/config/migrationLedger.js  entry 124.
+  src/lib/mappers.js            paymentRowToCamel reads the new column (the repo's mapper test requires every column mapped).
+  src/services/email.service.js, src/templates/emails.js, src/lib/emailSuppression.js   three senders, three templates, always-send.
+  tests/email.registry.test.js  one line: the three new senders in the registry table (the repo's test requires it).
+Frontend
+  frontend/src/App.jsx          four lazy routes (/human/order, /human/orders, /expert/*, /admin/human).
+  frontend/src/components/scan/FixBanner.jsx   one line mounting HumanOrderEntry (renders nothing and makes no request unless the
+        frontend is built with VITE_EXPERTS_ENABLED=true).      frontend/src/pages/admin/AdminLayout.jsx   one nav link.
+Docs
+  docs/experts/STATUS.md        updated (plan, spikes, what exists, decisions, gaps).
+
+New files: see the patch (src/controllers/{human,human-files,expert,expert-auth,admin-human}.controller.js, src/routes/{human,expert,
+admin-human}.routes.js, src/lib/{humanPilot,humanLocks,humanDiff,humanFacts,totp}.js, src/middleware/{expertAuth,humanLimits}.js,
+src/services/{humanSettle,humanDelivery.service,humanSweep}.js, the migration, frontend pages / lib / tests, backend tests,
+docs/experts/phase1/*, docs/experts/spikes/*).
+
+-------------------------------------------------------------------------------------------------------------------------------
+4. MIGRATION (run on the database, in this order)
+-------------------------------------------------------------------------------------------------------------------------------
+Only one: supabase/migrations/0124_experts_phase1_pilot.sql. Precondition: 0123 is applied (the ledger and schema_version read 123).
+It is additive: ONE nullable column on payments; 11 new tables (row level security on, no policy, no grant to anon / authenticated);
+19 functions (execute revoked from public, anon and authenticated; granted to service_role); the settings seed (system_state key
+'human_pilot', on conflict do nothing); then the ledger row and schema_version (last statements). It never moves the version backwards.
+Check afterwards: select value from system_state where key = 'schema_version';  -- 124
+
+Settings to review (seeded from product spec 16 / engineering spec 15): polish $59 / $25 (OFF), 7-day $89 / $50, 48-hour $119 / $70,
+24-hour $149 / $90, cover letter +$29 / +$18; pilot cap 15 paid orders; 72 h acceptance; 7-day revision window; 3 questions; 3-day
+earnings hold; $25 minimum payout; 2 open jobs per expert; 90-day retention. Change with:
+  update system_state set value = jsonb_set(value, '{pilot_cap_orders}', '20') where key = 'human_pilot';
+
+Configuration to set before the dry run (nothing is set by this delivery):
+  Worker : EXPERTS_ENABLED=true | EXPERTS_ALLOWED_EMAILS=<comma list or *> | EXPERT_JWT_SECRET=<32+ chars, NOT equal to JWT_SECRET>
+           TAX_ID_ENCRYPTION_KEY must already be set (it seals locked values and two-factor secrets)
+  Build  : VITE_EXPERTS_ENABLED=true
+  Turn HUMAN_DEMAND_ENABLED (the Phase 0A waitlist) OFF, or the offer card shows both.
+
+-------------------------------------------------------------------------------------------------------------------------------
+5. DECISIONS AND DIFFERENCES (documents vs the code, and where I chose)
+-------------------------------------------------------------------------------------------------------------------------------
+ 1. Expert auth. Engineering spec puts two-factor columns, expert_sessions and the realm in Phase 2. The pilot has the MINIMUM:
+    two-factor on expert_accounts, stateless tokens revoked by a token_version, NO expert_sessions table, NO recovery codes (the
+    operator resets two-factor by hand), no idle timeout. Expert pages are a lazy chunk of the existing frontend with their own API
+    client and sessionStorage key (spec 2.3 splits them into a separate site in Phase 2). FLAGGED, as your brief asked.
+ 2. "Settings table": the app has none. Settings are one row of system_state (key human_pilot), as the promo config does.
+ 3. payments.scan_id is NULL for human payments; the job holds the scan link (the existing checkout, orphan sweep and fix claim all
+    key on a payment's scan, and one pending payment per scan is enforced by payments_scan_id_pending_uidx).
+ 4. Engineering spec Phase 1 lists payments.human_job_id; not added (human_jobs.payment_id UNIQUE is the link, and a two-way FK adds
+    nothing). job_documents is unique on (job_id, kind, version), not (job_id, version), because source / draft / working coexist.
+ 5. Checkout wording is 06-checkout-wording as written. Its two "to confirm" lines are shown as written: "the expert may be in a
+    different country" and "we credit you the rush premium automatically" (NOT automated in Phase 1; see gaps).
+ 6. Polish has no turnaround in either spec and the runbook says not to sell it until you set one: built, switched OFF in settings.
+ 7. The 24-hour tier is on, as you chose. Pilot cap is 15 as you gave; the Phase 1 gate needs 20 or more paid orders, so a cap of 15
+    cannot meet the gate. It is a setting; raise it if you meant the gate to be reachable.
+ 8. Human orders are sold only while the active payment currency is USD (the settings are in dollars).
+ 9. A revision goes back through the operator's review (revision -> in_review), a transition the engineering spec's table does not list.
+10. A refund uses the existing payment_reversed email; only three templates were added.
+11. Materials: links are kept for the operator only (nothing here can fetch and mask a web page); files must be Word or text PDF.
+12. human_job_expert_save stores a new document row per save (kept until retention); saves are compare-and-set on the version.
+
+-------------------------------------------------------------------------------------------------------------------------------
+6. TESTS
+-------------------------------------------------------------------------------------------------------------------------------
+Full suite on the final tree (npx vitest run, both backend and frontend projects): 604 files, 8812 tests (1 todo):
+  8805 passed, 6 failed, 1 todo.
+  The 6 failures are the SAME 6 that fail on the untouched base commit (re-run there to confirm): frontend/tests/adminHotCategories (1),
+  home.page (1), homeAdminPreview (4). The pilot adds no failure.
+New tests, 175 in 9 files (all passing):
+  tests/migrations.0124.pglite.test.js  24  (real Postgres via PGlite: only-adds, RLS, every function closed to anon / authenticated,
+                                             assignment has one winner, expert read / save gate and its audit rows, one pay row, one
+                                             reversal, one payout per key, question pause arithmetic, one revision, rating once,
+                                             auto-accept)
+  tests/humanLibs.test.js               31  (locking and restore, validation, diff, fact check, two-factor vectors from RFC 6238, settings)
+  tests/human.settle.test.js            10  (settlement and reversal hooks: confirm once, repeats change nothing, nothing of the AI-fix
+                                             path runs, an AI-fix payment still takes the old path, flag off = no extra query)
+  tests/human.orders.test.js            24  (flag off = ordinary 404 for every path; allow-list; checkout; NO code path with five code
+                                             kinds and a promo window; cap; refusals)
+  tests/expert.test.js                  23  (sign-in, lockout, replay, realms separate, locks enforced server-side, assigned-job gate)
+  tests/human.admin.test.js             22  (review, delivery, step-up, expert accounts, payouts, summary, hourly sweep and retention)
+  tests/human.flagoff.test.js           19  (the money and auth files do not know the feature; mounting; sweep no-op; Paystack callback)
+  frontend/tests/human/customer.test.jsx 11, expert-admin.test.jsx 11  (jsdom)
+Existing tests changed: ONE line in tests/email.registry.test.js (the three new senders), required by that test. Acceptance criteria
+of Appendix H that apply to Phase 1 are covered by the files above: atomic assignment, assigned-job-only reads and logged attempts,
+deadline pause, earnings once on acceptance, locked fields, no invented facts, flag off changes nothing.
+Frontend production build (vite build): succeeds.
+
+-------------------------------------------------------------------------------------------------------------------------------
+7. KNOWN GAPS (not audited by me; this is what I know is missing or unverified)
+-------------------------------------------------------------------------------------------------------------------------------
+ * NOT VERIFIED FROM HERE: a live Supabase database (the migration and functions ran on PGlite, not Supabase), a real browser, real
+   Paystack, a deployment, email delivery, Cloudflare Browser Rendering (PDF), R2, the Durable Object rate limiter, Microsoft Word.
+ * A card dispute does not move the job to disputed (the webhook controller is untouched). The inbox shows the payment status.
+ * The pilot-cap check is not atomic: two simultaneous checkouts on the last place could both be accepted. Paid orders are never refused.
+ * The rush-premium credit and the full-refund-if-48-hours-late are NOT automated: "Late credit given" only records what you did by hand.
+ * No two-factor recovery codes, no expert sessions table, no idle timeout, no expert accept / decline step in the app (you ask them).
+ * Customers can cancel in the app only until an expert is assigned; afterwards they contact support.
+ * Links in supporting material are not shown to experts. Photos / scans are refused as supporting files.
+ * The company name is hidden from the job posting only when the existing extractor is sure of it.
+ * Settings change by SQL; there is no admin screen. No cap on a customer starting many unpaid orders beyond the per-minute limit.
+ * The addendum named in the checkout wording ("Human Rewrite Addendum") and the Terms / Privacy changes from Phase 0 do not exist in
+   the app (public pages were out of scope). They must be live before the first paid order.
+ * Account deletion is a soft delete in this app; finished jobs of a deleted account are purged by the sweep, open ones when they end.
+ * Admin "force fulfil" (payments.controller.js line ~894, fulfillPayment with force) is not routed through the human path; use Recheck.
+ * Frontend tests run in jsdom: no real browser, no layout, no Paystack popup.
+ * The three spike resumes are synthetic (see section 2).
+
+UNRELATED BUGS / OBSERVATIONS (reported, NOT fixed here)
+ * These frontend tests already FAIL on the untouched base commit: adminHotCategories "shows every field against the threshold, and
+   says the homepage is on its sample table when none qualify"; home.page "placeholders never pass as real when the stats call fails
+   ..."; homeAdminPreview (4 tests). They look for the sentence "Sample numbers shown until enough real reports come in." which the
+   homepage no longer renders.
+ * Phase 0 notes still stand: Terms says minimum age 16 while the checkout says 18; cookie page vs session-storage use; Privacy
+   Policy has no human-contractor section.
+
+-------------------------------------------------------------------------------------------------------------------------------
+8. WHAT MUST BE TRUE BEFORE THE FIRST PAID ORDER
+-------------------------------------------------------------------------------------------------------------------------------
+ 1. The ten-job dry run in docs/experts/phase1/dry-run-checklist.md passed on STAGING with test Paystack keys.
+ 2. The migration is applied and the settings reviewed (cap, polish still off, prices, hold, minimum payout).
+ 3. EXPERT_JWT_SECRET, EXPERTS_ALLOWED_EMAILS and TAX_ID_ENCRYPTION_KEY are set; HUMAN_DEMAND_ENABLED is off.
+ 4. The Human Rewrite Addendum, the Terms and Privacy Policy changes, and the two "to confirm" checkout lines are final and live
+    (counsel, per Phase 0).
+ 5. Every pilot expert has signed the agreement (you mark it in the app), has two-factor set up, and has had the style guide.
+ 6. You have decided how a late credit is given (it is by hand) and what to do on a card dispute (the job does not change by itself).
+ 7. The Phase 0 items STATUS.md still lists as "needs you" are done (gate sheet bars, recording sheet, payout details).
+ 8. The repo is private again.

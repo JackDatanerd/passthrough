@@ -510,6 +510,29 @@ async function sendPaymentReversed(env, supabase, email, name, { amountCents, cu
   })
 }
 
+// Experts Phase 1 (concierge pilot): order received and delivered. A refund uses sendPaymentReversed above.
+async function sendHumanOrderReceived(env, supabase, email, name, { jobNumber, tier, promisedAt }) {
+  const due = promisedAt
+    ? `We expect to deliver by ${new Date(promisedAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })} (UTC).`
+    : 'We will tell you here and by email when it is ready.'
+  return send(env, supabase, email, `We have your order ${jobNumber}`, 'human_order_received', {
+    NAME: name, JOB_NUMBER: jobNumber, TIER_LABEL: require('../lib/humanPilot').tierLabel(tier), DUE_LINE: due,
+    ORDER_URL: `${env.FRONTEND_URL}/human/orders`
+  })
+}
+
+async function sendHumanQuestion(env, supabase, email, name, { jobNumber, answerHours = 24 }) {
+  return send(env, supabase, email, `A question about your resume (${jobNumber})`, 'human_question', {
+    NAME: name, JOB_NUMBER: jobNumber, ANSWER_HOURS: String(answerHours), ORDER_URL: `${env.FRONTEND_URL}/human/orders`
+  })
+}
+
+async function sendHumanDelivered(env, supabase, email, name, { jobNumber, acceptHours = 72 }) {
+  return send(env, supabase, email, `Your reviewed resume is ready (${jobNumber})`, 'human_delivered', {
+    NAME: name, JOB_NUMBER: jobNumber, ACCEPT_HOURS: String(acceptHours), ORDER_URL: `${env.FRONTEND_URL}/human/orders`
+  })
+}
+
 // ── Partner payouts (manual) ────────────────────────────────────────────────
 
 async function sendPartnerPayoutDetailsRequest(env, supabase, email, name, payoutUrl, opts) {
@@ -1144,7 +1167,7 @@ module.exports = {
   sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendBadgeDelivered, sendFixDeliveredPlain, sendFixFailed, sendOutcomeFollowUp,
   sendVerificationReported,
   sendPartnerLinksSelfReset, sendPartnerCodeLimitReached, sendPartnerCodeExpiring, sendPartnerTermsAccepted,
-  sendPaymentReceipt, sendPaymentReversed,
+  sendPaymentReceipt, sendPaymentReversed, sendHumanOrderReceived, sendHumanDelivered, sendHumanQuestion,
   sendOwnerAlert, sendOwnerNotice, sendSupportInboxNotice,
   sendPartnerPayoutDetailsRequest, sendPartnerApplicationReceived, sendPayoutSent, sendReferralCodeCreated,
   sendPayoutDetailsChanged, sendPartnerLinkRegenerated, sendPartnerEmailChanged, sendPartnerConversionEarned,

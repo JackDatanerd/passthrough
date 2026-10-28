@@ -57,7 +57,7 @@ function unreadable(label) {
 }
 
 // reference param: caller generates once, passes to both Paystack and DB
-async function initializeTransaction(env, { email, amount, userId, scanId, fixTier, reference }) {
+async function initializeTransaction(env, { email, amount, userId, scanId, fixTier, reference, callbackUrl = null }) {
   const { res, json } = await paystackRequest('https://api.paystack.co/transaction/initialize', {
     method: 'POST',
     headers: {
@@ -67,7 +67,8 @@ async function initializeTransaction(env, { email, amount, userId, scanId, fixTi
     body: JSON.stringify({
       email, amount, currency: c.activeCurrency(env), reference,
       metadata: { userId, scanId, fixTier, custom_fields: [] },
-      callback_url: env.PAYSTACK_CALLBACK_URL
+      // Experts Phase 1: a human order returns to its own page (callbackUrl); every existing caller omits it and gets the old value.
+      callback_url: callbackUrl || env.PAYSTACK_CALLBACK_URL
     })
   }, 'Paystack initialize')
   // AUDIT FIX (bug): this used to throw identically whether Paystack was

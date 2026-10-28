@@ -7,6 +7,7 @@ const wh    = require('../controllers/webhooks.controller')
 const stories = require('../controllers/admin-stories.controller')
 const hotCategories = require('../controllers/admin-hot-categories.controller')
 const promo = require('../controllers/admin-promo.controller')
+const adminHuman = require('./admin-human.routes')   // Experts Phase 1; 404 unless EXPERTS_ENABLED=true
 
 const router = new Hono()
 
@@ -16,6 +17,8 @@ router.use('*', admin)
 
 // Password confirmation that unlocks the money / ban routes for a few minutes (only when ADMIN_STEP_UP_MINUTES > 0).
 router.post('/elevate', rl.adminElevate, c.adminElevate)
+
+router.route('/human', adminHuman)   // Experts Phase 1 inbox (inside the existing admin area; same auth)
 
 router.get('/dashboard', c.adminDashboardStats)
 router.get('/health', c.adminHealth)

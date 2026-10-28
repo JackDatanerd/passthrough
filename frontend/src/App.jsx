@@ -68,6 +68,10 @@ const AdminClaudeUsage   = lazyWithRetry(() => import('./pages/admin/AdminClaude
 const AdminPromptOutcomes = lazyWithRetry(() => import('./pages/admin/AdminPromptOutcomes'))
 const AdminStories       = lazyWithRetry(() => import('./pages/admin/AdminStories'))
 const AdminHotCategories = lazyWithRetry(() => import('./pages/admin/AdminHotCategories'))
+const AdminHumanOrders    = lazyWithRetry(() => import('./pages/admin/AdminHumanOrders'))      // Experts Phase 1
+const HumanOrder         = lazyWithRetry(() => import('./pages/human/HumanOrder'))           // Experts Phase 1
+const HumanOrders        = lazyWithRetry(() => import('./pages/human/HumanOrders'))          // Experts Phase 1
+const ExpertApp          = lazyWithRetry(() => import('./pages/expert/ExpertApp'))           // Experts Phase 1 (its own token; see lib/expertApi.js)
 
 // Sends a signed-out visitor to /login, remembering where they were headed so
 // login can return them there (Login validates ?next= via safeNext).
@@ -168,6 +172,10 @@ function RoutedApp() {
           <Route path="/partner/apply"          element={<PartnerApply />} />
           <Route path="/partner/recover"        element={<PartnerRecover />} />
           <Route path="/partner/terms"          element={<PartnerTerms />} />
+          {/* Experts Phase 1: the pages 404 at the API (and show their own message) while EXPERTS_ENABLED is off */}
+          <Route path="/human/order"  element={<ProtectedRoute><HumanOrder /></ProtectedRoute>} />
+          <Route path="/human/orders" element={<ProtectedRoute><HumanOrders /></ProtectedRoute>} />
+          <Route path="/expert/*"     element={<ExpertApp />} />
 
           {/* Protected routes — redirect to /login if no token */}
           <Route path="/dashboard"
@@ -197,6 +205,7 @@ function RoutedApp() {
             <Route path="audit-log"    element={<AdminAuditLog />} />
             <Route path="claude-usage" element={<AdminClaudeUsage />} />
             <Route path="prompt-outcomes" element={<AdminPromptOutcomes />} />
+            <Route path="human"        element={<AdminHumanOrders />} />
           </Route>
 
           {/* Catch-all: a real 404 page instead of a silent redirect home */}

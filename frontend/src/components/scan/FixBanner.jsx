@@ -10,6 +10,7 @@ import NewTag from '../ui/NewTag'
 import { formatMonthDay } from '../../lib/utils'
 import { coverLetterText } from '../../lib/coverLetterOffer'
 import HumanRewriteOption from './HumanRewriteOption'
+import HumanOrderEntry from './HumanOrderEntry'
 
 // A typical professional resume writer's fee, in cents (USD only - see showWriterCompare). Used as the
 // reference point on the offer; change it here if the market figure you stand behind changes.
@@ -250,6 +251,8 @@ export default function FixBanner({
       {/* Experts Phase 0A demand test: renders nothing unless the server flag is on. Not beside the credential-only lead offer: that
           card says nothing is rewritten, and a person is not asked in the same breath whether they want a human to rewrite it. */}
       {!isBadge && <HumanRewriteOption />}
+      {/* Experts Phase 1: the real order link; renders nothing unless the pilot is on for this account (the API is a 404 while it is off) */}
+      {!isBadge && <HumanOrderEntry scanId={scan?.id} />}
 
       {showWriterCompare && (
         <div className="mt-3 flex flex-wrap gap-x-3.5 gap-y-1 border-t border-gray-200 pt-2.5 text-xs text-gray-500" data-testid="writer-compare" aria-label="How it compares">

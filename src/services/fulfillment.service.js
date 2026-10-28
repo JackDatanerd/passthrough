@@ -170,6 +170,11 @@ async function settlePayment(env, supabase, paymentRow, { authCode = null, sourc
     row = current
   }
 
+  // EXPERTS PHASE 1: a human-product payment (payments.product_kind, migration 0121) has its own settlement and skips everything below
+  // (no scan claim, no fix queue, no commission, no fix receipt, no duplicate / undeliverable auto-refund). product_kind is null on
+  // every payment the app made before this existed, so nothing else reaches the branch.
+  if (row.product_kind) return require('./humanSettle').settleHuman(env, supabase, row, { won, defer, source })
+
   // Not gated on `won`: if the flip winner died before fulfilling, a redelivery
   // (webhook retry, browser verify, admin recheck) lands here and finishes the job.
   const result = await fulfillPayment(env, supabase, row, { source })
@@ -671,6 +676,17 @@ async function reversePayment(supabase, payment, { reason, refundReference = nul
     .update(patch).eq('id', payment.id).in('status', ['SUCCESS', 'DISPUTED']).select('id')
   if (error) throw error
   const transitioned = !!(moved && moved.length)
+
+  // EXPERTS PHASE 1: a refunded / lost human payment closes its job and reverses earnings (idempotent; never throws).
+  // Some callers load only a few payment columns, so when product_kind was not loaded it is looked up here (best effort), and only while the pilot is on.
+  let humanKind = payment.product_kind
+  if (humanKind === undefined && require('../lib/humanPilot').humanEnabled(env)) {      // flag off: no extra query, the old behaviour exactly
+    try {
+      const { data: hj } = await supabase.from('human_jobs').select('id').eq('payment_id', payment.id).maybeSingle()
+      humanKind = hj ? 'human' : null
+    } catch (_) { humanKind = null }
+  }
+  if (humanKind) await require('./humanSettle').onReversed(env, supabase, payment, { reason })
 
   const ledger = await reverseCommission(supabase, payment.id, reason)
   // Tell the partner their commission was clawed back (live paths pass `env`).

@@ -247,6 +247,7 @@ function paymentRowToCamel(row) {
     // the same reason: this mapper should reflect the full row, not a
     // snapshot of it frozen at whichever migration last touched this file.
     fixTier:             row.fix_tier,
+    productKind:         row.product_kind ?? null,   // Experts Phase 1 (0124): null for every AI Fix / badge payment
     referralCodeId:      row.referral_code_id,
     referralCode:        row.referral_code,
     referralSource:      row.referral_source ?? null,

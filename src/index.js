@@ -39,6 +39,8 @@ const profileRoutes      = require('./routes/profile.routes')
 const partnersRoutes     = require('./routes/partners.routes')
 const adminRoutes        = require('./routes/admin.routes')
 const humanDemandRoutes  = require('./routes/human-demand.routes')   // Experts Phase 0A demand test; 404 unless HUMAN_DEMAND_ENABLED=true
+const humanRoutes        = require('./routes/human.routes')          // Experts Phase 1 customer routes; 404 unless EXPERTS_ENABLED=true
+const expertRoutes       = require('./routes/expert.routes')         // Experts Phase 1 expert-realm routes; 404 unless EXPERTS_ENABLED=true
 
 const { getSupabase } = require('./config/supabase')
 const emailService = require('./services/email.service')
@@ -121,6 +123,8 @@ app.route('/api/outcomes',       outcomesRoutes)
 app.route('/api/partners',       partnersRoutes)
 app.route('/api/admin',          adminRoutes)
 app.route('/api/human-demand',   humanDemandRoutes)   // flag-gated inside the router: 404 while the flag is off
+app.route('/api/human',          humanRoutes)         // flag-gated inside the router: 404 while EXPERTS_ENABLED is off
+app.route('/api/expert',         expertRoutes)        // its own token secret and accounts; flag-gated inside the router
 
 // ── 5. Error handler ──────────────────────────────────────────────────────────
 app.onError(errorHandler)
@@ -272,6 +276,20 @@ async function failedFixSweep(event, env, ctx) {
           console.log(`Failed-fix sweep: ${r.candidates} candidate(s), ${r.requeued.length} re-queued, ${r.exhausted.length} exhausted, ${r.failed.length} failed`)
       } catch (err) {
         console.error('Failed-fix sweep error:', err.message)
+      }
+    })()
+  )
+}
+
+// Experts Phase 1: unanswered questions, auto-acceptance, unpaid orders, retention. A no-op while EXPERTS_ENABLED is off.
+async function humanSweep(event, env, ctx) {
+  ctx.waitUntil(
+    (async () => {
+      try {
+        const r = await require('./services/humanSweep').runHumanSweep(env)
+        if (r && !r.skipped) console.log(`Human sweep: ${JSON.stringify(r)}`)
+      } catch (err) {
+        console.error('Human sweep error:', err.message)
       }
     })()
   )
@@ -616,6 +634,9 @@ async function outcomePromptSweep(event, env, ctx) {
 }
 
 async function retentionSweep(event, env, ctx) {
+  // Experts Phase 1: unanswered questions, auto-acceptance, unpaid orders and job-file retention ride on this existing hourly job (its own
+  // waitUntil and try/catch, so a failure in either never skips the other). A no-op while EXPERTS_ENABLED is off.
+  humanSweep(event, env, ctx)
   ctx.waitUntil(
     (async () => {
       try {
