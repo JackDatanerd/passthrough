@@ -1,0 +1,14 @@
+Partners / Referral round 45 (fresh clone 0d00f72; no migration)
+
+Gap closed
+- A partner whose whole unpaid balance is in a currency other than the platform one is now "not batch-payable" everywhere
+  (payout-run CSV, ready-to-pay alert, details reminder, admin list/detail `mixedCurrency`). They used to be listed as ready
+  in the platform currency; the batch recorder then refused them with CURRENCY_MISMATCH. They are settled one currency at a time
+  from their own page. Admin copy updated.
+
+Bugs fixed
+- PartnerPayoutDetails: saving masked details with nothing edited said "Please fill in every field."; it now says nothing has changed.
+- adminUpdateReferralCode: a rename followed by a failed second step returned a bare 500 with no audit entry; it now returns
+  PARTIAL_UPDATE (the rename is real), and audits the rename.
+
+Tests: tests/partners.round45.test.js; partnersRound9/21 updated for the new message.

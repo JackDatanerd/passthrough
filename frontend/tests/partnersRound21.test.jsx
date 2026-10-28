@@ -53,11 +53,11 @@ describe('payout page: tax-only save and removal (section 4 fresh pass)', () => 
     await screen.findByLabelText('Tax ID')
     expect(screen.queryByLabelText(/Remove the tax ID/)).toBeNull()
   })
-  it('with nothing changed and no number typed it still asks for every field', async () => {
+  it('with nothing changed and no number typed it says nothing has changed (round 45) and posts nothing', async () => {
     api.get.mockResolvedValue(saved())
     page()
     await userEvent.click(await screen.findByRole('button', { name: /save payout details/i }))
-    expect(await screen.findByText(/fill in every field/i)).toBeTruthy()
+    expect(await screen.findByText(/nothing has changed/i)).toBeTruthy()
     expect(api.post).not.toHaveBeenCalled()
   })
 })

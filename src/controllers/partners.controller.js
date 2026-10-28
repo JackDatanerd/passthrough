@@ -66,6 +66,13 @@ const {
 // Sum of commission_ledger rows not yet attached to a payout — the "owed"
 // number both adminListPartners and adminRecordPayout rely on. Kept as one
 // function so the two can never compute it differently.
+// A payout settles ONE currency and the run lists amounts in the platform currency, so a partner whose unpaid rows are not
+// ALL in the platform currency (several currencies, or a single foreign one left over from a currency change) is not
+// batch-payable: they are settled one currency at a time from their own page.
+function notBatchPayable(ledgerRows, activeCurrency) {
+  const active = String(activeCurrency).toUpperCase()
+  return (ledgerRows || []).some(l => String(l.currency || active).toUpperCase() !== active)
+}
 function pendingCents(ledgerRows) {
   return (ledgerRows || []).filter(l => !l.payout_id).reduce((sum, l) => sum + l.commission_amount_cents, 0)
 }
@@ -758,7 +765,7 @@ async function sweepPayoutDue(env, supabase) {
       heldCents += Math.max(0, heldCentsOf(ledger, holdDays))
       if (r.readyToPayCents <= 0) continue
       // A payout can only settle one currency: the payout-run export leaves such a partner out, so the alert does too.
-      if (new Set(ledger.map(l => String(l.currency || cur0).toUpperCase())).size > 1) continue
+      if (notBatchPayable(ledger, cur0)) continue
       if (!p.payout_method) { noDetails++; noDetailsCents += r.readyToPayCents; continue }
       // Round 41 (bug): a partner whose payout details changed inside the hold window, or who is behind on the terms while
       // PAYOUT_REQUIRES_CURRENT_TERMS is on, was counted "ready to pay"; Run payouts then refused them until the admin confirmed.
@@ -832,7 +839,7 @@ async function sweepPayoutDetailsReminders(env, supabase) {
       const ledger = ledgerByPartner.get(p.id) || []
       const r = payoutReadiness(ledger, holdDays, minPayout)
       if (r.readyToPayCents <= 0) continue
-      if (new Set(ledger.map(l => String(l.currency || cur).toUpperCase())).size > 1) continue   // one payout settles one currency
+      if (notBatchPayable(ledger, cur)) continue   // one payout settles one currency
       const sentKey = `partner-details-reminder:${p.id}:${closed.key}`
       const tryKey = `partner-details-reminder-try:${p.id}:${closed.key}`
       if (await referralService.keySeen(env, sentKey) || await referralService.keySeen(env, tryKey)) { out.skipped++; continue }
@@ -860,7 +867,7 @@ async function adminPayoutRunExport(ctx) {
     const ledger = ledgerByPartner.get(row.id) || []
     const r = payoutReadiness(ledger, holdDays, minPayout)
     if (r.readyToPayCents <= 0) continue
-    if (new Set(ledger.map(l => String(l.currency || currency).toUpperCase())).size > 1) continue
+    if (notBatchPayable(ledger, currency)) continue
     rows.push({ id: row.id, name: row.name, email: row.email, payoutMethod: row.payout_method, payoutDetails: row.payout_details || {},
       payoutDetailsSubmittedAt: row.payout_details_submitted_at,
       // Round 41: the server states what Run payouts would refuse without an admin confirmation, so no consumer has to recompute it.
@@ -924,7 +931,7 @@ async function adminListPartners(ctx) {
     camel.currency                 = c.activeCurrency(ctx.env)
     // Round 8: the totals above add raw cents, which is only meaningful in one currency. adminGetPartner always
     // flagged mixed-currency ledgers; the list (and the payout run built from it) did not.
-    camel.mixedCurrency            = new Set(ledger.map(l => String(l.currency || camel.currency).toUpperCase())).size > 1
+    camel.mixedCurrency            = notBatchPayable(ledger.filter(l => !l.payout_id), camel.currency)
     camel.termsCurrent             = row.terms_version === PARTNER_TERMS_VERSION
     camel.termsNoticePending       = row.terms_version !== PARTNER_TERMS_VERSION && row.terms_notified_version !== PARTNER_TERMS_VERSION
     camel.legacyDashboardLink      = !!row.dashboard_token && !isRemovedEmail(row.email)   // round 33: still on a stored link (admin "Convert")
@@ -999,7 +1006,7 @@ async function adminGetPartner(ctx) {
   // change, and whether unpaid commission spans more than one currency (a payout can only settle one).
   camel.payoutDetailsHoldHours = payoutDetailsHoldHoursFor(ctx.env)
   camel.unpaidCurrencies = [...new Set(ledger.filter(l => !l.payout_id).map(l => String(l.currency || camel.currency).toUpperCase()))]
-  camel.mixedCurrency = camel.unpaidCurrencies.length > 1
+  camel.mixedCurrency = notBatchPayable(ledger.filter(l => !l.payout_id), camel.currency)
   // Round 42: what an ad hoc payout in each currency would settle (unpaid, minus the refund-window hold), so the payout form can default it.
   camel.unpaidByCurrency = Object.fromEntries(camel.unpaidCurrencies.map(cur => {
     const rows = ledger.filter(l => String(l.currency || camel.currency).toUpperCase() === cur)
@@ -1336,6 +1343,11 @@ async function adminUpdateReferralCode(ctx) {
     const { data: upd, error } = await supabase.from('referral_codes')
       .update(patch).eq('id', codeId).select('*').maybeSingle()
     if (error && error.code === '23505') return ctx.json({ success: false, message: 'That code is already in use - pick a different one.' }, 409)
+    if (error && renaming && !legacyRename) {
+      // The rename already happened (its own transaction): record it and say so, rather than a bare 500 that hides it.
+      await logAdminAction(ctx, supabase, 'partner.referral_code_updated', 'referral_code', codeId, { partnerId: owner.partner_id, codeId: codeId, changed: ['code'], renamedFrom: owner.code, renamedTo: newCode, otherChangesFailed: true }).catch(() => {})
+      return ctx.json({ success: false, code: 'PARTIAL_UPDATE', message: `The code was renamed to ${newCode}, but the other changes did not save. Reload and apply them again.` }, 500)
+    }
     if (error) throw error
     data = upd
   } else {

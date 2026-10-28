@@ -160,6 +160,11 @@ export default function PartnerPayoutDetails() {
       } catch (_) { /* captured by useApi */ }
       return
     }
+    if (onFile && numberBlank && !confirmNumber.trim()) {
+      // Nothing was edited and nothing is new to save: say so instead of asking for "every field".
+      setSaved(false)
+      return fail0('Nothing has changed. To update your details, edit a field and re-enter your '+idLabel+' twice.')
+    }
     setTaxSaved(false)
     const body = method === 'BANK'
       ? { payoutMethod: 'BANK', bankName: bankName.trim(), accountName: accountName.trim(), accountNumber: accountNumber.trim(), bankCountry: countryCode,

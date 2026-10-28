@@ -51,12 +51,12 @@ describe('PartnerPayoutDetails (round 9)', () => {
     expect(h.post.mock.calls[0][1]).toEqual({ payoutMethod: 'BANK', bankName: 'Equity', accountName: 'Coach K', accountNumber: '0123456789', bankCountry: 'US', routingCode: '021000021' })
   })
 
-  it('refuses to save an edit that leaves the number blank (it is no longer prefilled)', async () => {
+  it('says nothing has changed when the number is blank and nothing was edited (round 45)', async () => {
     h.get = () => Promise.resolve(saved())
     payoutPage()
     await screen.findByLabelText('Bank name')
     await userEvent.click(screen.getByRole('button', { name: /save payout details/i }))
-    expect(await screen.findByText(/fill in every field/i)).toBeInTheDocument()
+    expect(await screen.findByText(/nothing has changed/i)).toBeInTheDocument()
     expect(h.post).not.toHaveBeenCalled()
   })
 })
