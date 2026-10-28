@@ -221,6 +221,21 @@ function CodeCard({ code, partnerActive, partnerStatus, currency }) {
           <span data-testid="code-earned">{` · earned ${fmtCents(code.stats.commissionCents, currency)}`}</span>
         )}
       </div>
+      {live && (() => {
+        const expiresMs = code.expiresAt ? Date.parse(code.expiresAt) : NaN
+        const daysLeft = Number.isFinite(expiresMs) ? Math.ceil((expiresMs - Date.now()) / 86400000) : null
+        const remaining = code.usageLimit != null ? Math.max(0, code.usageLimit - (code.usesSoFar || 0)) : null
+        const nearLimit = remaining != null && code.usageLimit > 0 && remaining <= Math.max(1, Math.ceil(code.usageLimit * 0.1))
+        if (daysLeft == null && !nearLimit) return null
+        const soon = daysLeft != null && daysLeft <= 7
+        return (
+          <div className={`text-xs mt-2 ${soon || nearLimit ? 'text-amber-700' : 'text-gray-500'}`} data-testid="code-expiry">
+            {daysLeft != null && <span>Expires {formatDateUtc(code.expiresAt)} (UTC){soon ? ` — ${daysLeft <= 1 ? 'less than a day left' : `${daysLeft} days left`}` : ''}. </span>}
+            {nearLimit && <span>Only {remaining} redemption{remaining === 1 ? '' : 's'} left before this code stops applying.</span>}
+            {(soon || nearLimit) && <span className="block">Ask us if you need it extended or replaced.</span>}
+          </div>
+        )
+      })()}
       <p className="text-xs text-gray-400 mt-2">
         {live ? (
           <>Anyone who visits your link gets the discount automatically. They can also just tell

@@ -48,6 +48,7 @@ const LEDGER_NAMES = {
   121: '0121_credit_one_per_purchase',
   122: '0122_outcome_clock_real_delivery',
   123: '0123_partners_section4_round43',
+  124: '0124_partners_section4_round44',
 }
 
 module.exports = { LEDGER_NAMES }

@@ -1,0 +1,14 @@
+Partners / Referral (section 4) - round 44 (independent audit of df44f21; no bugs confirmed, 1 feature gap + 4 low items closed)
+
+FEATURE GAP
+- PartnerDashboard CodeCard: shows "Expires <date> (UTC)" and a last-7-days warning, plus "Only N redemptions left" when a usage limit is nearly spent (the backend already emailed a 7-day expiry notice; the dashboard only said "Expired" afterwards).
+
+LOW ITEMS
+- applyAsPartner: an ENDED partner re-applying still gets the normal thank-you (no enumeration) but the owner now gets a "rejoin" alert (deduped per partner).
+- Migration 0124: referral_sub_clicks.created_at; a full code (50 tags) only displaces an unattributed tag older than 7 days, so spamming fresh ?sub= values cannot wipe real channels. Schema version 124 (constants.js, migrationLedger.js).
+- setUserAttribution: the write is conditional on the code/time it read (retries twice, then reason 'busy'); useReferralCapture does not treat 'busy' as a refusal.
+- adminListPartners: > 40,000 unpaid ledger rows no longer fails the page; returns ledgerUnavailable, AdminPartners shows a banner and switches payout runs off.
+
+TESTS: tests/partners.round44.test.js, tests/migrations.0124.pglite.test.js, frontend/tests/partnersRound44.test.jsx.
+Apply migration 0124 before deploying the Worker (function body is backward-compatible; created_at has a default).
+Known unrelated failures on clean HEAD: tests/migrations.0100.pglite.test.js eviction test (superseded by 0124 behaviour) and some homepage tests.

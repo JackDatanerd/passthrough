@@ -884,7 +884,10 @@ async function adminListPartners(ctx) {
   // paid rows, and no list column shows it.)
   const data = await loadAllPartners(supabase, t => t.select('*'))
 
-  const ledgerByPartner = await loadUnpaidLedgerByPartner(supabase)
+  let ledgerByPartner, ledgerUnavailable = false
+  try { ledgerByPartner = await loadUnpaidLedgerByPartner(supabase) } catch (err) {
+    if (err && err.code === 'UNPAID_LEDGER_TOO_LARGE') { ledgerByPartner = new Map(); ledgerUnavailable = true } else throw err
+  }
 
   const holdDays = holdDaysFor(ctx.env)
   const awaitingSetup = data.filter(r => !r.payout_method && r.email && !isRemovedEmail(r.email)).map(r => r.email)
@@ -928,7 +931,7 @@ async function adminListPartners(ctx) {
     return camel
   })
   // Round 6: the payout-details hold the server enforces, so the "Record payout run" screen flags the same partners.
-  return ctx.json({ success: true, payoutDetailsHoldHours: payoutDetailsHoldHoursFor(ctx.env), currentTermsVersion: PARTNER_TERMS_VERSION, termsBlockPayout: payoutRequiresCurrentTerms(ctx.env), data: partners })
+  return ctx.json({ success: true, ledgerUnavailable, payoutDetailsHoldHours: payoutDetailsHoldHoursFor(ctx.env), currentTermsVersion: PARTNER_TERMS_VERSION, termsBlockPayout: payoutRequiresCurrentTerms(ctx.env), data: partners })
 }
 
 // ── Admin: single partner detail — full ledger, full payout history, and a
@@ -2660,7 +2663,21 @@ async function applyAsPartner(ctx) {
     return ctx.json({ success: false, code: 'CAPTCHA_FAILED', message: 'We couldn\u2019t verify that you\u2019re human. Please try again.' }, 400)
 
   const supabase = getSupabase(ctx.env)
-  if (await emailUsedByAnotherPartner(supabase, body.email)) return ctx.json(APPLY_OK)
+  if (await emailUsedByAnotherPartner(supabase, body.email)) {
+    // Same public answer either way (no enumeration), but an ENDED partner asking to come back must not vanish silently.
+    try {
+      const exactEmail = String(body.email).replace(/[\\%_]/g, '\\$&')
+      const { data: existing } = await supabase.from('partners').select('id, name, status').ilike('email', exactEmail).limit(1)
+      const row = (existing || [])[0]
+      if (row && row.status === 'ENDED') {
+        runInBackground(ctx, emailService.sendOwnerAlert(ctx.env, 'Ended partner applied to rejoin',
+          `partner: ${row.name} <${body.email}>\nstatus: ENDED\n\nThey submitted the partner application form again and were shown the normal thank-you. ` +
+          `Nothing was created. To take them back, set them to Active under Admin -> Partners -> that partner.`,
+          { dedupeKey: `rejoin:${row.id}` }).catch(() => {}))
+      }
+    } catch (err) { console.error('applyAsPartner rejoin notice:', err.message) }
+    return ctx.json(APPLY_OK)
+  }
 
   // Round 4: a rejected applicant could re-submit instantly and forever, re-alerting the
   // owner each time. They were already emailed the decision, so within the cooldown the

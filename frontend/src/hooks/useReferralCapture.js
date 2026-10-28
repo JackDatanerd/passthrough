@@ -111,7 +111,7 @@ function syncToAccount(code, capturedAt, sub) {
   // Round 17: the channel tag is kept on the account with the code, so a purchase on another device is still tagged.
   if (code && cleanSub(sub)) body.sub = cleanSub(sub)
   api.post('/partners/attribution', body)
-    .then(res => { if (code && res?.data?.data?.stored === false) syncRefused.add(code) })
+    .then(res => { if (code && res?.data?.data?.stored === false && res.data.data.reason !== 'busy') syncRefused.add(code) })
     .catch(() => {})
 }
 

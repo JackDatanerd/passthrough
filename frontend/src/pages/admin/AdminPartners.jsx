@@ -569,6 +569,7 @@ export default function AdminPartners() {
   const [showRun, setShowRun] = useState(false)
   const [holdHours, setHoldHours] = useState(48)
   const [termsBlockPayout, setTermsBlockPayout] = useState(false)
+  const [ledgerUnavailable, setLedgerUnavailable] = useState(false)
   const [query, setQuery] = useState('')
   const [sortKey, setSortKey] = useState('newest')
   const [filterKey, setFilterKey] = useState('all')
@@ -581,6 +582,7 @@ export default function AdminPartners() {
       setPartners(res.data.data)
       if (typeof res.data.payoutDetailsHoldHours === 'number') setHoldHours(res.data.payoutDetailsHoldHours)
       setTermsBlockPayout(res.data.termsBlockPayout === true)
+      setLedgerUnavailable(res.data.ledgerUnavailable === true)
     } catch (_) {
       toast({ message: 'Failed to load partners.', type: 'error' })
     } finally {
@@ -606,7 +608,7 @@ export default function AdminPartners() {
   // what the run can pay, and shows the rest separately.
   const totalReadyToPay = partners.filter(isPayable).reduce((sum, p) => sum + Math.max(0, p.readyToPayCents || 0), 0)
   const readyButNotPayableCents = partners.filter(p => !isPayable(p)).reduce((sum, p) => sum + Math.max(0, p.readyToPayCents || 0), 0)
-  const payableCount = partners.filter(isPayable).length
+  const payableCount = ledgerUnavailable ? 0 : partners.filter(isPayable).length
   const [taxYear, setTaxYear] = useState(() => new Date().getUTCFullYear() - (new Date().getUTCMonth() < 3 ? 1 : 0))   // January-March: last year is the one being filed
   const taxYears = (() => { const now = new Date().getUTCFullYear(); return [now, now - 1, now - 2, now - 3].filter(y => y >= 2024) })()
   const mixedCurrencyCount = partners.filter(p => p.mixedCurrency && (p.readyToPayCents || 0) > 0).length
@@ -696,6 +698,12 @@ export default function AdminPartners() {
         </div>
       </div>
 
+      {ledgerUnavailable && (
+        <p role="alert" className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2" data-testid="ledger-unavailable">
+          There are too many unpaid commission rows to total here, so the balances below are not shown and payout runs are switched off.
+          Open a partner to record their payout, then reload.
+        </p>
+      )}
       {mixedCurrencyCount > 0 && (
         <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2" data-testid="mixed-currency-list">
           {mixedCurrencyCount} partner{mixedCurrencyCount === 1 ? ' has' : 's have'} unpaid commission in more than one currency and

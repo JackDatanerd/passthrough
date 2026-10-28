@@ -722,7 +722,7 @@ const CODE_FORMAT_RE = /^[A-Z0-9_-]{2,50}$/
 // start: a future/garbage value falls back to now, an older-than-window one is refused, and a code the account already
 // holds is never moved BACKWARDS in time by a stale push.
 const ATTRIBUTION_WINDOW_MS = c.REFERRAL_ATTRIBUTION_DAYS * 24 * 3600 * 1000
-async function setUserAttribution(supabase, user, rawCode, capturedAt, rawSub) {
+async function setUserAttribution(supabase, user, rawCode, capturedAt, rawSub, _attributionRetry = 0) {
   if (rawCode == null || String(rawCode).trim() === '') {
     const { error } = await supabase.from('users').update({ referred_by_code: null, referred_at: null, referred_sub: null }).eq('id', user.id)
     if (error) throw error
@@ -756,9 +756,19 @@ async function setUserAttribution(supabase, user, rawCode, capturedAt, rawSub) {
   // Round 17 (gap): the partner's channel tag (`&sub=`) is the same attribution as the code and now rides on the account the
   // same way — last click wins, so a click without a tag replaces an older tag rather than keeping it.
   const sub = normalizeSub(rawSub)
-  const { error } = await supabase.from('users')
+  // Conditional write: only replace the state we just read. A concurrent sync that landed in between
+  // (two tabs, or the hook and a manual entry) makes this match zero rows, and we re-evaluate against it
+  // instead of letting an older capture overwrite a newer one.
+  let upd = supabase.from('users')
     .update({ referred_by_code: code, referred_at: new Date(at).toISOString(), referred_sub: sub }).eq('id', user.id)
+  upd = current?.referred_by_code ? upd.eq('referred_by_code', current.referred_by_code) : upd.is('referred_by_code', null)
+  upd = current?.referred_at ? upd.eq('referred_at', current.referred_at) : upd.is('referred_at', null)
+  const { data: written, error } = await upd.select('id')
   if (error) throw error
+  if (Array.isArray(written) && written.length === 0) {
+    if (_attributionRetry < 2) return setUserAttribution(supabase, user, rawCode, capturedAt, rawSub, _attributionRetry + 1)
+    return { stored: false, reason: 'busy' }
+  }
   return { stored: true, code, referredAt: new Date(at).toISOString(), referredSub: sub }
 }
 
