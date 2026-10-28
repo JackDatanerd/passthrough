@@ -202,7 +202,7 @@ const GO_CUES = ['in', 'with', 'using', 'use', 'uses', 'used', 'of', 'and', 'or'
   'experience', 'expertise', 'knowledge', 'skills', 'skill', 'years', 'year', 'write', 'writing', 'written', 'build', 'building', 'built',
   'develop', 'developing', 'developed', 'engineer', 'engineering', 'backend', 'back-end']
 const caseless = w => [...w].map(ch => (/[a-z]/.test(ch) ? `[${ch.toUpperCase()}${ch}]` : ch)).join('')
-const GO_AFTER_CUE = new RegExp(String.raw`(?<=\b(?:${GO_CUES.map(caseless).join('|')})[ \t]+)Go\b(?![ \t]*[-\u2013]?[ \t]*(?:to|getter|live|forward|ahead|through|over|beyond|above|between|ape|big|lean)\b)`, 'g')
+const GO_AFTER_CUE = new RegExp(String.raw`(?<=\b(?:${GO_CUES.map(caseless).join('|')})[ \t]{1,3})Go\b(?![ \t]*[-\u2013]?[ \t]*(?:to|getter|live|forward|ahead|through|over|beyond|above|between|ape|big|lean)\b)`, 'g')
 function normalizeTechTerms(text) {
   return canonicalCompounds(toUsSpelling(decodeHtmlEntities(String(text ?? ''))))
     // Aliases people use interchangeably (round 5, G1): normalised to ONE spelling on both sides, so a resume saying
@@ -1277,7 +1277,7 @@ const ROLE_SIGNALS = {
   marketing:            ['marketing', 'growth marketing', 'seo', 'content marketing', 'content strategy', 'copywriter', 'social media', 'brand'],
   sales:                ['sales(?!force)', 'account executive', 'business development', 'quota', 'account manager'],
   operations:           ['operations', 'ops', 'supply chain', 'logistics', 'project manager', 'program manager'],
-  finance:              ['finance', 'accounting', 'accountant', 'financial analyst', 'audit', 'bookkeep'],
+  finance:              ['finance', 'accounting', 'accountant', 'financial analyst', 'financial controller', 'treasury', 'payroll', 'audit', 'bookkeep'],
   healthcare:           ['nurse', 'nursing', 'doctor', 'physician', 'clinical', 'medical', 'patient'],
   legal:                ['lawyer', 'attorney', 'paralegal', 'legal counsel', 'legal'],
   education:            ['teacher', 'professor', 'instructor', 'curriculum', 'lecturer'],
@@ -1397,9 +1397,16 @@ function detectSeniority(jdText) {
   return 'mid'
 }
 
+// A run of spaces/tabs longer than any real layout gap is padding. Capped, so nothing downstream (several regexes scan back
+// across a run) can be made to spend time proportional to the run's length.
+const MAX_SPACE_RUN = 40
+const SPACE_RUN = new RegExp(`[ \\t]{${MAX_SPACE_RUN + 1},}`, 'g')
+function capSpaceRuns(text) { return String(text ?? '').replace(SPACE_RUN, ' '.repeat(MAX_SPACE_RUN)) }
+
 function scoreResume(resumeText, jdText, { structure = null } = {}) {
   // The ingest layer appends the file's link targets after the text; they are not resume prose and must not be scored as it.
-  resumeText = stripLinkBlock(resumeText)
+  resumeText = capSpaceRuns(stripLinkBlock(resumeText))
+  jdText = capSpaceRuns(jdText)
   const kw  = scoreKeywords(resumeText, jdText, { hiddenTextChars: structure?.hiddenTextChars || 0 })
   const fmt = scoreFormat(resumeText, structure)
   const sec = scoreSections(resumeText)
@@ -1490,7 +1497,7 @@ module.exports = {
   CATEGORY_WEIGHTS,
   splitJdZones,
   extractWeightedKeywords,
-  fitJobDescription, collapseWhitespaceRuns,
+  fitJobDescription, collapseWhitespaceRuns, capSpaceRuns,
   scoreResume, detectRoleCategory, detectSeniority, describeWeakAreas,
   // exported for tests
   extractKeywords, stem, tokenizeRaw, normalizeTechTerms, displayKeyword, scoreFormat, requiredYears,

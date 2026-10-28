@@ -160,7 +160,8 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
 
   if (resumeData.summary) {
     children.push(heading('PROFESSIONAL SUMMARY'))
-    children.push(plain(resumeData.summary))
+    // A line break inside a text run is not a break in Word; one paragraph per line is what the reader (and the ATS) sees.
+    for (const line of String(resumeData.summary).split(/\r?\n+/).map(l => l.trim()).filter(Boolean)) children.push(plain(line))
   }
 
   const sec = { experience: [], education: [], skills: [], certifications: [], projects: [], volunteer: [], awards: [], publications: [], languages: [] }
@@ -182,7 +183,7 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
     out.push(heading('EDUCATION'))
     for (const e of resumeData.education) {
       out.push(titleRow([e.degree, e.institution].filter(Boolean).join(' — '), canonDates(e.dates), d.entryGap))
-      if (e.details) out.push(plain(e.details))
+      if (e.details) for (const line of String(e.details).split(/\r?\n+/).map(l => l.trim()).filter(Boolean)) out.push(plain(line))
     }
   }
 

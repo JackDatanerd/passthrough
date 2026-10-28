@@ -21,19 +21,20 @@ export default function CategoryScores({ scan }) {
     <div className="flex flex-col gap-3">
       {CATS.map(({ key, label: rawLabel }) => {
         const label = key === 'keywordScore' && noKeywords ? 'Keywords (not scored for this posting)' : rawLabel
+        const unscored = key === 'keywordScore' && noKeywords   // the stored number is a blend of the other three, not a measurement
         const val = scan?.[key] ?? 0
-        const color = val >= ATS_PASS_THRESHOLD ? 'bg-green-500' : val >= 50 ? 'bg-amber-400' : 'bg-red-500'
-        const text  = val >= ATS_PASS_THRESHOLD ? 'text-green-700' : val >= 50 ? 'text-amber-700' : 'text-red-700'
+        const color = unscored ? 'bg-gray-200' : val >= ATS_PASS_THRESHOLD ? 'bg-green-500' : val >= 50 ? 'bg-amber-400' : 'bg-red-500'
+        const text  = unscored ? 'text-gray-500' : val >= ATS_PASS_THRESHOLD ? 'text-green-700' : val >= 50 ? 'text-amber-700' : 'text-red-700'
         return (
           <div key={key}>
             <div className="flex justify-between items-center mb-1">
               <span className="text-sm text-gray-600">{label}</span>
-              <span className={`text-sm font-semibold ${text}`}>{val}</span>
+              <span className={`text-sm font-semibold ${text}`}>{unscored ? '—' : val}</span>
             </div>
             <div className="h-2 w-full bg-gray-100 rounded-full overflow-hidden">
               <div
                 className={`h-full rounded-full transition-all duration-500 ${color}`}
-                style={{ width: `${val}%` }}
+                style={{ width: unscored ? '0%' : `${val}%` }}
               />
             </div>
           </div>
