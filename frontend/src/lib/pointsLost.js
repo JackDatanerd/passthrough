@@ -54,9 +54,12 @@ export function computePointsLost(scan) {
   const weightSum = rows.reduce((a, r) => a + (num(scan[r.score]) && num(weights[r.key]) && weights[r.key] > 0 ? weights[r.key] : 0), 0)
   const ruleLoss100 = weightSum > 0 ? total / weightSum : 0
   const ruleWeight = ATS_RULE_WEIGHT
-  const ruleGap = scan.scoredWithoutAi ? gap : Math.min(gap, ruleWeight * ruleLoss100)
+  // The server sends this flag inside atsDetail (buildAtsDetail), never as a top-level scan field. Reading only the top
+  // level made every scan scored without the AI blame a "Fit to this job" loss that no AI review ever judged.
+  const withoutAi = !!(scan.atsDetail?.scoredWithoutAi || scan.scoredWithoutAi)
+  const ruleGap = withoutAi ? gap : Math.min(gap, ruleWeight * ruleLoss100)
   // A score the AI never touched has no AI share: whatever the rules do not explain is rounding, so it stays with them.
-  const aiGap = scan.scoredWithoutAi ? 0 : gap - ruleGap
+  const aiGap = withoutAi ? 0 : gap - ruleGap
   if (total <= 0 && aiGap < 0.5) return null
   const shares = [...rows.map(r => (total > 0 ? (r.loss / total) * ruleGap : 0)), aiGap]
   // largest-remainder rounding, so the points shown add up to the gap exactly

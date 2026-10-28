@@ -1,0 +1,15 @@
+SCAN / ATS CORE (section 2) - independent pass: fixes
+
+BUG 1 (frontend/src/lib/pointsLost.js): a scan scored without the AI blamed "Fit to this job" for points no AI review judged.
+  The flag is sent as atsDetail.scoredWithoutAi; the code only read scan.scoredWithoutAi (never sent at top level).
+  Now reads atsDetail first, top level as a fallback. Test uses the server's real payload shape.
+
+BUG 2 (identical bullet text under two jobs): "Add my number" could edit the wrong job's line, and a prompt was dropped or kept
+  by text alone. Prompts now carry jobIndex/bulletIndex (claude.service groundQuantificationPrompts + fallbackQuantificationPrompts),
+  updateDeliveredResume judges each prompt at its position (re-pointing to an identical twin when the saved line changed),
+  and QuantificationPrompts.replaceBullet edits the exact line. Older prompts without a position still match by text.
+
+Not changed (decision needed): rescan of an edited uploaded-file scan still scores the raw file while keeping the edited data.
+
+Tests: backend 86 files / 2008 pass (scan, prompts, claude, ats, profile, verify, mappers); 58 scan-related frontend files pass.
+Unrelated, already failing on untouched code: frontend/tests/adminHotCategories.test.jsx, homeAdminPreview.test.jsx (5 tests).

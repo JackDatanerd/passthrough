@@ -38,3 +38,25 @@ describe('groundQuantificationPrompts — every prompt must point at a real bull
     expect(claude.groundQuantificationPrompts({}, [{ bullet: 'x', suggestion: 'y' }])).toEqual([])
   })
 })
+
+describe('groundQuantificationPrompts — identical lines under different jobs stay separate prompts', () => {
+  const resume = { experience: [
+    { company: 'Acme', bullets: ['Managed vendor relationships across the region for the team'] },
+    { company: 'Globex', bullets: ['Managed vendor relationships across the region for the team'] },
+  ] }
+  it('keeps one prompt per position and tells them apart', () => {
+    const out = claude.groundQuantificationPrompts(resume, [{ job: 1, bullet: 0, suggestion: 'how many?' }, { job: 1, bullet: 0, suggestion: 'again' }])
+    expect(out).toHaveLength(1)
+    expect(out[0]).toMatchObject({ jobIndex: 1, bulletIndex: 0 })
+    const both = claude.groundQuantificationPrompts(resume, [{ job: 0, bullet: 0, suggestion: 'a' }, { job: 1, bullet: 0, suggestion: 'b' }])
+    expect(both.map(q => [q.jobIndex, q.bulletIndex])).toEqual([[0, 0], [1, 0]])
+  })
+  it('a text-form prompt is anchored to the real position it matched', () => {
+    const out = claude.groundQuantificationPrompts(resume, [{ bullet: 'Managed vendor relationships across the region for the team', suggestion: 'x' }])
+    expect(out).toHaveLength(1)
+    expect(out[0]).toMatchObject({ jobIndex: 0, bulletIndex: 0 })
+  })
+  it('the fallback prompts carry their position too', () => {
+    expect(claude.fallbackQuantificationPrompts(resume).map(q => [q.jobIndex, q.bulletIndex])).toEqual([[0, 0], [1, 0]])
+  })
+})

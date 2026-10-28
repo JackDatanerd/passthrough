@@ -16,11 +16,20 @@ import Alert from '../ui/Alert'
 // Renders nothing if there are no prompts — this is the common case for well-quantified resumes, and for badge-only
 // purchases (which never run the AI rewrite, so quantificationPrompts is always empty/null there).
 
-// Replaces the first experience bullet equal to `from` (ignoring surrounding whitespace). Returns null if it is gone.
-export function replaceBullet(resumeData, from, to) {
+// Replaces an experience bullet equal to `from` (ignoring surrounding whitespace). Returns null if it is gone.
+// `at` ({ jobIndex, bulletIndex }, sent with the prompt) says WHICH one when the same line appears under more than one
+// job; when that position no longer holds the line (or an older prompt carries none) the first identical line is used.
+export function replaceBullet(resumeData, from, to, at = null) {
   if (!resumeData || !Array.isArray(resumeData.experience)) return null
   const copy = JSON.parse(JSON.stringify(resumeData))
   const want = String(from || '').trim()
+  if (at && Number.isInteger(at.jobIndex) && Number.isInteger(at.bulletIndex)) {
+    const list = copy.experience[at.jobIndex]?.bullets
+    if (Array.isArray(list) && typeof list[at.bulletIndex] === 'string' && list[at.bulletIndex].trim() === want) {
+      list[at.bulletIndex] = to
+      return copy
+    }
+  }
   for (const job of copy.experience) {
     if (!Array.isArray(job?.bullets)) continue
     const i = job.bullets.findIndex(b => typeof b === 'string' && b.trim() === want)
@@ -38,7 +47,7 @@ function PromptRow({ prompt, scan, onSaved }) {
   const unchanged = trimmed === String(prompt.bullet || '').trim()
 
   async function save() {
-    const next = replaceBullet(scan.rewrittenResumeData, prompt.bullet, trimmed)
+    const next = replaceBullet(scan.rewrittenResumeData, prompt.bullet, trimmed, prompt)
     if (!next) { setError('That line has changed since this page loaded — refresh and try again.'); return }
     setSaving(true); setError('')
     try {

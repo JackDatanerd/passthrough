@@ -775,12 +775,15 @@ async function rewriteResumeContent(env, resumeData, jdText, scoreFeedback = nul
 // free scan's "unquantified" list uses), at most five.
 function fallbackQuantificationPrompts(resumeData, max = 5) {
   const out = []
-  for (const job of Array.isArray(resumeData?.experience) ? resumeData.experience : []) {
-    for (const b of Array.isArray(job?.bullets) ? job.bullets : []) {
+  const jobs = Array.isArray(resumeData?.experience) ? resumeData.experience : []
+  for (let ji = 0; ji < jobs.length; ji++) {
+    const list = Array.isArray(jobs[ji]?.bullets) ? jobs[ji].bullets : []
+    for (let bi = 0; bi < list.length; bi++) {
       if (out.length >= max) return out
-      const text = typeof b === 'string' ? b.trim() : ''
+      const text = typeof list[bi] === 'string' ? list[bi].trim() : ''
       if (!text || /\d/.test(text) || text.split(/\s+/).length < 6) continue
-      out.push({ bullet: text, suggestion: 'How many, how much, how often or how long? Add one real figure you can stand behind.' })
+      // jobIndex / bulletIndex: where the line sits, so two identical lines under different jobs stay told apart.
+      out.push({ bullet: text, suggestion: 'How many, how much, how often or how long? Add one real figure you can stand behind.', jobIndex: ji, bulletIndex: bi })
     }
   }
   return out
@@ -789,21 +792,28 @@ const promptKey = t => String(t || '').toLowerCase().replace(/[^\p{L}\p{N}%$]+/g
 function groundQuantificationPrompts(resumeData, raw) {
   if (!Array.isArray(raw)) return []
   const bullets = []
-  for (const job of Array.isArray(resumeData?.experience) ? resumeData.experience : [])
-    for (const b of Array.isArray(job?.bullets) ? job.bullets : [])
-      if (typeof b === 'string' && b.trim()) bullets.push({ text: b, key: promptKey(b), words: new Set(promptKey(b).split(' ').filter(w => w.length > 2)) })
-  const out = []
-  const seen = new Set()
   const jobs = Array.isArray(resumeData?.experience) ? resumeData.experience : []
+  for (let ji = 0; ji < jobs.length; ji++) {
+    const list = Array.isArray(jobs[ji]?.bullets) ? jobs[ji].bullets : []
+    for (let bi = 0; bi < list.length; bi++) {
+      const b = list[bi]
+      if (typeof b === 'string' && b.trim()) bullets.push({ text: b, ji, bi, key: promptKey(b), words: new Set(promptKey(b).split(' ').filter(w => w.length > 2)) })
+    }
+  }
+  const out = []
+  // One prompt per bullet POSITION. It used to be per bullet text, so the second of two identical lines under
+  // different jobs was dropped and the first one's position was the only one the page could ever edit.
+  const seen = new Set()
   for (const q of raw) {
     if (!q || typeof q.suggestion !== 'string' || !q.suggestion.trim()) continue
     // Preferred form: the model points at a bullet by position ({job, bullet} - zero-based) instead of retyping it, so
     // the prompt can never point at text that is not in the resume. An out-of-range pointer is dropped.
     if (Number.isInteger(q.job) && Number.isInteger(q.bullet)) {
       const text = jobs[q.job] && Array.isArray(jobs[q.job].bullets) ? jobs[q.job].bullets[q.bullet] : null
-      if (typeof text !== 'string' || !text.trim() || seen.has(text.trim())) continue
-      seen.add(text.trim())
-      out.push({ bullet: text.trim(), suggestion: q.suggestion.trim() })
+      const at = `${q.job}:${q.bullet}`
+      if (typeof text !== 'string' || !text.trim() || seen.has(at)) continue
+      seen.add(at)
+      out.push({ bullet: text.trim(), suggestion: q.suggestion.trim(), jobIndex: q.job, bulletIndex: q.bullet })
       continue
     }
     // Older form (and a model that ignores the instruction): the bullet text itself, matched back to a real bullet.
@@ -829,9 +839,10 @@ function groundQuantificationPrompts(resumeData, raw) {
     }
     if (!hit) continue
     const bullet = hit.text.trim()
-    if (seen.has(bullet)) continue
-    seen.add(bullet)
-    out.push({ ...q, bullet })
+    const at = `${hit.ji}:${hit.bi}`
+    if (seen.has(at)) continue
+    seen.add(at)
+    out.push({ ...q, bullet, jobIndex: hit.ji, bulletIndex: hit.bi })
   }
   return out
 }

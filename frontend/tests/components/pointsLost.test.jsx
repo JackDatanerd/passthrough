@@ -57,6 +57,13 @@ describe('computePointsLost', () => {
     expect(r.items.find(i => i.key === 'ai')).toBeUndefined()
     expect(r.items.reduce((a, i) => a + i.points, 0)).toBe(32)
   })
+  it('reads the rules-only flag where the server really sends it (atsDetail.scoredWithoutAi), not only at the top level', () => {
+    const base = scan({ atsScore: 68, keywordScore: 68, formatScore: 68, sectionsScore: 68, contentScore: 68 })
+    const r = computePointsLost({ ...base, atsDetail: { ...base.atsDetail, scoredWithoutAi: true } })
+    expect(r.items.find(i => i.key === 'ai')).toBeUndefined()
+    expect(r.items.reduce((a, i) => a + i.points, 0)).toBe(32)
+    expect(computePointsLost({ ...base, atsDetail: { ...base.atsDetail, scoredWithoutAi: false } }).items.find(i => i.key === 'ai')).toBeDefined()
+  })
   it('a perfect score has no gap and no items', () => { expect(computePointsLost(scan({ atsScore: 100 }))).toEqual({ gap: 0, items: [] }) })
   it('clamps wild category scores instead of producing negative points', () => {
     const r = computePointsLost(scan({ keywordScore: 400, formatScore: -50 }))

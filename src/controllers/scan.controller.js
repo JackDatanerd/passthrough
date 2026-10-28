@@ -1341,6 +1341,16 @@ async function retryScan(ctx) {
   return ctx.json({ success: true, data: { id: scan.id, status: 'PENDING' } })
 }
 
+// First experience bullet reading exactly `text` whose position is not already taken (see updateDeliveredResume).
+function findUnclaimed(experience, text, claimed) {
+  for (let j = 0; j < experience.length; j++) {
+    const list = Array.isArray(experience[j]?.bullets) ? experience[j].bullets : []
+    for (let b = 0; b < list.length; b++)
+      if (typeof list[b] === 'string' && list[b].trim() === text && !claimed.has(`${j}:${b}`)) return [j, b]
+  }
+  return null
+}
+
 // PATCH /api/scan/:id/delivered-resume
 // FEATURE GAP CLOSED (Scan/ATS pass): once a fix was delivered the content could not be changed —
 // not a typo, not a number the "Strengthen these lines" panel asks for, not a job the person
@@ -1422,11 +1432,40 @@ async function updateDeliveredResume(ctx) {
   const finalPdfHash = pdfKey ? pdfHash : null
 
   // A prompt whose bullet is no longer in the resume has been acted on (or removed).
-  const bulletsNow = new Set()
-  for (const e of Array.isArray(resumeData.experience) ? resumeData.experience : [])
-    for (const b of Array.isArray(e?.bullets) ? e.bullets : []) if (typeof b === 'string') bulletsNow.add(b.trim())
-  const prompts = (Array.isArray(scan.quantificationPrompts) ? scan.quantificationPrompts : [])
-    .filter(p => p && bulletsNow.has(String(p.bullet || '').trim()))
+  // A prompt that carries a position is judged at that position: with two identical lines under different jobs, acting
+  // on one must not leave the prompt "alive" only because the other copy still reads the same - nor keep pointing at
+  // the line that was just changed. When its line moved or the saved position is stale, it re-points at the first
+  // identical line still there; one that has no position (older rows) is matched by text as before.
+  const expNow = Array.isArray(resumeData.experience) ? resumeData.experience : []
+  const bulletAt = (j, b) => { const v = expNow[j]?.bullets?.[b]; return typeof v === 'string' ? v.trim() : null }
+  const firstWith = text => {
+    for (let j = 0; j < expNow.length; j++) {
+      const list = Array.isArray(expNow[j]?.bullets) ? expNow[j].bullets : []
+      for (let b = 0; b < list.length; b++) if (typeof list[b] === 'string' && list[b].trim() === text) return [j, b]
+    }
+    return null
+  }
+  const claimed = new Set()
+  const prompts = []
+  for (const p of Array.isArray(scan.quantificationPrompts) ? scan.quantificationPrompts : []) {
+    if (!p) continue
+    const text = String(p.bullet || '').trim()
+    if (!text) continue
+    const hasPos = Number.isInteger(p.jobIndex) && Number.isInteger(p.bulletIndex)
+    if (hasPos && bulletAt(p.jobIndex, p.bulletIndex) === text && !claimed.has(`${p.jobIndex}:${p.bulletIndex}`)) {
+      claimed.add(`${p.jobIndex}:${p.bulletIndex}`); prompts.push(p); continue
+    }
+    if (hasPos && bulletAt(p.jobIndex, p.bulletIndex) !== null && bulletAt(p.jobIndex, p.bulletIndex) !== text) {
+      // The line at the saved position was changed - that is the one acted on. Another identical line still needs it.
+      const other = findUnclaimed(expNow, text, claimed)
+      if (other) { claimed.add(`${other[0]}:${other[1]}`); prompts.push({ ...p, jobIndex: other[0], bulletIndex: other[1] }) }
+      continue
+    }
+    const where = hasPos ? findUnclaimed(expNow, text, claimed) : firstWith(text)
+    if (!where) continue
+    claimed.add(`${where[0]}:${where[1]}`)
+    prompts.push(hasPos ? { ...p, jobIndex: where[0], bulletIndex: where[1] } : p)
+  }
 
   // Round 3 (G7 + B2): the owner's edit is stored in rewritten_resume_data - the column everything
   // downstream already reads as "the delivered content" - for BOTH tiers, and ALSO as

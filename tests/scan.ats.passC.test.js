@@ -325,6 +325,33 @@ describe('updateDeliveredResume', () => {
     expect(filters).toContainEqual(['eq', 'status', 'FIX_DELIVERED'])
     expect(filters).toContainEqual(['eq', 'fix_retry_count', 1])
   })
+  it('two identical lines under different jobs: the prompt follows the line the person did NOT change', async () => {
+    const line = 'Managed vendor relationships across the region'
+    const scan = { id: 's1', user_id: 'u1', status: 'FIX_DELIVERED', fix_purchased: true, fix_tier: 'FIX', fix_retry_count: 1,
+      job_description_text: 'JD ' + 'x'.repeat(60), original_resume_data: { name: 'Jane' }, rewritten_resume_data: { name: 'Jane' },
+      resume_ats_path: 'old.docx', resume_pdf_path: 'old.pdf', resume_hash: 'oldhash', resume_pdf_hash: 'oldpdf',
+      verification_code: 'CODE1', verification_url: 'https://usepassthrough.com/v/CODE1', verified_at: '2026-01-01',
+      quantification_prompts: [{ bullet: line, suggestion: 'how many?', jobIndex: 1, bulletIndex: 0 }], cover_letter_text: null }
+    t = setup({ scan })
+    // the person quantified the SECOND copy (job 1); the first copy (job 0) still reads the same and still needs a number
+    const body = { resumeData: { name: 'Jane', skills: ['New'], experience: [
+      { company: 'Acme', title: 'Eng', dates: '2020', bullets: [line] },
+      { company: 'Beta', title: 'Eng', dates: '2018', bullets: ['Managed 14 vendor relationships across the region'] }] } }
+    const res = await t.mod.updateDeliveredResume(baseCtx({ env: t.env, body }))
+    expect(res.status).toBe(200)
+    expect(t.state.updates[0].patch.quantification_prompts).toEqual([{ bullet: line, suggestion: 'how many?', jobIndex: 0, bulletIndex: 0 }])
+  })
+  it('a prompt whose line was changed and has no identical twin is dropped; an untouched positioned one is kept', async () => {
+    const mk = prompts => ({ id: 's1', user_id: 'u1', status: 'FIX_DELIVERED', fix_purchased: true, fix_tier: 'FIX', fix_retry_count: 1,
+      job_description_text: 'JD ' + 'x'.repeat(60), original_resume_data: { name: 'Jane' }, rewritten_resume_data: { name: 'Jane' },
+      resume_ats_path: 'old.docx', resume_pdf_path: 'old.pdf', resume_hash: 'oldhash', resume_pdf_hash: 'oldpdf',
+      verification_code: 'CODE1', verification_url: 'https://usepassthrough.com/v/CODE1', verified_at: '2026-01-01', quantification_prompts: prompts, cover_letter_text: null })
+    t = setup({ scan: mk([{ bullet: 'Built APIs', suggestion: 'a', jobIndex: 0, bulletIndex: 0 }, { bullet: 'Ran sessions', suggestion: 'b', jobIndex: 0, bulletIndex: 1 }]) })
+    const body = { resumeData: { name: 'Jane', skills: ['New'], experience: [{ company: 'Acme', title: 'Eng', dates: '2020', bullets: ['Built 12 APIs', 'Ran sessions'] }] } }
+    const res = await t.mod.updateDeliveredResume(baseCtx({ env: t.env, body }))
+    expect(res.status).toBe(200)
+    expect(t.state.updates[0].patch.quantification_prompts).toEqual([{ bullet: 'Ran sessions', suggestion: 'b', jobIndex: 0, bulletIndex: 1 }])
+  })
   it('a score under the threshold rebuilds with the honest unverified wording', async () => {
     t = setup({ score: 70 })
     const res = await t.mod.updateDeliveredResume(baseCtx({ env: t.env, body: { resumeData: edit } }))

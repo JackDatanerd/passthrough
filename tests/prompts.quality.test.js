@@ -121,7 +121,7 @@ describe('quantification prompts point at bullets by position', () => {
   const resume = { experience: [{ bullets: ['Managed vendor accounts', 'Built weekly reports'] }, { bullets: ['Ran onboarding sessions'] }] }
   it('resolves {job, bullet} indices to the real bullet text', () => {
     const out = claude.groundQuantificationPrompts(resume, [{ job: 1, bullet: 0, suggestion: 'How many sessions?' }, { job: 0, bullet: 1, suggestion: 'How often?' }])
-    expect(out).toEqual([{ bullet: 'Ran onboarding sessions', suggestion: 'How many sessions?' }, { bullet: 'Built weekly reports', suggestion: 'How often?' }])
+    expect(out).toEqual([{ bullet: 'Ran onboarding sessions', suggestion: 'How many sessions?', jobIndex: 1, bulletIndex: 0 }, { bullet: 'Built weekly reports', suggestion: 'How often?', jobIndex: 0, bulletIndex: 1 }])
   })
   it('drops out-of-range pointers and duplicates; still accepts the older text form', () => {
     const out = claude.groundQuantificationPrompts(resume, [

@@ -167,6 +167,15 @@ describe('replaceBullet', () => {
     expect(out.experience[1].bullets).toEqual(['Third line, for 12 clients'])
     expect(data.experience[1].bullets).toEqual(['Third line'])
   })
+  it('edits the line the prompt points at when the same text sits under two jobs', () => {
+    const dup = { experience: [{ bullets: ['Managed vendor relationships across the region'] }, { bullets: ['Managed vendor relationships across the region'] }] }
+    const out = replaceBullet(dup, 'Managed vendor relationships across the region', 'Managed 14 vendor relationships', { jobIndex: 1, bulletIndex: 0 })
+    expect(out.experience[0].bullets[0]).toBe('Managed vendor relationships across the region')
+    expect(out.experience[1].bullets[0]).toBe('Managed 14 vendor relationships')
+    // a stale position, or a prompt with none, falls back to the first identical line
+    expect(replaceBullet(dup, 'Managed vendor relationships across the region', 'x', { jobIndex: 5, bulletIndex: 0 }).experience[0].bullets[0]).toBe('x')
+    expect(replaceBullet(dup, 'Managed vendor relationships across the region', 'x').experience[0].bullets[0]).toBe('x')
+  })
   it('returns null when the bullet is gone or the data is unusable', () => {
     expect(replaceBullet(data, 'Nope', 'x')).toBe(null)
     expect(replaceBullet(null, 'a', 'b')).toBe(null)
