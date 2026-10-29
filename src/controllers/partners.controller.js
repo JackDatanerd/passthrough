@@ -817,8 +817,10 @@ async function sweepPayoutDue(env, supabase) {
 
 // Partners round 41 (feature gap): a partner whose commission is payable but who never added payout details used to hear NOTHING:
 // the owner was alerted (sweepPayoutDue) and the dashboard shows a banner, but a partner who does not open the dashboard simply never
-// got paid. Once per closed cycle each such ACTIVE partner now gets one email pointing at the dashboard, whose "Email me a link to add
+// got paid. Once per closed cycle each such partner now gets one email pointing at the dashboard, whose "Email me a link to add
 // them" button issues the payout link. Independent of OWNER_ALERT_EMAIL; needs the KV so it can never repeat hourly. Never throws.
+// Round 46: PAUSED and ENDED partners are reminded too. Commission earned before a pause or end is still owed (the dashboard says
+// so) and the payout link works for any status, yet the sweep used to skip them, so money owed to them sat with no one nudging.
 const DETAILS_REMINDER_MAX_PER_RUN = 20
 async function sweepPayoutDetailsReminders(env, supabase) {
   const out = { sent: 0, skipped: 0 }
@@ -828,8 +830,8 @@ async function sweepPayoutDetailsReminders(env, supabase) {
     // The pass reads every partner and the whole unpaid ledger, so a finished pass is remembered for 6 hours (like sweepPayoutDue's).
     const checkedKey = `partner-details-reminder-checked:${closed.key}`
     if (await referralService.keySeen(env, checkedKey)) return out
-    const partners = await loadAllPartners(supabase, t => t.select('id, name, email, status, payout_method, dashboard_token, dashboard_token_version').eq('status', 'ACTIVE').is('payout_method', null))
-    const candidates = (partners || []).filter(p => p.email && !isRemovedEmail(p.email) && p.status === 'ACTIVE' && !p.payout_method)
+    const partners = await loadAllPartners(supabase, t => t.select('id, name, email, status, payout_method, dashboard_token, dashboard_token_version').is('payout_method', null))
+    const candidates = (partners || []).filter(p => p.email && !isRemovedEmail(p.email) && !p.payout_method)
     if (!candidates.length) return out
     const ledgerByPartner = await loadUnpaidLedgerByPartner(supabase)
     const holdDays = holdDaysFor(env), minPayout = minPayoutFor(env), cur = c.activeCurrency(env)

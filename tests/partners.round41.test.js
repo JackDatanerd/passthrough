@@ -107,13 +107,20 @@ describe('G1 — a partner with payable commission and no payout details is remi
     t = sweepSetup({ partners: [NODETAILS, { ...NODETAILS, id: 'p2', email: 'b@x.co', payout_method: 'BANK' }, { ...NODETAILS, id: 'p3', email: 'c@x.co', status: 'PAUSED' }], unpaid: [ROW('p1'), ROW('p2'), ROW('p3')] })
     const env = ENV()
     const first = await t.mod.sweepPayoutDetailsReminders(env, t.db)
-    expect(first.sent).toBe(1)
-    expect(t.st.reminders).toHaveLength(1)
+    expect(first.sent).toBe(2)   // round 46: the PAUSED partner is reminded too
+    expect(t.st.reminders).toHaveLength(2)
     const [, , to, name, cents, , url] = t.st.reminders[0]
     expect([to, name, cents]).toEqual(['k@x.co', 'Coach K', 2500])
+    expect(t.st.reminders.map(r => r[2]).sort()).toEqual(['c@x.co', 'k@x.co'])
     expect(url).toMatch(/^https:\/\/usepassthrough\.com\/partner\/dashboard\?token=/)
     await t.mod.sweepPayoutDetailsReminders(env, t.db)
-    expect(t.st.reminders).toHaveLength(1)
+    expect(t.st.reminders).toHaveLength(2)
+  })
+  it('round 46: an ENDED partner who is owed commission and has no payout details is reminded, but a removed (anonymized) one is not', async () => {
+    t = sweepSetup({ partners: [{ ...NODETAILS, status: 'ENDED' }, { ...NODETAILS, id: 'p2', email: 'gone@removed.invalid', status: 'ENDED' }], unpaid: [ROW('p1'), ROW('p2')] })
+    const res = await t.mod.sweepPayoutDetailsReminders(ENV(), t.db)
+    expect(res.sent).toBe(1)
+    expect(t.st.reminders[0][2]).toBe('k@x.co')
   })
   it('sends nothing when nothing is payable yet (current cycle only, or below the minimum)', async () => {
     t = sweepSetup({ partners: [NODETAILS], unpaid: [{ ...ROW('p1'), created_at: new Date().toISOString() }] })
