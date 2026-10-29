@@ -61,7 +61,7 @@ function stem(word) {
   else if (w.length === 4 && w.endsWith('s') && (SHORT_ACRONYM_PLURALS.has(w) || !/(?:ss|us|as|is)$/.test(w))) w = w.slice(0, -1)
   // 2. derivational suffixes, applied to the singular form
   if (w.length > 5 && w.endsWith('ational')) w = w.slice(0, -5)
-  if (w.length > 6 && w.endsWith('ization')) w = w.slice(0, -4)
+  if (w.length > 6 && w.endsWith('ization')) w = w.slice(0, -5)
   if (w.length > 6 && w.endsWith('ment'))    w = w.slice(0, -4)
   const before = w
   if (w.length > 5 && w.endsWith('ing'))      w = w.slice(0, -3)

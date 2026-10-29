@@ -1005,7 +1005,18 @@ function detectFabrication(orig, rewritten) {
   const canonTitle = s => String(s || '').toLowerCase()
     .replace(/\bsr\b\.?/g, 'senior').replace(/\bjr\b\.?/g, 'junior').replace(/\bvice president\b/g, 'vp').replace(/[^a-z ]+/g, ' ')
   const LEVEL_WORDS = new Set(['senior', 'lead', 'principal', 'staff', 'head', 'director', 'vp', 'chief', 'manager', 'junior', 'intern', 'associate', 'executive', 'president', 'founder', 'cto', 'ceo', 'coo', 'cfo'])
-  const levelsOf = s => new Set(canonTitle(s).split(/\s+/).filter(w => LEVEL_WORDS.has(w)))
+  // Numbered grades are levels too: "Engineer" -> "Engineer II" / "Engineer 3" / "Level 2" is a promotion.
+  const ROMAN_LEVEL = { i: 1, ii: 2, iii: 3, iv: 4, v: 5 }
+  const levelsOf = s => {
+    const out = new Set(canonTitle(s).split(/\s+/).filter(w => LEVEL_WORDS.has(w)))
+    const t = String(s || '').toLowerCase().replace(/[.,;:)]+\s*$/, '').trim()
+    const roman = t.match(/\s(iv|v|iii|ii|i)$/)
+    const digit = t.match(/\s(?:level\s*|lvl\s*|l)?([1-9])$/)
+    const word  = t.match(/\b(?:level|lvl)\s*([1-9])\b/)
+    const n = roman ? ROMAN_LEVEL[roman[1]] : digit ? +digit[1] : word ? +word[1] : 0
+    if (n) out.add('level' + n)
+    return out
+  }
   // BUG FIX (Scan/ATS pass, verified): two-digit years ("'19 - '21",
   // "2019-21") were invisible to the 4-digit-only matcher, so expanding them
   // to full years — a normal, honest tidy-up — looked like invented dates.
@@ -1260,7 +1271,7 @@ function numbersIn(text, { words = true } = {}) {
   if (ALWAYS_ON.test(t)) { out.add(24); out.add(7) }
   ALWAYS_ON.lastIndex = 0
   t = t.replace(ALWAYS_ON, ' ')
-  for (const m of t.matchAll(/(?<![\p{L}\p{N}.])(\d[\d,]*(?:\.\d+)?)\s*(thousand|million|billion|bn|mm|k|m|b|x)?(?![\p{L}\p{N}])/giu)) {
+  for (const m of t.matchAll(/(?<![\p{L}\p{N}.])((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(thousand|million|billion|bn|mm|k|m|b|x)?(?![\p{L}\p{N}])/giu)) {
     const base = parseFloat(m[1].replace(/,/g, ''))
     if (!Number.isFinite(base)) continue
     // "2M" is the VALUE 2,000,000 — the bare 2 is not a separate figure.

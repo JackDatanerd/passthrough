@@ -4108,6 +4108,6 @@ module.exports = {
   __test,
   createScan, getScanStatus, getScan, initiateFix, redeemCredit, upgradeBadgeToFix, retryFix, regeneratePdf: ledgered(regeneratePdf), updateVerifyVisibility, downloadFile, getScanHistory, deleteScan,
   updateResumeData: ledgered(updateResumeData), rescoreAi: ledgered(rescoreAi), downloadDraft, downloadDraftPdf,
-  structureResume: ledgered(structureResume), retryScan, updateDeliveredResume: ledgered(updateDeliveredResume), updateDocMarks, generateCoverLetter: ledgered(generateCoverLetter), saveCoverLetter, downloadCoverLetter, downloadCoverLetterPdf,  // section audit: "generate a resume from scratch"
+  structureResume: ledgered(structureResume), retryScan, updateDeliveredResume: ledgered(updateDeliveredResume), updateDocMarks: ledgered(updateDocMarks), generateCoverLetter: ledgered(generateCoverLetter), saveCoverLetter, downloadCoverLetter, downloadCoverLetterPdf,  // section audit: "generate a resume from scratch"
   runAtsScan, generateFix, generateBadge, revertBadgeUpgrade  // exported for webhook + payments + cron
 }
