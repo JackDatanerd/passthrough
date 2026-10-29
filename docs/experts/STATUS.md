@@ -16,7 +16,7 @@ Contract: `passthrough-experts-spec-pack-index.docx` (read first), `passthrough-
 |---|---|---|
 | 0 | Demand test and groundwork | **0A (demand test code) committed as `4f261ac`; deployment not confirmed.** **0B (non-code groundwork) delivered as drafts in `docs/experts/phase0/`; most items still need the owner or counsel (checklist below).** |
 | 1 | Concierge pilot | **Built, behind a flag (off), not deployed. Gate = the pilot's results (section 22), which only the owner can produce.** See "Phase 1" below. |
-| 2 | MVP platform, invite only | not started |
+| 2 | MVP platform, invite only | **2A (expert realm and job engine) built, behind `EXPERT_REALM_ENABLED` (off), not deployed; built without the Phase 1 gate being recorded, on the owner's decision. 2B (workbench, delivery, payouts) not started.** See "Phase 2A" below. |
 | 3 | Marketplace mechanics | not started |
 | 4 | Grades and quality | not started |
 | 5 | Payouts and onboarding | not started |
@@ -147,6 +147,18 @@ Frontend production build (vite build): succeeds.
 ## Phase 1: to do before the first paid order (owner)
 
 The dry run in `docs/experts/phase1/dry-run-checklist.md`, then the list at the end of `CHANGES-experts-phase-1.txt`. The operating procedure mapped to the screens is `docs/experts/phase1/operating-checklist.md`.
+
+## Phase 2A: what exists (built on base commit `9e2d451`; full detail in `CHANGES-experts-phase-2a.txt`)
+
+- **Flag:** Worker variable `EXPERT_REALM_ENABLED`, on only for the exact string `true`; separate from `EXPERTS_ENABLED` (Phase 1). Off = the realm's paths are the ordinary 404 and the existing app answers exactly as before (a test compares every route to a snapshot cut from the base commit).
+- **Realm:** `/api/expert-realm/*` (own account) and `/api/expert-admin/*` (console), reachable only on the expert site's host (`EXPERT_SITE_URL`), cookie-only sessions (`__Host-pt_xr`), own secret `EXPERT_REALM_SECRET`, 8 hours idle and 7 days absolute from settings, authenticator two-factor, recovery codes, lockout, rate limits, step-up, password reset, revoke all.
+- **Permission matrix:** `src/lib/expertRealm/permissions.js`, one place; every route is registered with a policy; the test is generated from the table.
+- **Job engine:** `src/lib/expertRealm/stateMachine.js` + the database function `human_job_transition` (migration 0127), kept equal by tests; events are the history; pauses, next actions and idempotency keys have their own tables.
+- **Bridge:** `src/services/expertBridge.service.js`, three functions (refund a human order, read its payment status, create the job from a payment), logged in `expert_bridge_calls`.
+- **Console shell and expert site:** job board with timeline, assign / reassign, directory, refund with step-up, audit viewer; the expert site is its own build (`npm run build:experts`, output `frontend/dist-experts`).
+- **Client tracker:** `frontend/src/components/human/OrderTracker.jsx`, shown on the customer's order page.
+- **Not built (by design):** workbench and editor, re-scan gate, fact-drift check, delivery files, revision flow, earnings ledger and payouts, claim queue and offer cascade, strikes, grades, graders' queue, assistant, public pages, minute trigger. The existing scheduler is untouched.
+- **Open decisions and gaps:** `CHANGES-experts-phase-2a.txt` sections 6 and 7. Deployment: `docs/experts/phase2a/deployment-checklist.md`.
 
 ## Open questions (need the owner)
 

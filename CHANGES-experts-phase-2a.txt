@@ -1,0 +1,158 @@
+CHANGES: Passthrough Experts, Phase 2A (the expert realm and the job engine)
+================================================================================
+Base commit: 8e39ff8137a8fe5a77e6975bf9702df0a6240c21  ("Scan/ATS core: fix -ization stemming ...", 29 Oct 2026 06:59 +03:00)
+(I first built on 9e2d451, then re-cloned: two newer commits, none touching any file here; the patch was re-applied and everything re-tested on 8e39ff8.)
+Everything is behind EXPERT_REALM_ENABLED (off by default). Phase 2B (workbench, delivery, payouts) is NOT in this delivery.
+
+0. READ THIS FIRST
+--------------------------------------------------------------------------------
+- The Phase 1 pilot gate was NOT recorded (you said you decided to build this while launching experts). Not verified by me.
+- Number of pilot experts to migrate: unknown to me. Nothing needs a number: accounts keep their email, password and authenticator; the
+  migration copies pilot job data generically. Each pilot expert gets recovery codes at first sign-in on the new site.
+- Nothing here has run against your live database, a real browser, a deployed Worker, DNS, or real email. See section 7 and the security note.
+- Decisions I made that you should confirm are in section 6. The two that matter most: the realm is reached only through a Worker route on
+  experts.usepassthrough.com/api/*, and Phase 1's own functions still write job state directly (they do not go through the new engine yet).
+
+1. WHAT WAS BUILT
+--------------------------------------------------------------------------------
+A. Expert identity and sessions. Separate identity (expert_accounts, from 0124; nothing added to main users). Separate secret
+   (EXPERT_REALM_SECRET) and audience ("expert-realm"). One cookie, "__Host-pt_xr": HttpOnly, Secure, SameSite=Strict, Path=/, no Domain.
+   Server-side session rows: 8 hours idle, 7 days absolute (both read from settings: system_state key 'expert_realm', clamped; defaults in
+   src/lib/expertRealm/config.js). Authenticator two-factor (enrol, challenge), ten single-use recovery codes (keyed hashes only), lockout
+   (5 failures, 15 minutes, applied to password, code and recovery attempts), per-IP and per-session rate limits, step-up (fresh password lifts
+   a session for 10 minutes), password reset by a one-time emailed link (token in the URL fragment, hash stored), change password, revoke all
+   sessions (rows ended and token_version moved), session list. Roles: expert, grader, expert_admin, expert_support. Staff accounts are made by
+   hand: scripts/expert-staff-account.cjs + docs/experts/phase2a/staff-accounts.md.
+B. Permission matrix: src/lib/expertRealm/permissions.js, one table. Every realm route is declared through define() with a policy (a matrix
+   action, or public / pending / session) or it cannot be mounted. Job content: the API checks the job is currently assigned to that expert,
+   then the existing database function human_job_expert_read checks again and logs.
+C. Audit: every sign-in, second-factor failure, denied attempt, job read, assignment and refund writes to expert_audit_log (the 0124 table). A
+   filter drops keys that could carry content. Job-content reads and refund requests FAIL CLOSED if the audit write fails.
+D. Job engine: ONE state machine. JS half: src/lib/expertRealm/stateMachine.js (58 transitions, who may trigger each). Database half: table
+   job_transition_rules + function human_job_transition (migration 0127). A test fails if the two tables ever differ. The function checks the
+   rule, the actor, who owns what, the version (compare-and-set), applies side effects, writes the event, records the idempotency key, and sets
+   or clears the next action, all in one transaction. Events are the history; clocks are derived from events (src/lib/expertRealm/clock.js) with
+   explicit pause intervals (table job_pauses); next actions live in job_next_actions. Phase 1 pilot data is copied into the new tables by a
+   reversible backfill (rows marked source = 'phase1_backfill').
+E. Bridge (src/services/expertBridge.service.js): refundHumanOrder, readHumanOrderPayment, createJobFromPayment. Server to server, logged in
+   expert_bridge_calls, idempotent by (function, key), human orders only. The refund goes through the existing queueRefund.
+F. Admin console API (/api/expert-admin): job board with timeline, assign, reassign, expert directory, refund (step-up, reason, request key),
+   audit viewer. Support role limited to board and timeline. Screens: frontend/src/experts/pages/Admin.jsx.
+G. Expert site: its own build (frontend/experts.html, vite.experts.config.js, npm run build:experts -> frontend/dist-experts), own headers and
+   redirects (frontend/public-experts), sign-in, two-factor enrol and challenge, recovery codes (shown once), empty Desk, settings with the
+   session list, reset flow. Colours and type from product spec 21.3, on the shared components.
+H. Client order tracker: frontend/src/components/human/OrderTracker.jsx + frontend/src/lib/orderTracker.js, shown on the customer's order page.
+I. Deployment checklist: docs/experts/phase2a/deployment-checklist.md.
+
+2. EXISTING FILES TOUCHED (and why). Nothing else existing was edited.
+--------------------------------------------------------------------------------
+ src/index.js                              +3 lines: one require and two app.route mounts (/api/expert-realm, /api/expert-admin). The auth
+                                           middleware and every other route are untouched. Both routers 404 unless the flag is on and the host is right.
+ src/config/migrationLedger.js             +1 line: 127: '0127_experts_phase2a_realm' (same commit as the migration).
+ src/config/constants.js                   EXPECTED_SCHEMA_VERSION 126 -> 127 (same commit as the migration).
+ frontend/src/pages/human/HumanOrders.jsx  +2 lines: import and render <OrderTracker/> at the top of the order detail. The existing lines (price,
+                                           "expected by", "with <expert>") are unchanged, so the order page now shows the date twice: once as before,
+                                           once in the tracker with its time zone. Tell me whether to remove the old line.
+ frontend/package.json                     +2 scripts: build:experts, dev:experts. No dependency changed.
+ .gitignore                                +1 line: frontend/dist-experts/.
+ docs/experts/STATUS.md                    Phase 2 row and a new "Phase 2A" section.
+ Not touched: the main auth middleware, admin guard, step-up, rate limiter, the scheduler (wrangler cron, scheduled handler), Phase 1 controllers,
+ routes, migrations or functions, the email service and templates, refund service.
+
+3. TESTS
+--------------------------------------------------------------------------------
+ New files (all pass):  tests/migrations.0127.pglite.test.js  (real Postgres: every state x target x trigger x actor, idempotency, version,
+                        ownership, eligibility, pause arithmetic to the second, money once, one revision, next action, backfill and its undo, grants)
+                        tests/expertRealm.phase2a.test.js     (HTTP: gating, sign-in, enrolment, lockout, replay, rate limits, expiry, revoke all,
+                        reset, the permission matrix generated from the table, step-up, reasons, refunds, job reads, console)
+                        tests/expertRealm.crossRealm.test.js  (EVERY route of the real app, both directions; flag-off equals the base commit)
+                        tests/expertRealm.core.test.js        (table-driven state machine, matrix cell by cell, clocks, audit filter, static guards)
+                        tests/expertBridge.test.js, tests/expertStaffScript.test.js
+                        frontend/tests/experts/experts.shell.test.jsx, frontend/tests/human/orderTracker.test.jsx
+ Fixtures/helpers:      tests/fixtures/expert-realm-flag-off-snapshot.json (status and response shape of 246 routes at the base commit),
+                        tests/helpers/enumerateRoutes.cjs (reads src/index.js; an unparsable mount line fails the test)
+ Appendix H criteria covered: Realm separation; Job assignment; Deadline pause (exactly 5 hours, replay and second restart change nothing);
+ Earnings on acceptance; Refund and reversal (one reversal, a repeat adds none). Not applicable to 2A: claim race, no invented facts, locked
+ contact fields, no discount, late release, cascade, assistant, scheduler, minors.
+ Bug found by my own tests and fixed before delivery: the paused clock's "time left" grew while paused (clock.js); the engine would have crashed
+ with no settings row (now fails closed, SETTINGS_MISSING).
+ RESULTS: section 9.
+
+4. MIGRATION (one, additive only) AND ORDER
+--------------------------------------------------------------------------------
+ supabase/migrations/0127_experts_phase2a_realm.sql. New tables: expert_sessions, expert_recovery_codes, expert_password_resets,
+ job_transition_rules, job_next_actions, job_pauses, job_event_keys, expert_bridge_calls. New function: human_job_transition (execute revoked
+ from public, anon, authenticated; granted to service_role). Every new table: row level security on, no anon/authenticated grant. No alter, drop
+ or rename of anything existing. The ledger row and schema version are the last statements.
+ Order: migrate FIRST (a database ahead of the code is fine), then deploy the Worker, then Pages, DNS and the route, then secrets, then the flag.
+ Full steps: docs/experts/phase2a/deployment-checklist.md.
+
+5. ROLLBACK
+--------------------------------------------------------------------------------
+ 1) Unset EXPERT_REALM_ENABLED: the realm is a 404 at once; nothing else changed; Phase 1 keeps working.
+ 2) Data only: docs/experts/phase2a/rollback-0127.sql level 1 (deletes the rows marked phase1_backfill).
+ 3) Schema: level 2 in the same file (manual, with the flag off). 4) Code: git revert the commit.
+
+6. DECISIONS I MADE (confirm or change)
+--------------------------------------------------------------------------------
+ a) Cookie scope. The main app uses Bearer tokens, so "a cookie scoped to the expert site only" needed a design: the Worker is also routed at
+    experts.usepassthrough.com/api/*, the realm answers only on that host, the cookie is host-only (__Host-). No CORS, no cross-site use.
+    UNVERIFIED: that a Worker route wins over the Pages custom domain on that path (checklist step 5 tells you how to check).
+ b) Third secret. EXPERT_REALM_SECRET is new and must differ from JWT_SECRET and the Phase 1 EXPERT_JWT_SECRET.
+ c) Mount paths /api/expert-realm and /api/expert-admin (Phase 1 owns /api/expert) and a new flag EXPERT_REALM_ENABLED.
+ d) Transitions not in the spec's table, added so F can work: reassign (claimed / in_progress / waiting_customer -> claimed, operator only);
+    unassign; payment_reversed (offered / open -> cancelled); revision -> in_review on submit_review (Phase 1 did this); dispute from every
+    working state and from accepted; refund from every carrying state and from disputed. Not defined, so NOT built: how a dispute is resolved
+    back to another state (spec 6: "an operator rules"); a grader as its own actor kind (graders act as 'expert' in events).
+ e) Support can read the job board and timelines; the expert directory and the audit viewer are admin-only. The spec's table does not say.
+ f) The admin job view and the expert brief show METADATA only (states, times, first name and initial). Masked job content for admin/support
+    ("view full: masked") comes with the workbench. The expert brief route returns the posting with the company masked, as Phase 1 does.
+ g) The Phase 1 pilot jobs' deadline and pause arithmetic is mirrored exactly (both deadlines move back by the time paused).
+
+7. KNOWN GAPS
+--------------------------------------------------------------------------------
+ 1. Phase 1's database functions (human_job_assign, accept, reverse, deliver, ask, ...) and humanSettle / humanSweep still write job state
+    themselves. Only the realm's callers (console assign / reassign, the bridge) use human_job_transition. So "every caller uses one state
+    machine" is true for the new code and NOT yet for Phase 1. A test pins that nothing new writes state elsewhere. Moving Phase 1 over means
+    editing its files; it needs your approval. Until then job_pauses / job_next_actions can disagree with a job that Phase 1 moved
+    (the console shows a warning when the stored paused time does not match the events).
+ 2. The refund bridge queues the refund; the JOB moves to refunded when the refund completes through the existing payment flow (Phase 1's
+    reversal), not through the engine. The engine's 'refund' transition exists and is tested but has no caller yet.
+ 3. createJobFromPayment exists and is tested, but the live payment-confirmed path still calls Phase 1's human_job_confirm_payment (humanSettle).
+    Rewiring it edits an existing file.
+ 4. No expert tier or grade exists in the data yet, so the tracker shows first name and initial but no tier (it shows one as soon as the API
+    sends expertTier).
+ 5. "Earnings frozen on dispute": the engine records the dispute but does not freeze earnings; the ledger is Phase 5.
+ 6. The pending-session lifetime (10 minutes), step-up (10 minutes), reset link (30 minutes), lockout (5 / 15 minutes) and recovery-code count (10)
+    are settings with clamps, but there is no screen to change them: edit system_state 'expert_realm'.
+ 7. The rate limiters fail open if the limiter backend errors (as every limiter in this app does). Lockout is stored in the database and does not.
+ 8. Grader and expert_support have no routes of their own yet (the grader queue and macros are later phases); they can sign in and see Settings.
+ 9. Two-factor reset for a lost phone with no recovery codes is a SQL procedure (staff-accounts.md), not a console action.
+ 10. The admin console has no pagination on the board (limit 100) or directory (200).
+ 11. A Worker route and a Pages custom domain on one hostname, the main middleware under the new host, DNS, email, a real browser and phone, live
+    database, real Paystack: none of these could be exercised from here.
+ 12. Phase 1 pilot gate not recorded; pilot expert count unknown.
+ 13. Passwords: 12-character minimum plus the breached-password check (fails open like the main app's); no composition rules.
+
+8. UNRELATED ISSUES SEEN (reported, not fixed)
+--------------------------------------------------------------------------------
+ a) supabase/migrations/0125_partners_section4_round44.sql records itself as version 124 / name '0124_partners_section4_round44'. Version 124
+    is already the Experts migration, so on a fresh database one of the two ledger rows is silently skipped (on conflict do nothing) and the
+    ledger has no row for 125. The file kept an old number when it was renamed.
+ b) Baseline suite failures on the untouched base commit: see section 9.
+
+9. TEST RESULTS
+--------------------------------------------------------------------------------
+ Full suite (node vitest run, Worker + frontend, one run, 618 files):
+   this tree:         7 files failed | 611 passed (618);  12 tests failed | 8999 passed | 1 todo (9012)
+   untouched base:    the same 12 tests fail on 8e39ff8 with none of my files present (run on those 7 files; a full baseline run was killed twice by the
+                      environment, so the comparison is file-level, not a single full-suite number).
+ The 12, all pre-existing:
+   frontend: adminHotCategories (1), home.page (1), homeAdminPreview (4)   -- the Hot categories sample table
+   tests/migrations.0099.pglite (2), tests/migrations.0100.pglite (1)      -- channel-tag cap
+   tests/migrations.numbering (2), tests/migrations.pglite (1)             -- 0125 records itself as version 124 (section 8a)
+ Mine, all passing: migrations.0127.pglite (18), expertRealm.phase2a (46), expertRealm.crossRealm (5), expertRealm.core (23), expertBridge (8),
+ expertStaffScript (4), frontend experts.shell (18), orderTracker (8).
+ Two of my first-run failures were real and are fixed: the order-page test (my tracker repeated the 72-hour sentence) and the two shared-frontend
+ guards (raw tables; the expert screens now use the shared DataTable).
+ Not run: any browser, the live database, the deployed Worker, DNS, email, Paystack (section 7, item 11).

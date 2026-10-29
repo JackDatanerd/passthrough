@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:experts": "vite build -c vite.experts.config.js",
+    "dev:experts": "vite -c vite.experts.config.js",
     "preview": "vite preview"
   },
   "dependencies": {

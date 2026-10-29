@@ -1,0 +1,31 @@
+/* Experts Phase 2A: the expert site's look, from product spec 21.3 (Desk, Workspace, Standing and Customer concept). One action colour (blue),
+   green ONLY for "passed" and "on time", red for removed text and lateness, gold only for urgency. Light and dark follow the system setting. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+.xp {
+  --paper: #EDF0EE; --sheet: #FBFCFB; --ink: #1C2533; --ink2: #56627A; --line: #D3D9DD;
+  --action: #2447D6; --action-hover: #1D3BB8; --pass: #0E7C66; --pass-bg: #DDF1EB; --mark: #C8362E; --mark-bg: #FBE4E1; --gold: #B7791F; --gold-bg: #F7EBD3;
+  background: var(--paper); color: var(--ink); min-height: 100vh;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  .xp { --paper: #10161F; --sheet: #192230; --ink: #E7ECF3; --ink2: #A7B2C4; --line: #2B374A; --action: #7C9BFF; --action-hover: #98B0FF; --pass: #5FD6B8; --pass-bg: #123A33; --mark: #FF8B83; --mark-bg: #3F1B19; --gold: #F0B65A; --gold-bg: #3B2C10; }
+}
+.xp .sheet { background: var(--sheet); border: 1px solid var(--line); border-radius: 10px; }
+.xp .serif { font-family: Georgia, 'Iowan Old Style', 'Times New Roman', serif; font-variant-numeric: tabular-nums; }
+.xp .muted { color: var(--ink2); }
+.xp .nav { background: var(--ink); color: var(--paper); }
+@media (prefers-color-scheme: dark) { .xp .nav { background: #0A0F16; color: #E7ECF3; } }
+.xp a { color: var(--action); }
+/* the shared components are Tailwind blue-700; on this site "blue" is the one action colour */
+.xp .bg-blue-700 { background-color: var(--action); color: #fff; }
+.xp .hover\:bg-blue-800:hover { background-color: var(--action-hover); }
+.xp .focus\:ring-blue-500:focus { --tw-ring-color: var(--action); }
+.xp input, .xp textarea, .xp select { background: var(--sheet); color: var(--ink); border-color: var(--line); }
+.xp .text-gray-700, .xp .text-gray-600, .xp .text-gray-500 { color: var(--ink2); }
+.xp .ok { color: var(--pass); background: var(--pass-bg); } .xp .late { color: var(--mark); background: var(--mark-bg); } .xp .urgent { color: var(--gold); background: var(--gold-bg); }
+.xp .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--line); }
+.xp table { width: 100%; border-collapse: collapse; font-size: 14px; } .xp th, .xp td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.xp .scroll-x { overflow-x: auto; }

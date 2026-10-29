@@ -6,6 +6,7 @@ import Alert from '../../components/ui/Alert'
 import Spinner from '../../components/ui/Spinner'
 import { getErrorMessage } from '../../lib/api'
 import { human, money } from '../../lib/humanApi'
+import OrderTracker from '../../components/human/OrderTracker'
 
 // Experts Phase 1: the customer's orders. Status, the expert's questions, the delivered files, accept / one revision / rating / cancel.
 export default function HumanOrders() {
@@ -46,6 +47,7 @@ function Detail({ d, busy, text, setText, act }) {
   const q = (d.questions || []).find(x => x.status === 'pending')
   return (
     <div className="mt-3 space-y-3 border-t border-gray-100 pt-3 text-sm">
+      <OrderTracker order={d} />
       <p className="text-gray-700">{money(d.priceCents)}{d.promisedAt ? ` \u00b7 expected by ${new Date(d.promisedAt).toLocaleString()}` : ''}{d.expert ? ` \u00b7 with ${d.expert}` : ''}</p>
       {d.state === 'awaiting_payment' && <p className="text-gray-600">This order has not been paid yet.</p>}
       {q && (

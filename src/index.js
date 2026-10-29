@@ -41,6 +41,7 @@ const adminRoutes        = require('./routes/admin.routes')
 const humanDemandRoutes  = require('./routes/human-demand.routes')   // Experts Phase 0A demand test; 404 unless HUMAN_DEMAND_ENABLED=true
 const humanRoutes        = require('./routes/human.routes')          // Experts Phase 1 customer routes; 404 unless EXPERTS_ENABLED=true
 const expertRoutes       = require('./routes/expert.routes')         // Experts Phase 1 expert-realm routes; 404 unless EXPERTS_ENABLED=true
+const { realm: expertRealmRoutes, admin: expertAdminRoutes } = require('./routes/expert-realm.routes')   // Experts Phase 2A; 404 unless EXPERT_REALM_ENABLED=true and the request is on the expert site's host
 
 const { getSupabase } = require('./config/supabase')
 const emailService = require('./services/email.service')
@@ -125,6 +126,8 @@ app.route('/api/admin',          adminRoutes)
 app.route('/api/human-demand',   humanDemandRoutes)   // flag-gated inside the router: 404 while the flag is off
 app.route('/api/human',          humanRoutes)         // flag-gated inside the router: 404 while EXPERTS_ENABLED is off
 app.route('/api/expert',         expertRoutes)        // its own token secret and accounts; flag-gated inside the router
+app.route('/api/expert-realm',   expertRealmRoutes)   // Phase 2A: cookie sessions, own secret; gated inside the router (flag + host + secret)
+app.route('/api/expert-admin',   expertAdminRoutes)   // Phase 2A: the expert admin console's API; same gate
 
 // ── 5. Error handler ──────────────────────────────────────────────────────────
 app.onError(errorHandler)

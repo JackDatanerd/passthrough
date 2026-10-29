@@ -1,0 +1,1655 @@
+{
+ "POST /api/auth/register": {
+  "status": 500,
+  "shape": "non-json"
+ },
+ "POST /api/auth/login": {
+  "status": 500,
+  "shape": "non-json"
+ },
+ "GET /api/auth/me": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/auth/forgot-password": {
+  "status": 500,
+  "shape": "non-json"
+ },
+ "POST /api/auth/reset-password": {
+  "status": 500,
+  "shape": "non-json"
+ },
+ "POST /api/auth/reset-password/validate": {
+  "status": 200,
+  "shape": [
+   "data",
+   "success"
+  ]
+ },
+ "POST /api/auth/verify-email": {
+  "status": 400,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/auth/resend-verification": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "PATCH /api/auth/password": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/auth/sessions/revoke-others": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/auth/logout": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/auth/sessions": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "DELETE /api/auth/sessions/00000000-0000-4000-8000-0000000000aa": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/auth/accept-terms": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "PATCH /api/auth/name": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "PATCH /api/auth/email": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/auth/email/confirm": {
+  "status": 500,
+  "shape": "non-json"
+ },
+ "DELETE /api/auth/account": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/auth/claim-scan": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/scan": {
+  "status": 400,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/scan/history": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/scan/status/00000000-0000-4000-8000-0000000000aa": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/scan/00000000-0000-4000-8000-0000000000aa": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/scan/00000000-0000-4000-8000-0000000000aa/initiate-fix": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/scan/00000000-0000-4000-8000-0000000000aa/redeem-credit": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/scan/00000000-0000-4000-8000-0000000000aa/upgrade-to-fix": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/scan/00000000-0000-4000-8000-0000000000aa/retry-fix": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/scan/00000000-0000-4000-8000-0000000000aa/regenerate-pdf": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "PATCH /api/scan/00000000-0000-4000-8000-0000000000aa/doc-marks": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "PATCH /api/scan/00000000-0000-4000-8000-0000000000aa/verify-visibility": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/scan/00000000-0000-4000-8000-0000000000aa/download": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "DELETE /api/scan/00000000-0000-4000-8000-0000000000aa": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "PATCH /api/scan/00000000-0000-4000-8000-0000000000aa/resume-data": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/scan/00000000-0000-4000-8000-0000000000aa/download-draft": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/scan/00000000-0000-4000-8000-0000000000aa/download-draft-pdf": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/scan/00000000-0000-4000-8000-0000000000aa/rescore-ai": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/scan/00000000-0000-4000-8000-0000000000aa/structure": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/scan/00000000-0000-4000-8000-0000000000aa/retry-scan": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "PATCH /api/scan/00000000-0000-4000-8000-0000000000aa/delivered-resume": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/scan/00000000-0000-4000-8000-0000000000aa/cover-letter": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "PATCH /api/scan/00000000-0000-4000-8000-0000000000aa/cover-letter": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/scan/00000000-0000-4000-8000-0000000000aa/cover-letter": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/scan/00000000-0000-4000-8000-0000000000aa/cover-letter-pdf": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/payments/initialize": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/payments/00000000-0000-4000-8000-0000000000aa/cancel": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/payments/verify": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/payments/history": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/payments/pending": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/payments/00000000-0000-4000-8000-0000000000aa/reconcile": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/payments/00000000-0000-4000-8000-0000000000aa/recheck": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/payments/00000000-0000-4000-8000-0000000000aa/resolve": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/payments/00000000-0000-4000-8000-0000000000aa/refund": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/payments/00000000-0000-4000-8000-0000000000aa/receipt": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/webhooks/paystack": {
+  "status": 500,
+  "shape": "non-json"
+ },
+ "POST /api/webhooks/resend": {
+  "status": 500,
+  "shape": "non-json"
+ },
+ "POST /api/webhooks/paystack/": {
+  "status": 500,
+  "shape": "non-json"
+ },
+ "POST /api/webhooks/resend/": {
+  "status": 500,
+  "shape": "non-json"
+ },
+ "GET /api/verify/by-hash/00000000-0000-4000-8000-0000000000aa": {
+  "status": 400,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/verify/00000000-0000-4000-8000-0000000000aa": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/verify/00000000-0000-4000-8000-0000000000aa/download": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/verify/00000000-0000-4000-8000-0000000000aa/report": {
+  "status": 400,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/verify/00000000-0000-4000-8000-0000000000aa/badge.svg": {
+  "status": 200,
+  "shape": "non-json"
+ },
+ "GET /api/verify/00000000-0000-4000-8000-0000000000aa/badge.png": {
+  "status": 200,
+  "shape": "non-json"
+ },
+ "GET /api/verify/00000000-0000-4000-8000-0000000000aa/qr.svg": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/verify/00000000-0000-4000-8000-0000000000aa/qr.png": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/verify/00000000-0000-4000-8000-0000000000aa/card.png": {
+  "status": 200,
+  "shape": "non-json"
+ },
+ "POST /api/employer-leads": {
+  "status": 500,
+  "shape": "non-json"
+ },
+ "POST /api/employer-leads/confirm": {
+  "status": 500,
+  "shape": "non-json"
+ },
+ "POST /api/employer-leads/field": {
+  "status": 500,
+  "shape": "non-json"
+ },
+ "POST /api/employer-leads/rejoin": {
+  "status": 500,
+  "shape": "non-json"
+ },
+ "POST /api/employer-leads/preferences/load": {
+  "status": 500,
+  "shape": "non-json"
+ },
+ "POST /api/employer-leads/preferences": {
+  "status": 500,
+  "shape": "non-json"
+ },
+ "POST /api/employer-leads/remove": {
+  "status": 500,
+  "shape": "non-json"
+ },
+ "POST /api/employer-leads/unsubscribe": {
+  "status": 400,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/employer-leads/unsubscribe": {
+  "status": 302,
+  "shape": "non-json"
+ },
+ "GET /api/employer-leads": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/employer-leads/export.csv": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/employer-leads/duplicates": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/employer-leads/manual": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/employer-leads/import": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/employer-leads/bulk": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/employer-leads/notify-candidates": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/employer-leads/merge": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/employer-leads/suppressions/check": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/employer-leads/suppressions": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "DELETE /api/employer-leads/suppressions": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/employer-leads/00000000-0000-4000-8000-0000000000aa/request-confirmation": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/employer-leads/00000000-0000-4000-8000-0000000000aa/mark-confirmed": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/employer-leads/00000000-0000-4000-8000-0000000000aa": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "PATCH /api/employer-leads/00000000-0000-4000-8000-0000000000aa": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "DELETE /api/employer-leads/00000000-0000-4000-8000-0000000000aa": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/profile": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/profile/quota": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/profile/data": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "PUT /api/profile": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/profile/download-docx": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/profile/download-pdf": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/profile/extras": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/profile/extras/00000000-0000-4000-8000-0000000000aa/make-main": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/profile/extras/00000000-0000-4000-8000-0000000000aa/data": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "PUT /api/profile/extras/00000000-0000-4000-8000-0000000000aa": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "DELETE /api/profile/extras/00000000-0000-4000-8000-0000000000aa": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "PATCH /api/profile/preferences": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/profile/save": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/profile/restore-previous": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "DELETE /api/profile": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "DELETE /api/profile/scans": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/profile/export": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/pricing": {
+  "status": 200,
+  "shape": [
+   "data",
+   "success"
+  ]
+ },
+ "GET /api/pricing/welcome-offer": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/stats": {
+  "status": 200,
+  "shape": [
+   "data",
+   "success"
+  ]
+ },
+ "POST /api/client-errors": {
+  "status": 400,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/outcomes/unsubscribe": {
+  "status": 400,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/outcomes/unsubscribe": {
+  "status": 302,
+  "shape": "non-json"
+ },
+ "GET /api/outcomes/pending": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/outcomes/mine": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "PUT /api/outcomes": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "DELETE /api/outcomes/00000000-0000-4000-8000-0000000000aa/story": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/partners/payout-details": {
+  "status": 400,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/payout-details": {
+  "status": 400,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/partners/dashboard": {
+  "status": 400,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/partners/conversions": {
+  "status": 400,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/request-payout-link": {
+  "status": 400,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/partners/statement": {
+  "status": 400,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/request-code": {
+  "status": 400,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/recover-links": {
+  "status": 500,
+  "shape": "non-json"
+ },
+ "POST /api/partners/reset-links": {
+  "status": 400,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/attribution": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/notifications": {
+  "status": 400,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/accept-terms": {
+  "status": 400,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/track-click": {
+  "status": 200,
+  "shape": [
+   "success"
+  ]
+ },
+ "GET /api/partners/program": {
+  "status": 200,
+  "shape": [
+   "data",
+   "success"
+  ]
+ },
+ "POST /api/partners/apply": {
+  "status": 500,
+  "shape": "non-json"
+ },
+ "GET /api/partners/applications": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/applications/00000000-0000-4000-8000-0000000000aa/approve": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/applications/00000000-0000-4000-8000-0000000000aa/reject": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/applications/00000000-0000-4000-8000-0000000000aa/reopen": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/partners": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/partners/overview": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/partners/codes": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/partners/payouts": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/partners/ledger": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/partners/payout-export": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/partners/tax-summary": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/dashboard-links/convert": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/partners/unrecorded-commissions": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/payouts/batch": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/terms-notice": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/partners/code-requests": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/code-requests/00000000-0000-4000-8000-0000000000aa/resolve": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/partners/00000000-0000-4000-8000-0000000000aa": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "PATCH /api/partners/00000000-0000-4000-8000-0000000000aa": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/00000000-0000-4000-8000-0000000000aa/resend-link": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/00000000-0000-4000-8000-0000000000aa/regenerate-link": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/partners/00000000-0000-4000-8000-0000000000aa/links": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/partners/00000000-0000-4000-8000-0000000000aa/terms-acceptances": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/partners/00000000-0000-4000-8000-0000000000aa/payout-details": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/00000000-0000-4000-8000-0000000000aa/payouts": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/00000000-0000-4000-8000-0000000000aa/payouts/00000000-0000-4000-8000-0000000000aa/void": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/00000000-0000-4000-8000-0000000000aa/anonymize": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/00000000-0000-4000-8000-0000000000aa/adjustments": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/00000000-0000-4000-8000-0000000000aa/ledger/00000000-0000-4000-8000-0000000000aa/reverse": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/00000000-0000-4000-8000-0000000000aa/ledger/00000000-0000-4000-8000-0000000000aa/reattribute": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/partners/00000000-0000-4000-8000-0000000000aa/referral-codes": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "PATCH /api/partners/referral-codes/00000000-0000-4000-8000-0000000000aa": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/admin/elevate": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/human/summary": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/human/orders": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/human/orders/00000000-0000-4000-8000-0000000000aa": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/human/orders/00000000-0000-4000-8000-0000000000aa/review": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/admin/human/orders/00000000-0000-4000-8000-0000000000aa/assign": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/admin/human/orders/00000000-0000-4000-8000-0000000000aa/unassign": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/admin/human/orders/00000000-0000-4000-8000-0000000000aa/return": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/admin/human/orders/00000000-0000-4000-8000-0000000000aa/deliver": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/admin/human/orders/00000000-0000-4000-8000-0000000000aa/record": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/admin/human/orders/00000000-0000-4000-8000-0000000000aa/accept": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/admin/human/orders/00000000-0000-4000-8000-0000000000aa/refund": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/human/experts": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/admin/human/experts": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "PATCH /api/admin/human/experts/00000000-0000-4000-8000-0000000000aa": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/admin/human/payouts": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/dashboard": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/health": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/users": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/users/00000000-0000-4000-8000-0000000000aa": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "PATCH /api/admin/users/00000000-0000-4000-8000-0000000000aa": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/scans": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "PATCH /api/admin/scans/00000000-0000-4000-8000-0000000000aa/verification": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/verification-reports": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "PATCH /api/admin/verification-reports/00000000-0000-4000-8000-0000000000aa": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/payments": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/admin/verification/backfill-pdf-hashes": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/admin/scans/00000000-0000-4000-8000-0000000000aa/requeue-fix": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/webhook-events": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/webhook-events/self-test": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/webhook-events/health": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/webhook-events/00000000-0000-4000-8000-0000000000aa": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/admin/webhook-events/00000000-0000-4000-8000-0000000000aa/replay": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/admin/webhook-events/00000000-0000-4000-8000-0000000000aa/dismiss": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/admin/payments/00000000-0000-4000-8000-0000000000aa/dispute/accept": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/admin/payments/00000000-0000-4000-8000-0000000000aa/dispute/evidence": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/admin/payments/00000000-0000-4000-8000-0000000000aa/dispute/contest": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/payments/00000000-0000-4000-8000-0000000000aa/webhook-events": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/stories": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/admin/stories/00000000-0000-4000-8000-0000000000aa/moderate": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/hot-categories": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/admin/hot-categories/simulate": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/promo": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "PUT /api/admin/promo": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "DELETE /api/admin/promo": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/email-logs": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/alerts": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/email-suppressions": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "DELETE /api/admin/email-suppressions": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/audit-log": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/claude-usage": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/prompt-outcomes": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/outcome-ask/00000000-0000-4000-8000-0000000000aa": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/human-demand/config": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/human-demand/events": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/human-demand/waitlist": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/human/config": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/human/orders": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/human/orders": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/human/orders/00000000-0000-4000-8000-0000000000aa": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/human/orders/00000000-0000-4000-8000-0000000000aa/materials": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/human/orders/00000000-0000-4000-8000-0000000000aa/links": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "DELETE /api/human/orders/00000000-0000-4000-8000-0000000000aa/materials/00000000-0000-4000-8000-0000000000aa": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/human/orders/00000000-0000-4000-8000-0000000000aa/questions/00000000-0000-4000-8000-0000000000aa": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/human/orders/00000000-0000-4000-8000-0000000000aa/accept": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/human/orders/00000000-0000-4000-8000-0000000000aa/revision": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/human/orders/00000000-0000-4000-8000-0000000000aa/rate": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/human/orders/00000000-0000-4000-8000-0000000000aa/cancel": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/human/orders/00000000-0000-4000-8000-0000000000aa/files/00000000-0000-4000-8000-0000000000aa": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/expert/auth/login": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/expert/auth/enroll/start": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/expert/auth/mfa": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/expert/me": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/expert/auth/logout": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/expert/jobs": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/expert/jobs/00000000-0000-4000-8000-0000000000aa": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "PUT /api/expert/jobs/00000000-0000-4000-8000-0000000000aa/document": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/expert/jobs/00000000-0000-4000-8000-0000000000aa/questions": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/expert/jobs/00000000-0000-4000-8000-0000000000aa/submit": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /healthz": {
+  "status": 200,
+  "shape": [
+   "status",
+   "success",
+   "timestamp"
+  ]
+ }
+}
