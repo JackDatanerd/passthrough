@@ -11,7 +11,7 @@ const MATRIX = Object.freeze({
   'brief.view_anonymised': m('Y', '-', 'Y', 'Y'),
   'job.take':             m('Y', '-', '-', '-'),
   'job.assign':           m('-', '-', 'Y', '-', { reason: true }),        // "Take a job: Admin Y (assign)"
-  'job.view_full':        m('M', 'M', 'Y', 'Y'),                           // admin and support see it masked
+  'job.view_full':        m('M', 'M', 'Y', 'Y'),                           // Y = state and timeline through the console routes; the CONTENT is released only to the assigned expert (lib/expertRealm/scope.js)
   'job.view_contact':     m('-', '-', 'Y', '-', { stepUp: true, reason: true }),
   'job.edit_document':    m('M', '-', '-', '-'),
   'job.deliver':          m('M', '-', '-', '-'),
@@ -45,12 +45,19 @@ function can(roles, action) {
 //   pending = a password-checked session whose second factor is still to do (two-factor enrolment and challenge)
 //   session = a fully signed-in session of ANY role (own account: me, sessions)
 const REGISTRY = []
+// AUDIT A2 (G2): the policy is BINDING. define() puts the guards the policy calls for in front of the handlers itself (session of the right
+// stage, then a per-account limiter, then the matrix check), so a route's declared policy and the middleware it runs can no longer differ,
+// and a caller cannot forget one. The guards come from middleware/expertRealm.js (required lazily: that file requires this one).
 function define(router, realm, method, path, policy, ...handlers) {
   if (!policy || (!policy.action && !policy.auth)) throw new Error(`route ${method} ${path} has no permission policy`)
   if (policy.action && !MATRIX[policy.action]) throw new Error(`route ${method} ${path}: unknown action ${policy.action}`)
-  if (!REGISTRY.some(r => r.realm === realm && r.method === method.toUpperCase() && r.path === path))      // a module loaded twice (tests) registers once
-    REGISTRY.push(Object.freeze({ realm, method: method.toUpperCase(), path, policy: Object.freeze({ ...policy }) }))
-  router[method.toLowerCase()](path, ...handlers)
+  if (policy.auth && !['public', 'pending', 'session'].includes(policy.auth)) throw new Error(`route ${method} ${path}: unknown auth ${policy.auth}`)
+  if (!handlers.length || handlers.some(h => typeof h !== 'function')) throw new Error(`route ${method} ${path} has no handler`)
+  const M = method.toUpperCase(); const prior = REGISTRY.find(r => r.realm === realm && r.method === M && r.path === path)
+  if (prior) { if (prior.policy.action !== policy.action || prior.policy.auth !== policy.auth) throw new Error(`route ${M} ${path} is already registered with a different policy`) }      // a module loaded twice (tests) registers once
+  else REGISTRY.push(Object.freeze({ realm, method: M, path, policy: Object.freeze({ ...policy }) }))
+  const guards = require('../../middleware/expertRealm').guardsFor(policy, realm)
+  router[method.toLowerCase()](path, ...guards, ...handlers)
 }
 const routesOf = realm => REGISTRY.filter(r => r.realm === realm)
 

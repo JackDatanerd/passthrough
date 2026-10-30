@@ -23,6 +23,7 @@ const securityHeaders   = require('./middleware/securityHeaders')
 const normalizeThrown   = require('./middleware/normalizeThrown')
 const promoOverlay      = require('./middleware/promoOverlay')
 const corsMiddleware    = require('./middleware/cors')
+const expertHostGuard   = require('./middleware/expertHostGuard')   // AUDIT A2 (G1): the expert site's host answers only for the expert realm
 const { normalizeEnv }  = envCheck
 
 const authRoutes         = require('./routes/auth.routes')
@@ -70,6 +71,7 @@ app.use('*', securityHeaders)   // wraps every response, success or error — mo
 // response without CORS headers reaches the SPA as an opaque network error rather than the JSON
 // message it knows how to show. Origin list, exposed headers and preflight caching: middleware/cors.js.
 app.use('*', corsMiddleware)
+app.use('*', expertHostGuard)   // before everything that does work: on the expert host only the realm exists (inert while EXPERT_SITE_URL is unset)
 app.use('/api/*', envCheck)     // fail fast on a broken config before any route runs
 // The promo an admin set from the panel (if any) replaces the deploy-time promo for this request; see lib/promoConfig.js.
 app.use('/api/*', promoOverlay)

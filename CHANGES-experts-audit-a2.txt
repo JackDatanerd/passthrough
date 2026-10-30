@@ -1,0 +1,8 @@
+Experts audit A2 pass 1: realm pipeline and permission matrix (base 9e79fa1)
+See docs/experts/audit/a2-pass1.md for the full list (G1-G4, B1-B8).
+
+New:      src/middleware/expertHostGuard.js, src/lib/expertRealm/scope.js, tests/expertRealm.auditA2.test.js (22 tests), docs/experts/audit/a2-pass1.md
+Changed:  src/index.js (mounts the host guard first), src/lib/expertRealm/{config,permissions}.js, src/middleware/expertRealm.js,
+          src/routes/expert-realm.routes.js, src/controllers/{expert-admin,expert-realm}.controller.js,
+          src/services/{expertBridge,humanJobs}.service.js, docs/experts/audit/AUDIT-PLAN.md
+No migration. No new environment variable. Behaviour while EXPERT_SITE_URL is unset is unchanged.

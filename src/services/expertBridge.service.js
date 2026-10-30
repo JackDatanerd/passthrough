@@ -26,7 +26,7 @@ async function begin(supabase, row) {
   const { data, error } = await supabase.from('expert_bridge_calls').insert({ ...row, outcome: 'started' }).select('id').maybeSingle()
   if (error) {
     if (row.idem_key && /duplicate|unique/i.test(error.message || '')) {
-      const { data: prior } = await supabase.from('expert_bridge_calls').select('outcome, code').eq('fn', row.fn).eq('idem_key', row.idem_key).maybeSingle()
+      const { data: prior } = await supabase.from('expert_bridge_calls').select('outcome, code, job_id, amount_cents').eq('fn', row.fn).eq('idem_key', row.idem_key).maybeSingle()
       return { replay: true, prior }
     }
     throw error
@@ -40,7 +40,16 @@ async function refundHumanOrder(env, supabase, { jobId, amountCents = null, reas
   if (amountCents !== null && !(Number.isInteger(amountCents) && amountCents > 0)) return { ok: false, code: 'BAD_AMOUNT', status: 400 }
   const found = await paymentOfJob(supabase, jobId); if (found.error) return found.error
   const b = await begin(supabase, { fn: 'refund_human_order', job_id: jobId, actor_id: actorId, idem_key: idemKey, amount_cents: amountCents, reason: String(reason || '').slice(0, 300) })
-  if (b.replay) return { ok: b.prior && b.prior.outcome === 'ok', replay: true, code: b.prior && b.prior.code, status: 200 }
+  if (b.replay) {
+    // AUDIT A2 (B1, B2): a key is the identity of ONE request. It only replays for the same job and amount; anything else is refused loudly
+    // (it used to answer "queued, replay" for a different job while nothing was queued for it). A first attempt that never finished
+    // ('started') is not an answer either way, and says so. A refusal replays as a refusal, never as a 200.
+    const p = b.prior
+    if (!p || p.job_id !== jobId || (p.amount_cents ?? null) !== amountCents) return { ok: false, code: 'KEY_REUSED', status: 409, message: 'That request key was already used for a different refund. Use a new key.' }
+    if (p.outcome === 'ok') return { ok: true, replay: true, status: 200 }
+    if (p.outcome === 'started') return { ok: false, replay: true, code: 'UNFINISHED', status: 409, message: 'A refund with this key started but did not finish. Check the payment before trying again with a new key.' }
+    return { ok: false, replay: true, code: p.code || 'PRIOR_REFUSED', status: 409 }
+  }
   let r
   try { r = await queueRefund(env, supabase, found.payment, { amountCents, merchantNote: 'Passthrough Experts refund', customerNote: 'Refund from Passthrough' }) }
   catch (err) { await finish(supabase, b.id, 'failed', 'EXCEPTION'); throw err }

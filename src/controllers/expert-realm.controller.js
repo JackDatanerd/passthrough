@@ -5,6 +5,7 @@ const { getSupabase } = require('../config/supabase')
 const pilot = require('../lib/humanPilot')
 const { audit } = require('../services/expertAudit.service')
 const { maskCompany } = require('./expert.controller')
+const { jobAccess } = require('../lib/expertRealm/scope')
 
 const isUuid = v => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)
 const WORKING = ['claimed', 'in_progress', 'waiting_customer', 'in_review', 'final_checks', 'revision', 'delivered']
@@ -24,8 +25,9 @@ async function desk(c) {
 async function jobBrief(c) {
   const { account, roles } = c.get('xr'); const id = c.req.param('id'); const supabase = getSupabase(c.env)
   if (!isUuid(id)) return deny(c)
-  const { data: job } = await supabase.from('human_jobs').select('id, expert_id, state').eq('id', id).maybeSingle()
-  if (!job || job.expert_id !== account.id || !WORKING.includes(job.state)) {
+  const { data: job, error: jobErr } = await supabase.from('human_jobs').select('id, expert_id, state').eq('id', id).maybeSingle()
+  if (jobErr) { console.error('job brief: job lookup failed:', jobErr.message); return c.json({ success: false, message: 'Not available right now.' }, 503) }      // AUDIT A2 (B4): an outage is not "not yours", and is not logged as a denied read
+  if (!job || !jobAccess(c.get('grant'), account, job, { content: true }).allowed || !WORKING.includes(job.state)) {
     await audit(supabase, { actorId: account.id, roles, action: 'job.read_denied', targetType: 'job', targetId: isUuid(id) ? id : 'invalid' })
     return deny(c)                                                  // the same answer for "not yours" and "does not exist"
   }

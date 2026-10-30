@@ -18,7 +18,13 @@ function secretOf(env) {
 // The expert site: https://experts.usepassthrough.com (EXPERT_SITE_URL). The API is reached THROUGH that host (a Worker route on
 // experts.usepassthrough.com/api/*), so the cookie is first-party to the expert site and no other site can ever send it.
 const normalizeOrigin = v => String(v || '').trim().replace(/\/+$/, '')
-const siteOrigin = env => normalizeOrigin(env && env.EXPERT_SITE_URL) || null
+// AUDIT A2 (B6): the origin is derived through URL, so capital letters, a default port (:443) and a trailing path in the setting all end up
+// spelled the way a browser sends them in the Origin header. (It used to be the raw string, and a setting a browser never produces made every
+// write 403 BAD_ORIGIN while reads worked and nothing was logged.) A value that is not an https/http URL gives null: the realm refuses to run.
+function siteOrigin(env) {
+  const raw = normalizeOrigin(env && env.EXPERT_SITE_URL); if (!raw) return null
+  try { const u = new URL(raw); return u.protocol === 'https:' || u.protocol === 'http:' ? u.origin : null } catch (_) { return null }
+}
 function siteHost(env) { try { return new URL(siteOrigin(env)).host } catch (_) { return null } }
 
 const COOKIE_NAME = '__Host-pt_xr'     // __Host-: Secure, Path=/, no Domain attribute: the browser sends it to this exact host only

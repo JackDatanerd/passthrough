@@ -55,9 +55,9 @@ function requireAction(action) {
       return fail(c, 403, 'Not allowed.', 'FORBIDDEN')
     }
     if (g.stepUp && !sessions.isElevated(xr.session)) return fail(c, 403, 'Confirm your password to continue.', 'STEP_UP_REQUIRED')
-    c.set('grant', g)
+    c.set('grant', g)      // g.scope ('any' | 'own') is read by lib/expertRealm/scope.js (AUDIT A2 G3)
     if (g.reason) {
-      let body = {}; try { body = await c.req.json() } catch (_) { body = {} }
+      let body = {}; try { body = await c.req.json() } catch (err) { if (err && err.status === 413) throw err; body = {} }      // AUDIT A2 (B7): an oversized body is a 413, not "reason missing"
       const reason = typeof body.reason === 'string' ? body.reason.trim() : ''
       if (reason.length < 5 || reason.length > 300) return fail(c, 400, 'A reason (5 to 300 characters) is required.', 'REASON_REQUIRED')
       c.set('reason', reason)
@@ -90,8 +90,20 @@ const limits = {
   secondFactor: limit({ windowSeconds: 10 * 60, max: 10, keyPrefix: 'rl:xr:mfa', keyOf: c => { const x = c.get('xr'); return x ? `s:${x.session.id}` : null } }),
   resetIp:   limit({ windowSeconds: 60 * 60, max: 6, keyPrefix: 'rl:xr:reset' }),
   forgotIp:  limit({ windowSeconds: 60 * 60, max: 6, keyPrefix: 'rl:xr:forgot' }),     // item 3: its own bucket, no longer shared with the reset call
+  // AUDIT A2 (B3): these two run BEFORE the matrix check (guardsFor), so a denied request, which writes an audit row, is counted too.
+  own:       limit({ windowSeconds: 60, max: 120, keyPrefix: 'rl:xr:own', keyOf: c => { const x = c.get('xr'); return x ? `a:${x.account.id}` : null }, message: 'Too many requests. Please wait a moment.' }),
   admin:     limit({ windowSeconds: 60, max: 120, keyPrefix: 'rl:xr:adm', keyOf: c => { const x = c.get('xr'); return x ? `a:${x.account.id}` : null }, message: 'Too many requests. Please wait a moment.' }),
   money:     limit({ windowSeconds: 60 * 60, max: 10, keyPrefix: 'rl:xr:money', keyOf: c => { const x = c.get('xr'); return x ? `a:${x.account.id}` : null }, message: 'Too many refund attempts. Please wait.' }),
 }
 
-module.exports = { gate, csrf, session, requireAction, requireElevated, limits, fail }
+// AUDIT A2 (G2): the guards a route's policy needs, in order. permissions.define() puts them in front of every handler.
+// public: none. pending: a password-checked session. session: a fully signed-in session. action: that session, a per-account limiter
+// (before the audit write a denial makes), then the matrix check.
+function guardsFor(policy, realm) {
+  if (policy.action) return [session('full'), realm === 'admin' ? limits.admin : limits.own, requireAction(policy.action)]
+  if (policy.auth === 'pending') return [session('pending')]
+  if (policy.auth === 'session') return [session('full')]
+  return []
+}
+
+module.exports = { gate, csrf, session, requireAction, requireElevated, limits, fail, guardsFor }

@@ -34,7 +34,7 @@ async function transition(supabase, { jobId, to, trigger, actor, expectedVersion
 
 // The operator moves a job to an expert. trigger: 'assign' (from offered / open) or 'reassign' (from a working state); the state machine
 // refuses the wrong pairing, so the two console actions cannot be swapped.
-const assign = (supabase, { jobId, expertId, operatorId, reason, idemKey, trigger = 'assign' }) =>
-  transition(supabase, { jobId, to: 'claimed', trigger, actor: { kind: 'operator', id: operatorId }, expertId, detail: { reason_code: `operator_${trigger}`, reason_len: (reason || '').length }, idemKey })
+const assign = (supabase, { jobId, expertId, operatorId, reason, idemKey, expectedVersion = null, trigger = 'assign' }) =>
+  transition(supabase, { jobId, to: 'claimed', trigger, actor: { kind: 'operator', id: operatorId }, expertId, expectedVersion, detail: { reason_code: `operator_${trigger}`, reason_len: (reason || '').length }, idemKey })
 
 module.exports = { transition, assign, ERR_STATUS }
