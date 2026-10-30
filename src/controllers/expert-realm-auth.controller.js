@@ -20,7 +20,7 @@ const readJson = async c => { try { return await c.req.json() } catch (_) { retu
 let dummyHash = null
 const getDummy = async () => (dummyHash ||= await bcrypt.hash('passthrough-expert-realm-timing-equalizer', 10))
 const usable = a => !!a && a.enabled === true && ['probation', 'active'].includes(a.status) && Array.isArray(a.roles) && a.roles.length > 0
-const COLS = 'id, email, display_first_name, roles, status, enabled, token_version, totp_enabled_at, totp_secret_enc, totp_last_step, locked_until, failed_logins'
+const COLS = 'id, created_at, email, display_first_name, roles, status, enabled, token_version, totp_enabled_at, totp_secret_enc, totp_last_step, locked_until, failed_logins'
 const setCookie = (c, value) => c.header('Set-Cookie', value)
 
 const loginBody = z.object({ email: z.string().trim().toLowerCase().email().max(320), password: z.string().min(1).max(200) }).strict()
@@ -56,6 +56,13 @@ async function login(c) {
     if (a && !match) { const locked = await recordFailure(supabase, a, s); await audit(supabase, { actorKind: 'expert', actorId: a.id, action: 'auth.password_failed', targetType: 'account', targetId: a.id, detail: { locked } }) }
     return bad(c, GENERIC, 401)
   }
+  // AUDIT A1 pass 2 (item 1): an account with no second factor yet is open to whoever holds its first password, so that password stops working after
+  // enrol_hours (default 72). Same answer as any other refusal (it must not confirm the password was right). The operator re-issues (docs/experts/phase2a/staff-accounts.md).
+  const born = Date.parse(a.created_at)
+  if (!a.totp_enabled_at && Number.isFinite(born) && Date.now() - born > s.enrol_hours * 3600e3) {
+    await audit(supabase, { actorKind: 'expert', actorId: a.id, action: 'auth.enrolment_expired', targetType: 'account', targetId: a.id })
+    return bad(c, GENERIC, 401)
+  }
   const { cookie } = await sessions.createSession(c.env, supabase, a, { ip: c.req.header('cf-connecting-ip'), userAgent: c.req.header('user-agent') })
   setCookie(c, cookie)
   return c.json({ success: true, data: { stage: a.totp_enabled_at ? 'mfa' : 'enroll' } })
@@ -76,19 +83,23 @@ async function totpSetup(c) {
 // Ten recovery codes, shown once, kept only as keyed hashes. Replaces any earlier set.
 async function issueRecoveryCodes(env, supabase, expertId, count) {
   const secret = cfg.secretOf(env); const codes = []
-  await supabase.from('expert_recovery_codes').delete().eq('expert_id', expertId)
+  const { data: old } = await supabase.from('expert_recovery_codes').select('id').eq('expert_id', expertId).limit(500)
   for (let i = 0; i < count; i++) codes.push(rc.newRecoveryCode())
   const rows = await Promise.all(codes.map(async code => ({ expert_id: expertId, code_hash: await rc.recoveryHash(secret, expertId, code) })))
-  const { error } = await supabase.from('expert_recovery_codes').insert(rows); if (error) throw error
+  const { error } = await supabase.from('expert_recovery_codes').insert(rows); if (error) throw error      // item 4: the old set is only removed AFTER the new one is stored
+  const oldIds = (old || []).map(r => r.id)
+  if (oldIds.length) await supabase.from('expert_recovery_codes').delete().in('id', oldIds)
   return codes
 }
 
 async function finishSignIn(c, supabase, account, sessionId, extra = {}) {
   const r = await sessions.promoteSession(c.env, supabase, account, sessionId)         // F2: a NEW session id and cookie; the pending one ends
   if (!r) return bad(c, 'Please sign in again.', 401, 'AUTH')
+  // item 7: a sign-in with no record is refused (the new session is ended before any cookie is set)
+  try { await audit(supabase, { actorId: account.id, roles: account.roles, action: 'auth.signed_in', targetType: 'session', targetId: r.sessionId, detail: extra.method ? { method: extra.method } : {}, required: true }) }
+  catch (_) { await sessions.revoke(supabase, r.sessionId, account.id, 'audit_failed'); return bad(c, 'Please try again in a moment.', 503, 'UNAVAILABLE') }
   setCookie(c, r.cookie)
   await supabase.from('expert_accounts').update({ failed_logins: 0, last_login_at: new Date().toISOString() }).eq('id', account.id)
-  await audit(supabase, { actorId: account.id, roles: account.roles, action: 'auth.signed_in', targetType: 'session', targetId: r.sessionId, detail: extra.method ? { method: extra.method } : {} })
   return null
 }
 
@@ -99,7 +110,7 @@ async function totpVerify(c) {
   const p = codeBody.safeParse(await readJson(c)); if (!p.success) return bad(c, 'Enter the 6-digit code.', 400)
   const { data: a } = await supabase.from('expert_accounts').select(COLS).eq('id', a0.id).maybeSingle()
   if (a.locked_until && new Date(a.locked_until) > new Date()) return bad(c, 'Too many attempts. Please wait and try again.', 429, 'LOCKED')
-  const secret = a.totp_secret_enc ? await fieldCrypto.openTaxId(c.env, a.totp_secret_enc) : null
+  const secret = a.totp_secret_enc && fieldCrypto.isSealed(a.totp_secret_enc) ? await fieldCrypto.openTaxId(c.env, a.totp_secret_enc) : null      // item 5: a plain-text value in this column is never trusted
   const step = secret ? await totp.verifyTotp(secret, p.data.code, { lastStep: a.totp_last_step }) : null
   if (step === null || step === undefined || step === false) {
     const locked = await recordFailure(supabase, a, s)
@@ -195,18 +206,27 @@ async function passwordProblem(c, password, email) {
   return null
 }
 
+// AUDIT A1 pass 2 (item 3): (a) the answer is sent at once and the work runs after it (waitUntil), so an existing account no longer takes longer
+// to answer than an unknown one; (b) at most 3 links per account per hour, extra requests do nothing and look the same; (c) a new request no
+// longer voids the earlier links, so repeated requests cannot lock a real person out of their own reset (a successful reset voids them all).
+const RESET_PER_HOUR = 3
 async function forgot(c) {
   const p = z.object({ email: z.string().trim().toLowerCase().email().max(320) }).strict().safeParse(await readJson(c))
   const done = () => c.json({ success: true, data: { message: 'If that account exists, an email is on its way.' } })      // same answer either way
   if (!p.success) return done()
-  const supabase = getSupabase(c.env); const s = await cfg.loadSettings(supabase)
-  const { data: a } = await supabase.from('expert_accounts').select('id, email, enabled, status, roles').eq('email', p.data.email).maybeSingle()
-  if (!usable(a)) return done()
-  const secret = cfg.secretOf(c.env); const token = rc.randomToken(32)
-  await supabase.from('expert_password_resets').update({ used_at: new Date().toISOString() }).eq('expert_id', a.id).is('used_at', null)
-  await supabase.from('expert_password_resets').insert({ expert_id: a.id, token_hash: await rc.tokenHash(secret, token), expires_at: new Date(Date.now() + s.reset_minutes * 60e3).toISOString(), requested_ip_hash: await rc.ipHash(secret, c.req.header('cf-connecting-ip')) })
-  await mail.sendPasswordReset(c.env, { to: a.email, link: `${cfg.siteOrigin(c.env)}/reset-password#token=${token}` })
-  await audit(supabase, { actorKind: 'expert', actorId: a.id, action: 'auth.reset_requested', targetType: 'account', targetId: a.id })
+  const ip = c.req.header('cf-connecting-ip')
+  const work = (async () => {
+    const supabase = getSupabase(c.env); const s = await cfg.loadSettings(supabase)
+    const { data: a } = await supabase.from('expert_accounts').select('id, email, enabled, status, roles').eq('email', p.data.email).maybeSingle()
+    if (!usable(a)) return
+    const { data: recent } = await supabase.from('expert_password_resets').select('id').eq('expert_id', a.id).gte('created_at', new Date(Date.now() - 3600e3).toISOString()).limit(RESET_PER_HOUR + 1)
+    if ((recent || []).length >= RESET_PER_HOUR) return
+    const secret = cfg.secretOf(c.env); const token = rc.randomToken(32)
+    await supabase.from('expert_password_resets').insert({ created_at: new Date().toISOString(), expert_id: a.id, token_hash: await rc.tokenHash(secret, token), expires_at: new Date(Date.now() + s.reset_minutes * 60e3).toISOString(), requested_ip_hash: await rc.ipHash(secret, ip) })
+    await mail.sendPasswordReset(c.env, { to: a.email, link: `${cfg.siteOrigin(c.env)}/reset-password#token=${token}` })
+    await audit(supabase, { actorKind: 'expert', actorId: a.id, action: 'auth.reset_requested', targetType: 'account', targetId: a.id })
+  })().catch(err => console.error('expert reset request failed:', err.message))
+  try { c.executionCtx.waitUntil(work) } catch (_) { await work }          // no execution context (tests, other runtimes): wait for it
   return done()
 }
 
@@ -222,6 +242,7 @@ async function reset(c) {
   const { data: claimed } = await supabase.from('expert_password_resets').update({ used_at: new Date().toISOString() }).eq('id', row.id).is('used_at', null).select('id').maybeSingle()
   if (!claimed) return bad(c, 'This link is not valid or has expired.', 400)       // another request used it first
   await supabase.from('expert_accounts').update({ password_hash: await bcrypt.hash(p.data.password, 10), failed_logins: 0, locked_until: null }).eq('id', a.id)
+  await supabase.from('expert_password_resets').update({ used_at: new Date().toISOString() }).eq('expert_id', a.id).is('used_at', null)      // item 3: any other live link dies with this one
   await sessions.revokeAll(supabase, a, 'password_reset')                          // every session ends; the second factor is still required to sign in
   await audit(supabase, { actorKind: 'expert', actorId: a.id, action: 'auth.password_reset', targetType: 'account', targetId: a.id })
   return c.json({ success: true })

@@ -20,3 +20,13 @@ describe('expert-staff-account', () => {
   })
   it('passwords are long and different every time', () => { expect(new Set(Array.from({ length: 20 }, newPassword)).size).toBe(20) })
 })
+
+describe('expert-staff-account --reissue (audit A1 pass 2)', () => {
+  it('prints an update that only touches an account with no second factor, restarts its clock and never contains the password', () => {
+    const { buildReissue } = require_('../scripts/expert-staff-account.cjs')
+    const r = buildReissue({ email: 'Jack@Example.com' }, { rounds: 4 })
+    expect(r.errors).toBeUndefined(); expect(r.sql).toContain("where email = 'jack@example.com' and totp_enabled_at is null"); expect(r.sql).toContain('created_at = now()'); expect(r.sql).toContain('token_version = token_version + 1'); expect(r.sql).not.toContain(r.password)
+    expect(bcrypt.compareSync(r.password, r.sql.match(/'(\$2[aby]\$[^']+)'/)[1])).toBe(true)
+    expect(buildReissue({ email: 'nope' }).errors.length).toBe(1)
+  })
+})

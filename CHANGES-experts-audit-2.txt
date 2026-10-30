@@ -1,0 +1,24 @@
+CHANGES-experts-audit-2.txt  (Experts audit A1, pass 2: the nine reported items)
+Base commit: 1e4b582c80be60a7c89613df800980741106cb9d. This delivery is CUMULATIVE: it contains pass 1 (CHANGES-experts-audit-1.txt) and pass 2.
+================================================================================
+1. WHAT: items 1 to 9 of the "Not fixed" list in docs/experts/audit/auth-sessions-pass1.md. Per-item result: docs/experts/audit/auth-sessions-pass2.md.
+   Fixed: 1 (first password expires after 72 hours without a second factor; --reissue script), 3 (reset throttling, no voiding, own limiter, timing),
+   4 (recovery codes atomic), 6 (host from URL), 7 (sign-in audit fails closed; failed writes logged), 8 (session pruning), 9 (token_version compare-and-set).
+   Accepted: 2 (lockout as a lever). Partly: 5 (realm refuses an unsealed secret; key separation deferred to A9 because Phase 1 reads the same column).
+2. EXISTING FILES TOUCHED (this pass, on top of pass 1)
+   src/controllers/expert-realm-auth.controller.js, src/services/expertSession.service.js, src/services/expertAudit.service.js, src/middleware/expertRealm.js,
+   src/routes/expert-realm.routes.js, src/lib/expertRealm/config.js, scripts/expert-staff-account.cjs, docs/experts/phase2a/staff-accounts.md,
+   tests/expertRealm.phase2a.test.js (pass 1: one assertion; pass 2: one stub line), tests/expertStaffScript.test.js (one test added), docs/experts/STATUS.md.
+   No migration, no EXPECTED_SCHEMA_VERSION change, no shared non-Experts file. Flag off: unchanged.
+3. NEW FILES (pass 2): tests/expertRealm.auditAuth2.test.js (10 tests), docs/experts/audit/auth-sessions-pass2.md, this file.
+4. BEHAVIOUR CHANGES YOU WILL NOTICE
+   - Accounts with no second factor older than 72 hours cannot sign in until re-issued: node scripts/expert-staff-account.cjs --reissue --email <email>, run the SQL.
+     Setting: system_state key 'expert_realm', enrol_hours (1 to 720).
+   - "Forgot password" answers at once; an account gets at most 3 links an hour; asking again does not kill an earlier link; using a link kills the others.
+   - A sign-in that cannot be written to expert_audit_log answers 503 (no session is left).
+5. TESTS
+   Targeted run (all expert*/human* backend tests, migrations 0124 and 0127, email.registry, frontend experts and human): 22 files, 415 tests, all passed.
+   Pass 2 tests: 10 new + 1 script test; 10 of the 11 fail on the pre-pass code (verified by reverting the source files).
+   NO full-suite number: the full run does not finish in this environment (see CHANGES-experts-audit-1.txt section 8). Run it on your machine before committing.
+6. KNOWN GAPS: see auth-sessions-pass2.md "Things to know". Not tested: real Postgres concurrency, waitUntil on the real Worker, browser, email, rate limiter atomicity, full jwt.js verify.
+7. ROLLBACK: git revert the commit; no schema change to undo. Accounts re-issued with --reissue keep their new password and created_at.

@@ -35,11 +35,30 @@ function build(o, { password = newPassword(), rounds = 12 } = {}) {
   return { sql, password, email, roles: [...new Set(roles)] }
 }
 
+// AUDIT A1 pass 2 (item 1): a first password stops working after 72 hours if no second factor was set up. This prints the SQL that issues a fresh
+// first password to such an account (only while it has no second factor), and restarts its clock (created_at is the clock).
+//   node scripts/expert-staff-account.cjs --reissue --email you@example.com
+function buildReissue(o, { password = newPassword(), rounds = 12 } = {}) {
+  const email = String(o.email || '').trim().toLowerCase()
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return { errors: ['--email must be an email address'] }
+  const hash = bcrypt.hashSync(password, rounds)
+  const sql = `update expert_accounts set password_hash = ${q(hash)}, created_at = now(), failed_logins = 0, locked_until = null, token_version = token_version + 1\nwhere email = ${q(email)} and totp_enabled_at is null;   -- only an account that has not set up its second factor; 0 rows means it already has (use the lost-phone procedure instead)\n`
+  return { sql, password, email }
+}
+
 if (require.main === module) {
+  const o0 = parse(process.argv.slice(2))
+  if (o0.reissue) {
+    const r = buildReissue(o0)
+    if (r.errors) { console.error(r.errors.map(e => `error: ${e}`).join('\n')); process.exit(1) }
+    console.log('-- Run this in the Supabase SQL editor:\n' + r.sql)
+    console.log(`New first password for ${r.email}, shown ONCE. It works for 72 hours, until the second factor is set up:\n\n    ${r.password}\n`)
+    process.exit(0)
+  }
   const r = build(parse(process.argv.slice(2)))
   if (r.errors) { console.error(r.errors.map(e => `error: ${e}`).join('\n')); process.exit(1) }
   console.log('-- Run this in the Supabase SQL editor:\n' + r.sql)
   console.log(`First password for ${r.email} (${r.roles.join(', ')}), shown ONCE; it is not stored anywhere else:\n\n    ${r.password}\n`)
   console.log('Next: sign in at the expert site, set up the authenticator app, save the recovery codes, then change this password in Settings.')
 }
-module.exports = { build, parse, newPassword, STAFF, ALL }
+module.exports = { build, buildReissue, parse, newPassword, STAFF, ALL }

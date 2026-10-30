@@ -26,9 +26,10 @@ const COOKIE_NAME = '__Host-pt_xr'     // __Host-: Secure, Path=/, no Domain att
 const DEFAULTS = Object.freeze({
   idle_hours: 8, absolute_days: 7, pending_minutes: 10, step_up_minutes: 10, reset_minutes: 30,
   max_failures: 5, lock_minutes: 15, recovery_codes: 10, min_password_length: 12,
+  enrol_hours: 72,        // AUDIT A1 pass 2 (item 1): how long a first password works for an account that has not set up its second factor
 })
 const LIMITS = Object.freeze({ idle_hours: [1, 24], absolute_days: [1, 30], pending_minutes: [2, 30], step_up_minutes: [1, 60], reset_minutes: [10, 120],
-  max_failures: [3, 10], lock_minutes: [5, 240] })
+  max_failures: [3, 10], lock_minutes: [5, 240], enrol_hours: [1, 720] })
 
 // Settings, not constants: system_state key 'expert_realm' may override any key in DEFAULTS (clamped to LIMITS); a missing row or a bad value
 // falls back to the default. Cached for 30 seconds per isolate.

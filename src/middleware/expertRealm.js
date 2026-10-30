@@ -16,7 +16,7 @@ function gate() {
     if (!cfg.realmEnabled(c.env)) return c.notFound()
     const host = cfg.siteHost(c.env), secret = cfg.secretOf(c.env)
     if (!host || !secret) { console.error('[CRITICAL] expert realm is on but EXPERT_SITE_URL or EXPERT_REALM_SECRET is missing, short, or equal to another secret: realm refused'); return c.notFound() }
-    const reqHost = (c.req.header('host') || new URL(c.req.url).host || '').toLowerCase()
+    let reqHost = ''; try { reqHost = new URL(c.req.url).host.toLowerCase() } catch (_) { reqHost = '' }      // AUDIT A1 pass 2 (item 6): the request URL's host, not a header the caller can set
     if (reqHost !== host.toLowerCase()) return c.notFound()      // the realm is reachable ONLY through the expert site's own host
     return next()
   }
@@ -89,6 +89,7 @@ const limits = {
   loginIp:   limit({ windowSeconds: 15 * 60, max: 20, keyPrefix: 'rl:xr:login' }),
   secondFactor: limit({ windowSeconds: 10 * 60, max: 10, keyPrefix: 'rl:xr:mfa', keyOf: c => { const x = c.get('xr'); return x ? `s:${x.session.id}` : null } }),
   resetIp:   limit({ windowSeconds: 60 * 60, max: 6, keyPrefix: 'rl:xr:reset' }),
+  forgotIp:  limit({ windowSeconds: 60 * 60, max: 6, keyPrefix: 'rl:xr:forgot' }),     // item 3: its own bucket, no longer shared with the reset call
   admin:     limit({ windowSeconds: 60, max: 120, keyPrefix: 'rl:xr:adm', keyOf: c => { const x = c.get('xr'); return x ? `a:${x.account.id}` : null }, message: 'Too many requests. Please wait a moment.' }),
   money:     limit({ windowSeconds: 60 * 60, max: 10, keyPrefix: 'rl:xr:money', keyOf: c => { const x = c.get('xr'); return x ? `a:${x.account.id}` : null }, message: 'Too many refund attempts. Please wait.' }),
 }

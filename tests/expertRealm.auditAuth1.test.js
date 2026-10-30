@@ -40,7 +40,7 @@ beforeEach(async () => {
     'config/supabase.js': { getSupabase: () => w.db },
     'middleware/rateLimiter.js': { clientIp: () => '203.0.113.9', rateKeyIp: ip => ip, isBypassed: () => false,
       runOp: async (_e, _op, { key, max }) => { const n = (rlHits.get(key) || 0) + 1; rlHits.set(key, n); return { allowed: n <= max, retryAfter: 60 } } },
-    'lib/fieldCrypto.js': { sealTaxId: async (_e, p) => `sealed:${p}`, openTaxId: async (_e, s) => String(s).replace('sealed:', '') },
+    'lib/fieldCrypto.js': { isSealed: s => String(s).startsWith('sealed:'), sealTaxId: async (_e, p) => `sealed:${p}`, openTaxId: async (_e, s) => String(s).replace('sealed:', '') },
     'lib/pwned.js': { isPwnedPassword: async p => p === 'password1234!' },
     'services/refund.service.js': { queueRefund: async (_e, _s, payment, o) => { queued.push({ payment: payment.id, ...o }); return { ok: true, amountCents: o.amountCents ?? payment.amount_cents, partial: false, queued: true } } },
     'config/email.js': { sendViaResend: async (_e, m) => { sent.push(m) } },

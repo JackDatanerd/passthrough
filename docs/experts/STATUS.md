@@ -30,7 +30,7 @@ Plan and section list: `docs/experts/audit/AUDIT-PLAN.md`. Phase 2B stays on hol
 
 | Section | State |
 |---|---|
-| A1 Realm sign-in, second factor, sessions, reset | **pass 1 done**: six findings fixed (lockout race, cookie not rotated, step-up ignored the lock, lock oracle at sign-in, second-factor replay race, reset 500), nine reported, one decision for the owner (enrolment by first password). `docs/experts/audit/auth-sessions-pass1.md`, `CHANGES-experts-audit-1.txt` |
+| A1 Realm sign-in, second factor, sessions, reset | **passes 1 and 2 done**: pass 1 fixed six findings (lockout race, cookie not rotated, step-up ignored the lock, lock oracle, second-factor replay race, reset 500); pass 2 handled the nine reported items (first-password expiry after 72 hours, reset throttling, atomic recovery-code reissue, host from URL, sign-in audit fails closed, session pruning, atomic token version; lockout-as-DoS accepted; key separation for second-factor secrets deferred to A9). `docs/experts/audit/auth-sessions-pass1.md`, `...pass2.md`, `CHANGES-experts-audit-1.txt`, `CHANGES-experts-audit-2.txt` |
 | A2 to A12 | not started |
 
 ## Phase 0A: what exists

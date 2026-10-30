@@ -19,9 +19,19 @@ function readCookie(header, name = COOKIE_NAME) {
   return null
 }
 
+// AUDIT A1 pass 2 (item 8): sessions that never finished sign-in (pending, expired) and anything expired more than 30 days ago are deleted for this
+// expert each time they sign in. Best effort: a failure here never blocks a sign-in.
+async function pruneSessions(supabase, expertId, now = Date.now()) {
+  try {
+    await supabase.from('expert_sessions').delete().eq('expert_id', expertId).is('mfa_verified_at', null).lt('absolute_expires_at', new Date(now).toISOString())
+    await supabase.from('expert_sessions').delete().eq('expert_id', expertId).lt('absolute_expires_at', new Date(now - 30 * 86400e3).toISOString())
+  } catch (_) { /* best effort */ }
+}
+
 // Password checked: a PENDING session (no second factor yet) that expires in minutes, not days.
 async function createSession(env, supabase, account, { ip, userAgent, now = Date.now() } = {}) {
   const secret = secretOf(env); if (!secret) throw new Error('expert realm secret missing')
+  await pruneSessions(supabase, account.id, now)
   const s = await loadSettings(supabase, now)
   const pendingUntil = new Date(now + s.pending_minutes * 60e3).toISOString()
   const { data, error } = await supabase.from('expert_sessions').insert({
@@ -94,7 +104,15 @@ async function revoke(supabase, sessionId, expertId, reason) {
 // "Revoke all sessions": every row ends AND token_version moves, so even a cookie whose row somehow survived stops verifying.
 async function revokeAll(supabase, account, reason = 'revoke_all') {
   await supabase.from('expert_sessions').update({ revoked_at: new Date().toISOString(), revoked_reason: reason }).eq('expert_id', account.id).is('revoked_at', null)
-  await supabase.from('expert_accounts').update({ token_version: (account.token_version || 0) + 1 }).eq('id', account.id)
+  // item 9: compare-and-set on the value read, so two simultaneous calls each move it (it used to be read, +1, write)
+  let cur = account.token_version || 0
+  for (let i = 0; i < 6; i++) {
+    const { data } = await supabase.from('expert_accounts').update({ token_version: cur + 1 }).eq('id', account.id).eq('token_version', cur).select('id').maybeSingle()
+    if (data) return
+    const { data: fresh } = await supabase.from('expert_accounts').select('token_version').eq('id', account.id).maybeSingle()
+    if (!fresh) return
+    cur = fresh.token_version || 0
+  }
 }
 
 async function listSessions(supabase, expertId, now = Date.now()) {
@@ -102,4 +120,4 @@ async function listSessions(supabase, expertId, now = Date.now()) {
   return (data || []).filter(r => new Date(r.absolute_expires_at).getTime() > now && r.mfa_verified_at)
 }
 
-module.exports = { AUD, cookieHeader, clearCookieHeader, readCookie, createSession, mint, promote, promoteSession, resolve, isElevated, elevate, revoke, revokeAll, listSessions }
+module.exports = { pruneSessions, AUD, cookieHeader, clearCookieHeader, readCookie, createSession, mint, promote, promoteSession, resolve, isElevated, elevate, revoke, revokeAll, listSessions }

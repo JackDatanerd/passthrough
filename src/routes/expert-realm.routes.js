@@ -15,7 +15,7 @@ const realm = new Hono()
 realm.use('*', gate(), csrf())
 // public: no session yet
 define(realm, 'realm', 'post', '/auth/login',           { auth: 'public' }, limits.loginIp, auth.login)
-define(realm, 'realm', 'post', '/auth/password/forgot', { auth: 'public' }, limits.resetIp, auth.forgot)
+define(realm, 'realm', 'post', '/auth/password/forgot', { auth: 'public' }, limits.forgotIp, auth.forgot)
 define(realm, 'realm', 'post', '/auth/password/reset',  { auth: 'public' }, limits.resetIp, auth.reset)
 // pending: password checked, second factor still to do
 define(realm, 'realm', 'post', '/auth/totp/setup',      { auth: 'pending' }, session('pending'), limits.secondFactor, auth.totpSetup)

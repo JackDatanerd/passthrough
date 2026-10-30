@@ -29,6 +29,7 @@ async function audit(supabase, { actorKind, actorId, roles, action, targetType, 
     if (error) throw error
     return { ok: true }
   } catch (_) {
+    console.error(`[AUDIT] expert audit write failed: ${action}${required ? ' (request refused)' : ''}`)      // item 7: never silent, so the evidence is at least in the Worker log
     if (required) { const e = new Error('audit write failed'); e.code = 'AUDIT_FAILED'; throw e }
     return { ok: false }
   }
