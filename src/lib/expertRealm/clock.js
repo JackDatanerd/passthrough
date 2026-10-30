@@ -3,7 +3,7 @@
 
 const ts = v => new Date(v).getTime()
 const STARTS = new Set(['question_asked'])
-const ENDS = new Set(['question_answered', 'question_expired'])
+const ENDS = new Set(['question_answered', 'question_expired', 'released'])   // 'released': an unassign ends the wait too
 
 // Pause intervals from a job's events (oldest first by id). Works on Phase 1 events (question_asked ... question_answered / question_expired)
 // and on engine events (detail.to / detail.from === 'waiting_customer'). A pause with no end yet has ended = null.

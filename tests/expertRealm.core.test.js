@@ -13,10 +13,18 @@ const R = path.resolve(__dirname, '..')
 const read = f => fs.readFileSync(path.join(R, f), 'utf8')
 
 describe('state machine table', () => {
-  it('is exactly the migration seed (same rows, same actors)', () => {
+  it('is exactly the migration seed (0127) plus what 0129 changed (same rows, same actors)', () => {
     const sql = read('supabase/migrations/0127_experts_phase2a_realm.sql'); const block = sql.slice(sql.indexOf('insert into job_transition_rules'), sql.indexOf('on conflict do nothing;', sql.indexOf('insert into job_transition_rules')))
-    const rows = [...block.matchAll(/\('(\w+)',\s*'(\w+)',\s*'(\w+)',\s*array\[([^\]]*)\]\)/g)].map(m => `${m[1]}>${m[2]}:${m[3]}:${m[4].replace(/'/g, '').split(',').map(x => x.trim()).sort().join(',')}`)
-    expect(rows.sort()).toEqual(SM.RULES.map(r => `${r.from}>${r.to}:${r.trigger}:${[...r.actors].sort().join(',')}`).sort())
+    const re = /\('(\w+)',\s*'(\w+)',\s*'(\w+)',\s*array\[([^\]]*)\]\)/g
+    const acts = x => x.replace(/'/g, '').split(',').map(y => y.trim()).sort().join(',')
+    const map = new Map([...block.matchAll(re)].map(m => [`${m[1]}>${m[2]}:${m[3]}`, acts(m[4])]))
+    const sql2 = read('supabase/migrations/0129_experts_engine_audit_a4.sql')
+    const upd = sql2.match(/update job_transition_rules set actors = array\[([^\]]*)\] where trigger in \(([^)]*)\)/)
+    const trigs = upd[2].replace(/'/g, '').split(',').map(x => x.trim())
+    for (const k of map.keys()) if (trigs.includes(k.split(':')[1])) map.set(k, acts(upd[1]))
+    const b2 = sql2.slice(sql2.indexOf('insert into job_transition_rules'), sql2.indexOf('on conflict do nothing;', sql2.indexOf('insert into job_transition_rules')))
+    for (const m of b2.matchAll(re)) map.set(`${m[1]}>${m[2]}:${m[3]}`, acts(m[4]))
+    expect([...map].map(([k, v]) => `${k}:${v}`).sort()).toEqual(SM.RULES.map(r => `${r.from}>${r.to}:${r.trigger}:${[...r.actors].sort().join(',')}`).sort())
   })
   it('table-driven: every (from, to, trigger, actor) combination is allowed iff the table says so', () => {
     const pairs = [...new Set(SM.RULES.map(r => `${r.to}|${r.trigger}`))].map(s => s.split('|')); let legal = 0, illegal = 0
@@ -44,7 +52,10 @@ describe('state machine table', () => {
     const t = '2026-10-01T00:00:00Z'
     expect(SM.nextActionFor('in_progress', { internalDeadlineAt: t })).toEqual({ at: '2026-10-01T00:00:00.000Z', kind: 'deadline_warning' })
     expect(SM.nextActionFor('delivered', { autoAcceptAt: t }).kind).toBe('auto_accept'); expect(SM.nextActionFor('waiting_customer', { answerDeadlineAt: t }).kind).toBe('question_timeout')
-    expect(SM.nextActionFor('awaiting_payment', { createdAt: t }).at).toBe('2026-10-02T00:00:00.000Z'); for (const s of ['open', 'in_review', 'accepted', 'refunded']) expect(SM.nextActionFor(s, { internalDeadlineAt: t })).toBeNull()
+    expect(SM.nextActionFor('awaiting_payment', { createdAt: t }).at).toBe('2026-10-02T00:00:00.000Z'); for (const s of ['accepted', 'refunded', 'disputed', 'cancelled']) expect(SM.nextActionFor(s, { internalDeadlineAt: t })).toBeNull()
+    for (const s of ['offered', 'open', 'in_review', 'final_checks']) expect(SM.nextActionFor(s, { internalDeadlineAt: t }).kind).toBe('deadline_warning')   // A4: an unclaimed or waiting-for-review job still has a deadline
+    expect(SM.nextActionFor('revision', { internalDeadlineAt: t, revisionDueAt: '2026-10-05T00:00:00Z' }).at).toBe('2026-10-05T00:00:00.000Z')   // the revision has its own clock
+    expect(SM.nextActionFor('revision', { internalDeadlineAt: t }).at).toBe('2026-10-01T00:00:00.000Z')
   })
 })
 

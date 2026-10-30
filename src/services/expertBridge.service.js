@@ -26,7 +26,7 @@ async function begin(supabase, row) {
   const { data, error } = await supabase.from('expert_bridge_calls').insert({ ...row, outcome: 'started' }).select('id').maybeSingle()
   if (error) {
     if (row.idem_key && /duplicate|unique/i.test(error.message || '')) {
-      const { data: prior } = await supabase.from('expert_bridge_calls').select('outcome, code, job_id, amount_cents').eq('fn', row.fn).eq('idem_key', row.idem_key).maybeSingle()
+      const { data: prior } = await supabase.from('expert_bridge_calls').select('id, outcome, code, job_id, amount_cents').eq('fn', row.fn).eq('idem_key', row.idem_key).maybeSingle()
       return { replay: true, prior }
     }
     throw error
@@ -69,14 +69,23 @@ async function createJobFromPayment(supabase, { jobId, actorId }) {
   if (found.payment.status !== 'SUCCESS') return { ok: false, code: 'NOT_PAID', status: 409 }
   const key = `payment:${found.payment.id}`
   const b = await begin(supabase, { fn: 'create_job_from_payment', job_id: jobId, actor_id: actorId || null, idem_key: key })
-  if (b.replay) return { ok: true, replay: true, status: 200 }
+  // A repeat only short-cuts when the first call really finished. A call that threw, was refused or never recorded its end is RETRIED: the
+  // transition carries the same key, so it cannot act twice, and the existing row is updated instead of a second one being written.
+  if (b.replay && b.prior && b.prior.outcome === 'ok') return { ok: true, replay: true, status: 200 }
+  const rowId = b.replay ? b.prior && b.prior.id : b.id
+  const done = (outcome, code) => (rowId ? finish(supabase, rowId, outcome, code) : null)
   // deadlines come from the same settings Phase 1 uses (a missing settings row confirms the job with no deadline, as Phase 1 does)
   let promised = null, internal = null
   const { data: job } = await supabase.from('human_jobs').select('tier').eq('id', jobId).maybeSingle()
   const settings = await pilot.loadSettings(supabase)
   if (settings && job) ({ promised, internal } = pilot.deadlines(settings, job.tier, new Date().toISOString()))
-  const r = await transition(supabase, { jobId, to: 'offered', trigger: 'payment_confirmed', actor: { kind: 'system', id: null }, idemKey: key, eventKind: 'paid', promisedAt: promised, internalAt: internal, detail: { reason_code: 'payment_confirmed' } })
-  await finish(supabase, b.id, r.ok ? 'ok' : 'refused', r.ok ? null : r.code)
+  let r
+  try { r = await transition(supabase, { jobId, to: 'offered', trigger: 'payment_confirmed', actor: { kind: 'system', id: null }, idemKey: key, eventKind: 'paid', promisedAt: promised, internalAt: internal, detail: { reason_code: 'payment_confirmed' } }) }
+  catch (err) { await done('failed', 'EXCEPTION'); throw err }
+  // Phase 1's settlement may have confirmed the payment first: the job is then already past awaiting_payment, which is the outcome wanted
+  const already = !r.ok && r.code === 'ILLEGAL_TRANSITION' && r.state && !['awaiting_payment', 'cancelled'].includes(r.state)
+  await done(r.ok || already ? 'ok' : 'refused', r.ok || already ? null : r.code)
+  if (already) return { ok: true, replay: true, state: r.state, status: 200 }
   return r.ok ? { ok: true, state: r.state, status: 200 } : r
 }
 

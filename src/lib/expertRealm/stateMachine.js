@@ -47,8 +47,9 @@ const RULES = Object.freeze([
   ['in_progress', 'in_review', 'submit_review', ['expert']],
   ['revision', 'in_review', 'submit_review', ['expert']],
   ['in_progress', 'final_checks', 'deliver', ['expert']],
-  ['in_review', 'final_checks', 'review_approved', ['operator']],
-  ['in_review', 'in_progress', 'sent_back', ['operator']],
+  ['in_review', 'final_checks', 'review_approved', ['expert', 'operator']],     // a grader acts as kind 'expert'; the database checks the grader role and that it is not their own job
+  ['in_review', 'in_progress', 'sent_back', ['expert', 'operator']],
+  ['in_review', 'revision', 'sent_back', ['expert', 'operator']],      // the database picks between these two: revision while a revision is being worked, else in_progress
   ['final_checks', 'delivered', 'rescan_passed', ['system']],
   ['final_checks', 'in_progress', 'rescan_failed', ['system']],
   ['delivered', 'accepted', 'accept', ['customer']],
@@ -72,6 +73,8 @@ const RULES = Object.freeze([
   ['revision', 'refunded', 'refund', ['operator', 'system']],
   ['accepted', 'refunded', 'refund', ['operator', 'system']],
   ['disputed', 'refunded', 'refund', ['operator', 'system']],
+  ['disputed', 'accepted', 'dispute_resolved_for_expert', ['operator']],
+  ['disputed', 'in_progress', 'dispute_dismissed', ['operator']],
 ].map(([from, to, trigger, actors]) => Object.freeze({ from, to, trigger, actors: Object.freeze(actors) })))
 
 const findRule = (from, to, trigger) => RULES.find(r => r.from === from && r.to === to && r.trigger === trigger) || null
@@ -89,14 +92,17 @@ const triggersFrom = (from, actorKind) => RULES.filter(r => r.from === from && r
 // Does a state hold an expert? (the invariant the database also enforces)
 const holdsExpert = state => CARRYING.includes(state)
 
-// The one scheduled thing a job is waiting for, by state. Data only in Phase 2A: the minute trigger that acts on it is not built here.
-// ctx: { createdAt, internalDeadlineAt, autoAcceptAt, answerDeadlineAt, pendingExpiryHours }
+// The one scheduled thing a job is waiting for, by state (the database twin is job_next_action_sync in migration 0128; a test keeps them equal).
+// Data only in Phase 2A: the minute trigger that acts on it is not built here.
+// ctx: { createdAt, internalDeadlineAt, autoAcceptAt, answerDeadlineAt, revisionDueAt, pendingExpiryHours }
 function nextActionFor(state, ctx = {}) {
   const at = v => (v ? new Date(v).toISOString() : null)
   switch (state) {
     case 'awaiting_payment': { if (!ctx.createdAt) return null; const h = Number.isFinite(ctx.pendingExpiryHours) ? ctx.pendingExpiryHours : 24
       return { at: new Date(new Date(ctx.createdAt).getTime() + h * 3600e3).toISOString(), kind: 'expire_unpaid' } }
-    case 'claimed': case 'in_progress': case 'revision': return ctx.internalDeadlineAt ? { at: at(ctx.internalDeadlineAt), kind: 'deadline_warning' } : null
+    case 'offered': case 'open': case 'claimed': case 'in_progress': case 'in_review': case 'final_checks':
+      return ctx.internalDeadlineAt ? { at: at(ctx.internalDeadlineAt), kind: 'deadline_warning' } : null
+    case 'revision': { const v = ctx.revisionDueAt || ctx.internalDeadlineAt; return v ? { at: at(v), kind: 'deadline_warning' } : null }
     case 'waiting_customer': return ctx.answerDeadlineAt ? { at: at(ctx.answerDeadlineAt), kind: 'question_timeout' } : null
     case 'delivered': return ctx.autoAcceptAt ? { at: at(ctx.autoAcceptAt), kind: 'auto_accept' } : null
     default: return null

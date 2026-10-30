@@ -13,3 +13,14 @@ delete from job_next_actions where source = 'phase1_backfill';
 --   delete from applied_migrations where version = 127;
 --   update system_state set value = jsonb_set(value, '{version}', '126') where key = 'schema_version';
 -- After level 2, set EXPECTED_SCHEMA_VERSION back to 126 in src/config/constants.js and remove the 0127 line from src/config/migrationLedger.js, or /health reports a schema alert.
+
+-- ---- 0129 (audit A4 pass 1) ---------------------------------------------------------------------------------------------------------
+-- 0129 REPLACES human_job_transition (longer signature), expert_record_payout, adds job_next_action_sync and a trigger on
+-- human_jobs, three rules, and two columns (human_jobs.give_back_until, job_event_keys.trigger_name / to_state). To go back to the 0127 behaviour:
+--   drop trigger if exists human_jobs_sync_engine_trg on human_jobs;  drop function if exists human_jobs_sync_engine();  drop function if exists job_next_action_sync(uuid);
+--   drop function if exists human_job_transition(uuid, text, text, text, uuid, int, uuid, text, jsonb, text, int, timestamptz, int, timestamptz, timestamptz, jsonb, jsonb, int, int, int, int, int, int);
+--   then re-run the "create or replace function human_job_transition" statement from 0127, and the 0124 definitions of expert_record_payout.
+--   delete from job_transition_rules where trigger in ('dispute_resolved_for_expert', 'dispute_dismissed') or (from_state = 'in_review' and to_state = 'revision');
+--   update job_transition_rules set actors = array['operator'] where trigger in ('review_approved', 'sent_back');
+--   delete from applied_migrations where version = 129;  update system_state set value = jsonb_set(value, '{version}', '128') where key = 'schema_version';
+-- (the new columns are harmless and may stay). Then set EXPECTED_SCHEMA_VERSION back to 128 and remove the 0129 line from src/config/migrationLedger.js.

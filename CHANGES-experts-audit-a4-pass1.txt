@@ -1,0 +1,53 @@
+Experts audit A4 (state machine and job engine), pass 1. Base 9e79fa1. Migration 0129.
+
+Confirmed by running real SQL (PGlite) and the real service code; one regression test each in tests/expertRealm.auditEngine1.test.js.
+
+BUGS
+B1  Phase 1 answer / expiry / unassign left backfilled or engine pauses open; the next engine ask_question died on job_pauses_one_open_per_job.
+    A trigger on human_jobs now opens and closes pause rows for EVERY writer; 0129 closes stale open pauses.
+B2  A reused idempotency key for a different transition reported success and did nothing. job_event_keys now stores trigger and target; a mismatch is
+    IDEM_KEY_MISMATCH; a true replay returns the original event id.
+B3  take honoured p_expert, so an expert could take a job for another expert. Now ACTOR_MISMATCH.
+B4  Engine request_revision ignored the 7-day window, dropped the reason, set no revision_due_at and left auto_accept_at. Now enforced and stored.
+B5  Bridge createJobFromPayment answered "ok, replay" to a retry whose first attempt had thrown or been refused. Only a finished call short-cuts now; the
+    others retry with the same key and update their row. An already-confirmed job (Phase 1 got there first) is reported as the success it is.
+B6  Unassign out of a customer wait lost the waiting time and left the pause open (clock overcounted, backfill rows overlapped). Unassign now credits both
+    deadlines and expires the question (A3's 0128 did this in parallel; 0129 keeps its version); backfill rebuilt (a release ends the wait); pausesFromEvents ends on 'released'.
+B7  An expert could deliver around review when review_required. Now REVIEW_REQUIRED (deliver and redeliver).
+B8  Reassign out of waiting_customer stranded a pending question. Questions are expired when the wait ends other than by an answer.
+B9  sent_back after a revision landed in in_progress. The database now returns to revision during a revision (as Phase 1 does).
+B10 Phase 1 accept / reverse / deliver left job_next_actions rows. One SQL function (job_next_action_sync) plus the trigger keep it right for all writers.
+L1  transition() demanded a settings row even for cancel / refund / dispute. Those moves no longer need it.
+L2  claimed_at / give_back_until are cleared when a job goes back to offered / open.
+L3  nextActionFor and SQL are now one rule (job_next_action_sync); a test compares them for every state.
+
+FEATURE GAPS CLOSED
+G1  A dispute freezes earnings (payout skips disputed jobs). Ways out of disputed: dispute_resolved_for_expert (to accepted, needs a delivery) and
+    dispute_dismissed (back to in_progress, only before delivery), both operator. Refund still works.
+G2  Graders: review_approved and sent_back accept actor kind 'expert'; the database requires the grader role and that it is not the grader's own job.
+G3  give_back_until (setting give_back_window_minutes, default 60, seeded); give_back_in_window refused after it. Due-time guards: auto_accept, expired,
+    question_timeout (NOT_DUE). delivered needs an auto_accept time.
+G4  ask_question creates the job_questions row in the transaction (body, options, answer hours), caps at question_max; answered stores the answer; both
+    schedule / clear the timeout.
+G5  delivered writes the delivered document and job_deliveries row in the same transaction (DELIVERY_REQUIRED / NOTHING_SAVED otherwise).
+G6  The revision has its own clock (revision_due_at is the next action).
+G7  offered / open / in_review / final_checks keep a deadline_warning.
+
+DECISIONS TAKEN (change them if you disagree)
+ - Give-back window default is 60 minutes (product spec 11.1); hand-assigned jobs get the same window.
+ - redeliver by the expert is refused while review_required (the pilot default), so a revision goes submit_review -> review_approved -> rescan.
+ - Phase 1 functions keep their signatures; only expert_record_payout is redefined here (human_job_unassign is A3's 0128 version).
+ - Clock-in-transition changes: the service passes settings (window, hours, caps) into the function; nothing is read from code constants.
+
+NOT DONE / DEPENDS ON 2B
+ - cascade_widen has no schedule yet (needs the scheduler and stage settings). The minute trigger itself is still not built.
+ - The 24-hour total cap on customer pauses (product spec 9.3) is the scheduler's job.
+ - tests/migrations.numbering.test.js has two failures that exist on the base commit (0125 does not record itself; the ledger skips it). That is section A10.
+
+TRACED OUT OF A4 (fixed here because they ride on the engine)
+ - A6: expert_record_payout excludes disputed jobs.   A7: bridge replay (B5).   A2: grader actor kind (G2).
+ - Phase 1 customer / admin routes still call the Phase 1 functions; they are now consistent with the engine through the trigger, but moving them onto
+   transition() is a later step.
+
+Files: supabase/migrations/0129_experts_engine_audit_a4.sql, src/lib/expertRealm/{stateMachine,clock}.js, src/services/{humanJobs,expertBridge}.service.js,
+src/config/{constants,migrationLedger}.js, tests/{expertRealm.auditEngine1,migrations.0127.pglite,expertRealm.core}.test.js, docs/experts/phase2a/rollback-0127.sql.

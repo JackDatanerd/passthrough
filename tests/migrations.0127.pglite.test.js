@@ -17,6 +17,7 @@ const read = f => fs.readFileSync(path.join(DIR, f), 'utf8').replace(/create ext
 const U1 = '00000000-0000-4000-8000-0000000000a1'
 const E1 = '00000000-0000-4000-8000-0000000000e1'   // holds the job in carrying states
 const E2 = '00000000-0000-4000-8000-0000000000e2'   // eligible, free
+const G1 = '00000000-0000-4000-8000-0000000000f1'   // a grader
 const E3 = '00000000-0000-4000-8000-0000000000e3'   // no two-factor
 let db, n = 0
 const jobs = {}   // state -> job id
@@ -29,11 +30,15 @@ async function mkJob(state, over = {}) {
   const { rows } = await db.query(`insert into human_jobs (job_number, payment_id, customer_user_id, tier, price_cents, tier_price_cents, expert_pay_cents, state, terms_consent_at, age_attested, rights_attested, expert_id, paid_at, promised_deadline_at, internal_deadline_at, auto_accept_at)
     values ($1, $2, $3, 'forty_eight_hour', 11900, 11900, 7000, $4, now(), true, true, $5, now(), now() + interval '48 hours', now() + interval '40 hours', $6) returning id`,
     [`HJ-${n}`, pid, U1, state, over.expert === undefined ? expert : over.expert, state === 'delivered' ? new Date(Date.now() + 72 * 3600e3).toISOString() : null])
+  await db.query(`update human_jobs set review_required = false, delivered_at = case when state in ('delivered', 'accepted', 'revision') then now() end where id = $1`, [rows[0].id])
+  await db.query(`insert into job_documents (job_id, kind, version, body) values ($1, 'working', 1, '{}')`, [rows[0].id])
   return rows[0].id
 }
 const T = (job, to, trigger, kind, actor, extra = {}) => db.query(
-  `select human_job_transition($1::uuid, $2, $3, $4, $5::uuid, $6::int, $7::uuid, null, '{}'::jsonb, $8, 3, null, $9::int) as r`,
-  [job, to, trigger, kind, actor, extra.version ?? null, extra.expert ?? null, extra.key ?? null, extra.max ?? 2]).then(x => x.rows[0].r)
+  `select human_job_transition($1::uuid, $2, $3, $4, $5::uuid, $6::int, $7::uuid, null, '{}'::jsonb, $8, 3, $10::timestamptz, $9::int, null, null, $11::jsonb, $12::jsonb) as r`,
+  [job, to, trigger, kind, actor, extra.version ?? null, extra.expert ?? null, extra.key ?? null, extra.max ?? 2,
+   new Date(Date.now() + 72 * 3600e3).toISOString(), JSON.stringify(extra.payload || { body: 'Which role?', answer: 'Role A', reason: 'too generic' }),
+   JSON.stringify(extra.delivery === undefined ? { files: {}, score_before: 50, score_after: 70, summary: 's' } : extra.delivery)]).then(x => x.rows[0].r)
 
 beforeAll(async () => {
   db = new PGlite()
@@ -41,12 +46,21 @@ beforeAll(async () => {
     grant usage on schema public to anon, authenticated, service_role;`)
   for (const f of files.filter(f => f < MIG)) await db.exec(read(f))
   await db.exec(read(MIG))
+  for (const f of files.filter(f => f > MIG)) await db.exec(read(f))   // later migrations (0129 replaces the transition function)
   await db.exec(`insert into users (id, name, email, password_hash) values ('${U1}', 'U', 'u@example.com', 'h')`)
-  for (const [id, em, totp] of [[E1, 'e1', true], [E2, 'e2', true], [E3, 'e3', false]])
-    await db.query(`insert into expert_accounts (id, email, password_hash, display_first_name, display_initial, status, enabled, totp_enabled_at, agreement_signed_at, agreement_version)
-      values ($1, $2, 'h', 'Ex', 'P', 'active', true, ${totp ? 'now()' : 'null'}, now(), 'v1')`, [id, `${em}@example.com`])
+  for (const [id, em, totp, roles] of [[E1, 'e1', true, '{expert}'], [E2, 'e2', true, '{expert}'], [E3, 'e3', false, '{expert}'], [G1, 'g1', true, '{grader}']])
+    await db.query(`insert into expert_accounts (id, email, password_hash, roles, display_first_name, display_initial, status, enabled, totp_enabled_at, agreement_signed_at, agreement_version)
+      values ($1, $2, 'h', $3, 'Ex', 'P', 'active', true, ${totp ? 'now()' : 'null'}, now(), 'v1')`, [id, `${em}@example.com`, roles])
   for (const s of SM.STATES) jobs[s] = await mkJob(s)
 }, 280000)
+
+// the guards from the spec need their preconditions: window open, due times passed, a pending question, a delivery to restore
+async function prep(job, trigger) {
+  await db.query(`update human_jobs set give_back_until = now() + interval '30 minutes', created_at = now() - interval '3 days',
+    auto_accept_at = case when state = 'delivered' then now() - interval '1 hour' else auto_accept_at end,
+    delivered_at = case when $2 = 'dispute_resolved_for_expert' then now() - interval '1 day' else delivered_at end where id = $1`, [job, trigger])
+  if (['answered', 'question_timeout'].includes(trigger)) await db.query(`insert into job_questions (job_id, seq, body, answer_deadline_at) values ($1, 1, 'q', now() - interval '1 hour') on conflict do nothing`, [job])
+}
 
 describe('migration 0127: rules and grants', () => {
   it('seeds exactly the rules the JavaScript table has', async () => {
@@ -64,9 +78,9 @@ describe('migration 0127: rules and grants', () => {
       const { rows } = await db.query(`select has_table_privilege('anon', $1, 'select') a, has_table_privilege('authenticated', $1, 'select') b, (select relrowsecurity from pg_class where relname = $1) rls`, [t])
       expect(rows[0], t).toEqual({ a: false, b: false, rls: true })
     }
-    const { rows } = await db.query(`select has_function_privilege('anon', 'human_job_transition(uuid,text,text,text,uuid,int,uuid,text,jsonb,text,int,timestamptz,int,timestamptz,timestamptz)', 'execute') a,
-      has_function_privilege('authenticated', 'human_job_transition(uuid,text,text,text,uuid,int,uuid,text,jsonb,text,int,timestamptz,int,timestamptz,timestamptz)', 'execute') b,
-      has_function_privilege('service_role', 'human_job_transition(uuid,text,text,text,uuid,int,uuid,text,jsonb,text,int,timestamptz,int,timestamptz,timestamptz)', 'execute') c`)
+    const { rows } = await db.query(`select has_function_privilege('anon', 'human_job_transition(uuid,text,text,text,uuid,int,uuid,text,jsonb,text,int,timestamptz,int,timestamptz,timestamptz,jsonb,jsonb,int,int,int,int,int,int)', 'execute') a,
+      has_function_privilege('authenticated', 'human_job_transition(uuid,text,text,text,uuid,int,uuid,text,jsonb,text,int,timestamptz,int,timestamptz,timestamptz,jsonb,jsonb,int,int,int,int,int,int)', 'execute') b,
+      has_function_privilege('service_role', 'human_job_transition(uuid,text,text,text,uuid,int,uuid,text,jsonb,text,int,timestamptz,int,timestamptz,timestamptz,jsonb,jsonb,int,int,int,int,int,int)', 'execute') c`)
     expect(rows[0]).toEqual({ a: false, b: false, c: true })
   })
 })
@@ -80,10 +94,10 @@ describe('human_job_transition: every state x target x trigger x actor', () => {
       for (const [to, trigger] of pairs) {
         for (const kind of SM.ACTOR_KINDS) {
           const expectLegal = SM.check({ from, to, trigger, actorKind: kind }).ok
-          const actor = kind === 'expert' ? (trigger === 'take' ? E2 : E1) : kind === 'customer' ? U1 : null
+          const actor = kind === 'expert' ? (trigger === 'take' ? E2 : ['review_approved', 'sent_back'].includes(trigger) ? G1 : E1) : kind === 'customer' ? U1 : null
           await db.exec('begin')
           let r
-          try { r = await T(jobs[from], to, trigger, kind, actor, { expert: ['take', 'assign', 'reassign'].includes(trigger) ? E2 : null }) } finally { await db.exec('rollback') }
+          try { await prep(jobs[from], trigger); r = await T(jobs[from], to, trigger, kind, actor, { expert: ['take', 'assign', 'reassign'].includes(trigger) ? E2 : null }) } finally { await db.exec('rollback') }
           if (expectLegal) { legal++; if (!r.ok) bad.push(`${from}>${to}:${trigger}:${kind} refused ${r.code}`) }
           else { illegal++; if (r.ok || r.code !== 'ILLEGAL_TRANSITION') bad.push(`${from}>${to}:${trigger}:${kind} should be ILLEGAL, got ${JSON.stringify(r)}`) }
         }
@@ -194,6 +208,8 @@ describe('human_job_transition: behaviour', () => {
     expect((await T(j, 'in_progress', 'first_save', 'expert', E1)).ok).toBe(true)
     expect((await db.query(`select next_action_kind k from job_next_actions where job_id = $1`, [j])).rows[0].k).toBe('deadline_warning')
     expect((await T(j, 'in_review', 'submit_review', 'expert', E1)).ok).toBe(true)
+    expect((await db.query(`select next_action_kind k from job_next_actions where job_id = $1`, [j])).rows[0].k).toBe('deadline_warning')   // in review it is still on the clock (A4 G7)
+    expect((await T(j, 'final_checks', 'review_approved', 'expert', G1)).ok).toBe(true); expect((await T(j, 'disputed', 'dispute', 'customer', U1)).ok).toBe(true)
     expect((await db.query(`select count(*)::int n from job_next_actions where job_id = $1`, [j])).rows[0].n).toBe(0)
   })
   it('every event records from, to and trigger, and no event holds resume text', async () => {
