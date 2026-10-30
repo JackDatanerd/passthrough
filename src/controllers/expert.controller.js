@@ -71,7 +71,7 @@ async function saveDocument(c) {
   if (errors.length) return bad(c, 'Some of that cannot be saved: locked details and read-only lines cannot be changed, and contact details cannot be typed into the text.', 422, { errors })
   const { data, error } = await supabase.rpc('human_job_expert_save', { p_job: id, p_expert: e.id, p_base_version: p.data.baseVersion, p_body: p.data.body, p_cover: p.data.coverLetter || null, p_seconds: p.data.seconds || 0 })
   if (error) throw error
-  if (!data.ok) return bad(c, data.reason === 'conflict' ? 'This document changed in another window. Reload it before editing.' : NO_ACCESS, data.reason === 'conflict' ? 409 : 403, { current: data.current_version })
+  if (!data.ok) return bad(c, data.reason === 'conflict' ? 'This document changed in another window. Reload it before editing.' : data.reason === 'bad_request' ? 'That document could not be read.' : NO_ACCESS, data.reason === 'conflict' ? 409 : data.reason === 'bad_request' ? 400 : 403, { current: data.current_version })
   return c.json({ success: true, data: { version: data.version } })
 }
 

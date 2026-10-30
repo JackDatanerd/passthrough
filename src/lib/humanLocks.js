@@ -52,6 +52,8 @@ function isPhone(s) {
 }
 
 const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// two-letter words a two-letter NAME part must never blank out of ordinary sentences
+const SHORT_WORDS = new Set(['am', 'an', 'as', 'at', 'be', 'by', 'do', 'go', 'he', 'hi', 'if', 'in', 'is', 'it', 'me', 'my', 'no', 'of', 'on', 'or', 'so', 'to', 'up', 'us', 'we'])
 const B_L = '(?<![\\p{L}\\p{N}_])', B_R = '(?![\\p{L}\\p{N}_])'
 
 // The client's name: the whole name in either order, then each part. A part is matched with the capitalisation it was written with (or
@@ -64,7 +66,7 @@ function nameMatchers(name) {
     out.push(new RegExp(`${B_L}${[...parts].reverse().map(escapeRe).join('[\\s,.]+')}${B_R}`, 'giu'))
   }
   for (const p of new Set(parts)) {
-    if (p.length < 3) continue
+    if (p.length < 2 || (p.length === 2 && SHORT_WORDS.has(p.toLowerCase()))) continue      // two-letter parts ("Li Wu") too, unless an ordinary word
     const forms = [...new Set([p, p.toUpperCase(), p[0].toUpperCase() + p.slice(1).toLowerCase()])]
     out.push(new RegExp(`${B_L}(?:${forms.map(escapeRe).join('|')})${B_R}`, 'gu'))
   }

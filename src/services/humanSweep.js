@@ -24,7 +24,7 @@ async function purgeJob(env, supabase, jobId) {
   for (const [table, col] of [['job_documents', 'job_id'], ['job_locked_values', 'job_id'], ['job_questions', 'job_id']]) {
     const { error } = await supabase.from(table).delete().eq(col, jobId); if (error) throw error
   }
-  await supabase.from('job_materials').update({ status: 'removed', extracted_masked_text: null, link_url: null, original_object_key: null }).eq('job_id', jobId)
+  await supabase.from('job_materials').update({ status: 'removed', label: null, extracted_masked_text: null, link_url: null, original_object_key: null }).eq('job_id', jobId)
   await supabase.from('job_deliveries').update({ files: {}, diff: null, report: null }).eq('job_id', jobId)
   await supabase.from('human_jobs').update({ purged_at: new Date().toISOString(), brief: {}, revision_reason: null }).eq('id', jobId)
   await supabase.from('job_events').insert({ job_id: jobId, kind: 'purged', actor_kind: 'system', detail: {} })

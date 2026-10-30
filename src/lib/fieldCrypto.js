@@ -61,6 +61,24 @@ async function openTaxId(env, stored) {
   }
 }
 
+// Like openTaxId, but an unreadable sealed value THROWS (code LOCKED_VALUE_UNREADABLE) instead of reading as ''. For values that are
+// restored into a customer's document (a job's locked contact details): a blank there would silently ship a resume with no name or email.
+async function openSealedStrict(env, stored) {
+  const fail = why => { const e = new Error(`sealed value unreadable: ${why}`); e.code = 'LOCKED_VALUE_UNREADABLE'; return e }
+  if (stored == null || stored === '') throw fail('empty')
+  if (!isSealed(stored)) return String(stored)
+  if (!stored.startsWith(PREFIX)) throw fail('unknown format')
+  const key = await keyFor(env)
+  if (!key) throw fail('no key')
+  let out
+  try {
+    const [iv, ct] = stored.slice(PREFIX.length).split(':')
+    out = new TextDecoder().decode(await webcrypto().subtle.decrypt({ name: 'AES-GCM', iv: fromB64(iv) }, key, fromB64(ct)))
+  } catch { throw fail('wrong key or damaged') }
+  if (out === '') throw fail('empty')
+  return out
+}
+
 // Seals every legacy plain-text tax ID. Safe to re-run: sealed rows are skipped. Used by scripts/encrypt-tax-ids.cjs.
 async function sealLegacyTaxIds(supabase, env, { apply = false } = {}) {
   if (!(await keyFor(env))) throw new Error('TAX_ID_ENCRYPTION_KEY is missing or is not 32 bytes of base64')
@@ -83,4 +101,4 @@ async function sealLegacyTaxIds(supabase, env, { apply = false } = {}) {
   return { sealed, skipped, applied: apply }
 }
 
-module.exports = { PREFIX, hasKey, isSealed, sealTaxId, openTaxId, sealLegacyTaxIds }
+module.exports = { PREFIX, hasKey, isSealed, sealTaxId, openTaxId, openSealedStrict, sealLegacyTaxIds }

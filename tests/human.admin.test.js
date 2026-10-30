@@ -38,7 +38,7 @@ function delivery(w, { pdfFails = false } = {}) {
   const sent = []; const calls = []; const b = bucket()
   w.rpcs.human_job_deliver = a => { calls.push(a); const j = w.t.human_jobs[0]; j.state = 'delivered'; return { data: { ok: true, delivery_version: (j.revision_count || 0) + 1 }, error: null } }
   t = loadWithStubs('services/humanDelivery.service.js', {
-    'lib/fieldCrypto.js': { openTaxId: async (e, v) => String(v).replace(/^enc:/, ''), hasKey: () => true },
+    'lib/fieldCrypto.js': { openTaxId: async (e, v) => String(v).replace(/^enc:/, ''), openSealedStrict: async (e, v) => String(v).replace(/^enc:/, ''), hasKey: () => true },
     'services/pdf.service.js': { generateResumePDF: async () => { if (pdfFails) throw new Error('browser busy'); return new Uint8Array([37, 80, 68, 70]) } },
     'services/email.service.js': { sendHumanDelivered: async (...a) => { sent.push(a[2]); return true } },
   })
@@ -58,6 +58,19 @@ describe('review', () => {
     const w = world({ working: body }); const d = delivery(w)
     const r = await d.svc.buildReview(d.env, w.db, J, OP)
     expect(r.missing).toContain('lock:email'); expect(r.newFigures).toEqual(['55%'])
+  })
+  it('A3: a locked value that cannot be read stops the review and the delivery (it used to restore as a blank name and email)', async () => {
+    const w = world(); const d = delivery(w)
+    const unreadable = Object.assign(new Error('wrong key'), { code: 'LOCKED_VALUE_UNREADABLE' })
+    const t2 = loadWithStubs('services/humanDelivery.service.js', {
+      'lib/fieldCrypto.js': { openSealedStrict: async () => { throw unreadable }, hasKey: () => true },
+      'services/pdf.service.js': { generateResumePDF: async () => new Uint8Array([1]) }, 'services/email.service.js': { sendHumanDelivered: async () => true } })
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      expect(await t2.mod.buildReview(d.env, w.db, J, OP)).toEqual({ ok: false, code: 'LOCKED_UNREADABLE' })
+      expect(await t2.mod.deliver(d.env, w.db, J, OP, {})).toMatchObject({ ok: false, code: 'LOCKED_UNREADABLE' })
+      expect(d.calls).toHaveLength(0); expect(d.sent).toHaveLength(0)
+    } finally { err.mockRestore(); t2.restore() }
   })
   it('figures the customer supplied (brief top results, an answered question) are not flagged', async () => {
     const body = JSON.parse(JSON.stringify(SRC.body)); body.experience[0].bullets = ['Grew users 40% to 12000 accounts.']

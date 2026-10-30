@@ -36,7 +36,7 @@ function build({ user = { id: U1, email: 'a@b.c', name: 'A' }, world: w = null, 
     'config/supabase.js': { getSupabase: () => world.db },
     'middleware/auth.js': async (c, next) => { if (user) c.set('user', user); else return c.json({ success: false, message: 'Authentication required.' }, 401); return next() },
     'services/paystack.service.js': { initializeTransaction: async (env, a) => { init.push(a); if (paystack) return paystack(a); return { access_code: 'AC1', authorization_url: 'https://paystack.test/x' } } },
-    'lib/fieldCrypto.js': { hasKey: () => true, sealTaxId: async (e, v) => `enc:${v}`, openTaxId: async (e, v) => String(v).replace(/^enc:/, '') },
+    'lib/fieldCrypto.js': { hasKey: () => true, sealTaxId: async (e, v) => `enc:${v}`, openTaxId: async (e, v) => String(v).replace(/^enc:/, ''), openSealedStrict: async (e, v) => String(v).replace(/^enc:/, '') },
     'services/email.service.js': { sendOwnerAlert: async () => {} },
   }
   // controllers destructure their stubs at load: drop every cached module of this feature so each build binds its own world

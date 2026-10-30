@@ -35,7 +35,7 @@ async function build({ account = {}, rpcs = {}, settings = true } = {}) {
   for (const k of Object.keys(require_.cache)) if (/[\\/]src[\\/](controllers[\\/](expert|human)|routes[\\/](expert|human)|middleware[\\/](expertAuth|humanLimits))/.test(k)) delete require_.cache[k]
   t = loadWithStubs('routes/expert.routes.js', {
     'config/supabase.js': { getSupabase: () => world.db },
-    'lib/fieldCrypto.js': { hasKey: () => true, sealTaxId: async (e, v) => `enc:${v}`, openTaxId: async (e, v) => String(v).replace(/^enc:/, '') },
+    'lib/fieldCrypto.js': { hasKey: () => true, sealTaxId: async (e, v) => `enc:${v}`, openTaxId: async (e, v) => String(v).replace(/^enc:/, ''), openSealedStrict: async (e, v) => String(v).replace(/^enc:/, '') },
     'services/email.service.js': { sendHumanQuestion: async () => true, sendOwnerNotice: async () => true, sendOwnerAlert: async () => {} },
   })
   const app = new Hono(); app.route('/api/expert', t.mod); app.notFound(c => c.json({ success: false, message: 'Not found.' }, 404))

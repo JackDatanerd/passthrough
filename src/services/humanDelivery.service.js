@@ -27,7 +27,7 @@ async function loadLocked(env, supabase, jobId) {
   const { data, error } = await supabase.from('job_locked_values').select('path, value_enc').eq('job_id', jobId)
   if (error) throw error
   const locked = {}
-  for (const r of data || []) locked[r.path] = await fieldCrypto.openTaxId(env, r.value_enc)
+  for (const r of data || []) locked[r.path] = await fieldCrypto.openSealedStrict(env, r.value_enc)   // an unreadable value must stop the review: a blank would ship a resume with no name or email
   return locked
 }
 
@@ -52,7 +52,8 @@ async function buildReview(env, supabase, jobId, operatorId) {
   const [working, source, aiDraft] = await Promise.all([latestDoc(supabase, jobId, 'working'), latestDoc(supabase, jobId, 'source'), latestDoc(supabase, jobId, 'ai_draft')])
   if (!working) return { ok: false, code: 'NOTHING_SAVED' }
   await logView(supabase, operatorId, 'review_job_content', jobId, { state: job.state })
-  const locked = await loadLocked(env, supabase, jobId)
+  let locked
+  try { locked = await loadLocked(env, supabase, jobId) } catch (err) { if (err && err.code === 'LOCKED_VALUE_UNREADABLE') { console.error('[CRITICAL] humanDelivery:', err.message, 'job', jobId); return { ok: false, code: 'LOCKED_UNREADABLE' } } throw err }
   const base = aiDraft || source
   // only the lock markers the document the expert STARTED from carried can be missing: a field the customer's draft never had is not "lost"
   const required = base ? Object.keys(locks.markerCounts(base.body)).filter(k => k.startsWith('lock:')) : null

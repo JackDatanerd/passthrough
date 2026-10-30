@@ -62,19 +62,19 @@ async function getOrder(c) {
 const assignBody = z.object({ expertId: z.string().refine(isUuid) }).strict()
 async function assign(c) {
   const p = assignBody.safeParse(await readJson(c)); if (!p.success) return bad(c, 'Choose an expert.')
-  const id = c.req.param('id'); const supabase = getSupabase(c.env)
+  const id = c.req.param('id'); if (!isUuid(id)) return bad(c, 'Order not found.', 404); const supabase = getSupabase(c.env)
   const s = await pilot.loadSettings(supabase); if (!s) return bad(c, 'Settings missing.', 503)
   const { data, error } = await supabase.rpc('human_job_assign', { p_job: id, p_expert: p.data.expertId, p_operator: opId(c), p_max_active: s.concurrent_cap || 2 })
   if (error) throw error
   const msg = { not_found: 'Order not found.', not_assignable: 'This order cannot be assigned now.', not_eligible: 'That expert is not switched on, active and a worker.', two_factor_missing: 'That expert has not set up two-factor yet.',
-    agreement_missing: 'The expert agreement is not marked signed.', cap: 'That expert is at their limit of open jobs.' }
+    agreement_missing: 'The expert agreement is not marked signed.', conflict_of_interest: 'That expert is the customer on this order (same email). Choose someone else.', cap: 'That expert is at their limit of open jobs.' }
   if (!data.ok) return bad(c, msg[data.reason] || 'Could not assign.', data.reason === 'not_found' ? 404 : 409, { code: data.reason })
   await logAdminAction(c, supabase, 'human.assign', 'human_job', id, { expertId: p.data.expertId })
   return c.json({ success: true })
 }
 
 async function unassign(c) {
-  const body = (await readJson(c)) || {}; const id = c.req.param('id'); const supabase = getSupabase(c.env)
+  const body = (await readJson(c)) || {}; const id = c.req.param('id'); if (!isUuid(id)) return bad(c, 'Order not found.', 404); const supabase = getSupabase(c.env)
   const { data, error } = await supabase.rpc('human_job_unassign', { p_job: id, p_operator: opId(c), p_reason: typeof body.reason === 'string' ? body.reason.slice(0, 120) : null })
   if (error) throw error
   if (!data.ok) return bad(c, 'This order cannot be taken back now.', 409, { code: data.reason })
@@ -85,7 +85,7 @@ async function unassign(c) {
 async function review(c) {
   const id = c.req.param('id'); if (!isUuid(id)) return bad(c, 'Not found.', 404)
   const r = await delivery.buildReview(c.env, getSupabase(c.env), id, opId(c))
-  if (!r.ok) return bad(c, r.code === 'NOT_REVIEWABLE' ? 'There is nothing to review in this state.' : 'Nothing to review.', r.code === 'NOT_FOUND' ? 404 : 409, { code: r.code })
+  if (!r.ok) return bad(c, r.code === 'NOT_REVIEWABLE' ? 'There is nothing to review in this state.' : r.code === 'LOCKED_UNREADABLE' ? 'The customer\'s locked details cannot be read (key problem). Do not deliver; fix the encryption key first.' : 'Nothing to review.', r.code === 'NOT_FOUND' ? 404 : r.code === 'LOCKED_UNREADABLE' ? 503 : 409, { code: r.code })
   const { job, ...rest } = r
   return c.json({ success: true, data: { ...rest, state: job.state, tier: job.tier, brief: job.brief } })
 }
@@ -108,8 +108,8 @@ async function deliverOrder(c) {
   const r = await delivery.deliver(c.env, supabase, id, opId(c), p.data)
   if (!r.ok) {
     const msg = { MARKERS_MISSING: 'Locked details are missing from the document. Send it back to the expert.', UNCONFIRMED_FIGURES: 'Some figures are not in anything the customer gave us. Confirm each one, or give a reason to override.',
-      NOT_IN_REVIEW: 'This order is not waiting for review.', PDF_FAILED: 'The PDF could not be built. Try again in a minute.', NO_SETTINGS: 'Settings missing.', NOT_FOUND: 'Order not found.', NOTHING_SAVED: 'Nothing was saved.' }
-    return bad(c, msg[r.code] || 'Could not deliver.', ['NOT_FOUND'].includes(r.code) ? 404 : r.code === 'PDF_FAILED' ? 502 : 409, { code: r.code, figures: r.figures, missing: r.missing })
+      NOT_IN_REVIEW: 'This order is not waiting for review.', PDF_FAILED: 'The PDF could not be built. Try again in a minute.', NO_SETTINGS: 'Settings missing.', NOT_FOUND: 'Order not found.', NOTHING_SAVED: 'Nothing was saved.', LOCKED_UNREADABLE: 'The customer\'s locked details cannot be read (key problem). Fix the encryption key before delivering.' }
+    return bad(c, msg[r.code] || 'Could not deliver.', ['NOT_FOUND'].includes(r.code) ? 404 : r.code === 'PDF_FAILED' ? 502 : r.code === 'LOCKED_UNREADABLE' ? 503 : 409, { code: r.code, figures: r.figures, missing: r.missing })
   }
   await logAdminAction(c, supabase, 'human.deliver', 'human_job', id, { version: r.deliveryVersion, overridden: !!p.data.overrideReason })
   return c.json({ success: true, data: r })

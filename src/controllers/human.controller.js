@@ -83,7 +83,7 @@ async function getConfig(ctx) {
   if (!user || !pilot.userAllowed(ctx.env, user)) return ctx.json({ success: true, data: { available: false } })
   const supabase = getSupabase(ctx.env)
   const s = await pilot.loadSettings(supabase)
-  if (!s || c.activeCurrency(ctx.env) !== 'USD' || !fieldCrypto.hasKey(ctx.env)) return ctx.json({ success: true, data: { available: false } })
+  if (!s || c.activeCurrency(ctx.env) !== 'USD' || !(await fieldCrypto.hasKey(ctx.env))) return ctx.json({ success: true, data: { available: false } })
   const tiers = pilot.TIERS.filter(t => s.tiers_enabled[t]).map(t => ({
     tier: t, label: pilot.tierLabel(t), priceCents: s.prices[t], turnaroundHours: (s.turnaround_hours && s.turnaround_hours[t]) || null }))
   const full = await capacityLeft(supabase, s)
@@ -109,7 +109,7 @@ async function loadShared(env, supabase, jobId) {
   if (error) throw error
   const shared = { locked: {}, n: 0 }
   for (const r of data || []) {
-    shared.locked[r.path] = await fieldCrypto.openTaxId(env, r.value_enc)
+    shared.locked[r.path] = await fieldCrypto.openSealedStrict(env, r.value_enc)   // throws rather than read as blank: later text must never be locked over a lost value
     const m = /^c:(\d+)$/.exec(r.path); if (m) shared.n = Math.max(shared.n, Number(m[1]))
   }
   return shared
@@ -132,7 +132,7 @@ async function createOrder(ctx) {
   if (!parsed.success) return bad(ctx, 'Please check the form: ' + (parsed.error.issues[0]?.message || 'invalid'), 400, { field: parsed.error.issues[0]?.path?.join('.') })
   const body = parsed.data
   if (c.activeCurrency(ctx.env) !== 'USD') return bad(ctx, 'Human rewrite is not available in this currency yet.', 503)
-  if (!fieldCrypto.hasKey(ctx.env)) { console.error('[CRITICAL] human order: no field encryption key'); return bad(ctx, 'Human rewrite is not available right now.', 503) }
+  if (!(await fieldCrypto.hasKey(ctx.env))) { console.error('[CRITICAL] human order: no field encryption key'); return bad(ctx, 'Human rewrite is not available right now.', 503) }
   const supabase = getSupabase(ctx.env)
   const settings = await pilot.loadSettings(supabase)
   if (!settings) { console.error('[CRITICAL] human order: settings missing'); return bad(ctx, 'Human rewrite is not available right now.', 503) }
