@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import api, { getErrorMessage } from '../../lib/api'
 import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
@@ -55,7 +55,7 @@ function Orders() {
 
 function OrderPanel({ id, onClose }) {
   const [d, setD] = useState(null); const [experts, setExperts] = useState([]); const [err, setErr] = useState(''); const [msg, setMsg] = useState(''); const [pick, setPick] = useState(''); const [rev, setRev] = useState(null)
-  const [askRefund, setAskRefund] = useState(false); const [conf, setConf] = useState([]); const [override, setOverride] = useState(''); const [summary, setSummary] = useState(''); const [note, setNote] = useState(''); const [rec, setRec] = useState({ expertMinutes: '', otherCostCents: '', lateCreditCents: '' }); const [busy, setBusy] = useState(false)
+  const [askRefund, setAskRefund] = useState(false); const [conf, setConf] = useState([]); const [override, setOverride] = useState(''); const [summary, setSummary] = useState(''); const [note, setNote] = useState(''); const [rec, setRec] = useState({ expertMinutes: '', otherCostCents: '' }); const [credit, setCredit] = useState(''); const [busy, setBusy] = useState(false)
   const load = useCallback(async () => { try { setD((await api.get(`${H}/orders/${id}`)).data.data) } catch (e) { setErr(getErrorMessage(e, 'Could not load that order.')) } }, [id])
   useEffect(() => { load(); api.get(`${H}/experts`).then(r => setExperts(r.data.data.experts)).catch(() => {}) }, [load])
   const run = async (fn, ok) => { setBusy(true); setErr(''); setMsg(''); try { await fn(); if (ok) setMsg(ok); await load() } catch (e) { const r = e?.response?.data; setErr(r?.message || getErrorMessage(e, 'That did not work.')); if (r?.figures) setRev(v => ({ ...(v || {}), blocked: r.figures })) } finally { setBusy(false) } }
@@ -89,9 +89,11 @@ function OrderPanel({ id, onClose }) {
         </div>)}
 
       {d.deliveries.length > 0 && <p className="mt-2 text-xs text-gray-600">Deliveries: {d.deliveries.map(x => `v${x.version} ${x.score_before ?? '?'}\u2192${x.score_after ?? '?'}`).join(', ')}</p>}
-      <div className="mt-3 grid grid-cols-3 gap-2"><Input label="Expert minutes (override)" inputMode="numeric" value={rec.expertMinutes} onChange={e => setRec(r => ({ ...r, expertMinutes: e.target.value }))} /><Input label="Other cost (cents)" inputMode="numeric" value={rec.otherCostCents} onChange={e => setRec(r => ({ ...r, otherCostCents: e.target.value }))} /><Input label="Late credit given (cents)" inputMode="numeric" value={rec.lateCreditCents} onChange={e => setRec(r => ({ ...r, lateCreditCents: e.target.value }))} /></div>
+      <div className="mt-3 grid grid-cols-2 gap-2"><Input label="Expert minutes (override)" inputMode="numeric" value={rec.expertMinutes} onChange={e => setRec(r => ({ ...r, expertMinutes: e.target.value }))} /><Input label="Other cost (cents)" inputMode="numeric" value={rec.otherCostCents} onChange={e => setRec(r => ({ ...r, otherCostCents: e.target.value }))} /></div>
       <div className="mt-2 flex flex-wrap gap-2">
-        <Button variant="secondary" disabled={busy} onClick={() => run(() => api.post(`${H}/orders/${id}/record`, Object.fromEntries(Object.entries({ expertMinutes: rec.expertMinutes, otherCostCents: rec.otherCostCents, lateCreditCents: rec.lateCreditCents }).filter(([, v]) => v !== '').map(([k, v]) => [k, Number(v)]))), 'Recorded.')}>Record</Button>
+        <Button variant="secondary" disabled={busy} onClick={() => run(() => api.post(`${H}/orders/${id}/record`, Object.fromEntries(Object.entries({ expertMinutes: rec.expertMinutes, otherCostCents: rec.otherCostCents }).filter(([, v]) => v !== '').map(([k, v]) => [k, Number(v)]))), 'Recorded.')}>Record</Button>
+        {j.paid_at && d.payment?.status === 'SUCCESS' && !['awaiting_payment', 'cancelled', 'refunded'].includes(j.state) && (<span className="flex items-end gap-1"><Input label={`Late credit (cents, given so far ${usd(j.late_credit_cents || 0)})`} inputMode="numeric" value={credit} onChange={e => setCredit(e.target.value.replace(/\D/g, ''))} />
+          <Button variant="secondary" disabled={busy || !credit || Number(credit) <= 0} onClick={() => run(async () => { await api.post(`${H}/orders/${id}/late-credit`, { amountCents: Number(credit) }); setCredit('') }, 'Credit sent to the customer as a partial refund.')}>Send credit</Button></span>)}
         {j.state === 'delivered' && <Button variant="secondary" disabled={busy} onClick={() => run(() => api.post(`${H}/orders/${id}/accept`, {}), 'Accepted for the customer.')}>Mark accepted</Button>}
         {['offered', 'claimed', 'in_progress', 'waiting_customer', 'in_review', 'delivered', 'revision', 'accepted'].includes(j.state) && d.payment?.status === 'SUCCESS' && <Button variant="danger" disabled={busy} onClick={() => setAskRefund(true)}>Refund</Button>}
       </div>
@@ -103,7 +105,8 @@ function OrderPanel({ id, onClose }) {
 }
 
 function Experts() {
-  const [list, setList] = useState(null); const [err, setErr] = useState(''); const [msg, setMsg] = useState(''); const [f, setF] = useState({ email: '', firstName: '', initial: '' }); const [pay, setPay] = useState({}); const [busy, setBusy] = useState(false)
+  const [list, setList] = useState(null); const [err, setErr] = useState(''); const [msg, setMsg] = useState(''); const [f, setF] = useState({ email: '', firstName: '', initial: '' }); const [pay, setPay] = useState({}); const [busy, setBusy] = useState(false); const [open, setOpen] = useState(null); const keys = useRef({})
+  const keyFor = id => { if (!keys.current[id]) keys.current[id] = `po-${id.slice(0, 8)}-${crypto.randomUUID()}`; return keys.current[id] }   // one key per ATTEMPT (kept across a retry, replaced after a success), never derived from what was typed
   const load = useCallback(async () => { try { setList((await api.get(`${H}/experts`)).data.data.experts) } catch (e) { setErr(getErrorMessage(e, 'Could not load experts.')); setList([]) } }, [])
   useEffect(() => { load() }, [load])
   const run = async (fn, ok) => { setBusy(true); setErr(''); setMsg(''); try { const r = await fn(); setMsg(typeof ok === 'function' ? ok(r) : ok); await load() } catch (e) { setErr(e?.response?.data?.message || getErrorMessage(e, 'That did not work.')) } finally { setBusy(false) } }
@@ -118,7 +121,7 @@ function Experts() {
           { key: 'status', header: 'Status', cell: x => `${x.status}${x.enabled ? ' \u00b7 ON' : ' \u00b7 off'}` },
           { key: 'setup', header: 'Setup', cellClassName: 'text-xs', cell: x => `${x.twoFactor ? '2FA \u2713' : '2FA \u2717'} \u00b7 ${x.agreementSigned ? 'agreement \u2713' : 'agreement \u2717'}` },
           { key: 'open', header: 'Open', cell: x => x.openJobs },
-          { key: 'money', header: 'Available / hold / paid', cell: x => `${usd(x.availableCents)} / ${usd(x.onHoldCents)} / ${usd(x.paidCents)}` },
+          { key: 'money', header: 'Available / hold / paid', cell: x => `${usd(x.availableCents)} / ${usd(x.onHoldCents)} / ${usd(x.paidCents)}${x.frozenCents ? ` \u00b7 ${usd(x.frozenCents)} frozen (payment disputed)` : ''}` },
           { key: 'actions', header: <span className="sr-only">Actions</span>, cellClassName: 'whitespace-nowrap', cell: x => (
             <div className="flex flex-wrap items-center gap-1">
               <Button size="sm" variant="secondary" disabled={busy} onClick={() => patch(x.id, { enabled: !x.enabled }, x.enabled ? 'Switched off.' : 'Switched on.')}>{x.enabled ? 'Switch off' : 'Switch on'}</Button>
@@ -126,12 +129,34 @@ function Experts() {
               <Button size="sm" variant="ghost" disabled={busy} onClick={() => patch(x.id, { resetTwoFactor: true }, 'Two-factor reset.')}>Reset 2FA</Button>
               <Button size="sm" variant="ghost" disabled={busy} onClick={() => patch(x.id, { resetPassword: true }, 'Password reset.')}>Reset password</Button>
               <Input aria-label={`Payment reference for ${x.name}`} placeholder="M-Pesa ref" value={pay[x.id] || ''} onChange={e => setPay(p => ({ ...p, [x.id]: e.target.value }))} />
-              <Button size="sm" disabled={busy || x.availableCents <= 0 || !(pay[x.id] || '').trim()} onClick={() => run(() => api.post(`${H}/payouts`, { expertId: x.id, method: 'manual', reference: pay[x.id].trim(), idempotencyKey: `${x.id}-${(pay[x.id] || '').trim()}` }), r => `Recorded ${usd(r.data.data.amount_cents)}${r.data.data.already ? ' (already recorded)' : ''}.`)}>Record payout</Button>
+              <Button size="sm" disabled={busy || x.availableCents <= 0 || !(pay[x.id] || '').trim()} onClick={() => run(() => api.post(`${H}/payouts`, { expertId: x.id, method: 'manual', reference: pay[x.id].trim(), idempotencyKey: keyFor(x.id) }), r => { delete keys.current[x.id]; setPay(p => ({ ...p, [x.id]: '' })); return `Recorded ${usd(r.data.data.amount_cents)}${r.data.data.already ? ' (already recorded)' : ''}.` })}>Record payout</Button>
+              <Button size="sm" variant="ghost" onClick={() => setOpen(open === x.id ? null : x.id)}>{open === x.id ? 'Hide ledger' : 'Ledger'}</Button>
             </div>) },
         ]} />
+      {open && <Ledger expertId={open} onChanged={load} />}
       <div className="grid gap-2 sm:grid-cols-4"><Input label="Email" value={f.email} onChange={e => setF(x => ({ ...x, email: e.target.value }))} /><Input label="First name" value={f.firstName} onChange={e => setF(x => ({ ...x, firstName: e.target.value }))} /><Input label="Initial" maxLength={2} value={f.initial} onChange={e => setF(x => ({ ...x, initial: e.target.value }))} />
         <Button className="self-end" disabled={busy || !f.email || !f.firstName || !f.initial} onClick={() => run(async () => { const r = await api.post(`${H}/experts`, f); setF({ email: '', firstName: '', initial: '' }); return r }, r => `Created. Temporary password (shown once): ${r.data.data.temporaryPassword}. The account is OFF until you switch it on.`)}>Create expert</Button></div>
     </div>
+  )
+}
+
+function Ledger({ expertId, onChanged }) {
+  const [d, setD] = useState(null); const [err, setErr] = useState(''); const [msg, setMsg] = useState(''); const [busy, setBusy] = useState(false)
+  const [f, setF] = useState({ kind: 'bonus', amount: '', reason: '' }); const [why, setWhy] = useState({}); const key = useRef(null)
+  const load = useCallback(async () => { try { setD((await api.get(`${H}/experts/${expertId}/ledger`)).data.data); setErr('') } catch (e) { setErr(getErrorMessage(e, 'Could not load the ledger.')) } }, [expertId])
+  useEffect(() => { setD(null); load() }, [load])
+  const run = async (fn, ok) => { setBusy(true); setErr(''); setMsg(''); try { await fn(); setMsg(ok); await load(); onChanged() } catch (e) { setErr(e?.response?.data?.message || getErrorMessage(e, 'That did not work.')) } finally { setBusy(false) } }
+  const cents = Math.round(Number(f.amount) * 100); const signed = f.kind === 'penalty' ? -Math.abs(cents) : f.kind === 'adjustment' ? cents : Math.abs(cents)
+  if (!d) return err ? <Alert variant="error">{err}</Alert> : <Spinner />
+  return (
+    <section aria-label="Expert ledger" className="space-y-3 rounded-lg border border-gray-200 bg-white p-3 text-sm">
+      {err && <Alert variant="error">{err}</Alert>}{msg && <Alert variant="info">{msg}</Alert>}
+      <div className="grid items-end gap-2 sm:grid-cols-5"><Select label="Entry" value={f.kind} onChange={e => setF(x => ({ ...x, kind: e.target.value }))}><option value="bonus">Bonus</option><option value="tier_bonus">Tier bonus</option><option value="penalty">Penalty</option><option value="adjustment">Adjustment (+/-)</option></Select>
+        <Input label="Amount (USD)" inputMode="decimal" value={f.amount} onChange={e => setF(x => ({ ...x, amount: e.target.value.replace(/[^\d.-]/g, '') }))} /><div className="sm:col-span-2"><Input label="Reason (shown to the expert)" value={f.reason} onChange={e => setF(x => ({ ...x, reason: e.target.value }))} /></div>
+        <Button disabled={busy || !Number.isFinite(signed) || signed === 0 || f.reason.trim().length < 3} onClick={() => run(async () => { if (!key.current) key.current = `adj-${crypto.randomUUID()}`; await api.post(`${H}/experts/${expertId}/adjustments`, { kind: f.kind, amountCents: signed, reason: f.reason.trim(), idempotencyKey: key.current }); key.current = null; setF({ kind: f.kind, amount: '', reason: '' }) }, 'Entry added.')}>Add entry</Button></div>
+      <div><h4 className="mb-1 font-medium">Payouts</h4>{d.payouts.length === 0 ? <p className="text-gray-600">None yet.</p> : <ul className="space-y-1">{d.payouts.map(x => (<li key={x.id} className="flex flex-wrap items-center gap-2"><span className={x.voided ? 'text-gray-400 line-through' : ''}>{new Date(x.paidAt).toLocaleDateString()} \u00b7 {usd(x.amountCents)} \u00b7 {x.method}{x.reference ? ` \u00b7 ${x.reference}` : ''}</span>{x.voided ? <span className="text-xs text-gray-500">void: {x.voidReason}</span> : (<><Input aria-label="Void reason" placeholder="Why void it?" value={why[x.id] || ''} onChange={e => setWhy(w => ({ ...w, [x.id]: e.target.value }))} /><Button size="sm" variant="danger" disabled={busy || (why[x.id] || '').trim().length < 3} onClick={() => run(() => api.post(`${H}/payouts/${x.id}/void`, { reason: why[x.id].trim() }), 'Payout voided; its earnings are available again.')}>Void</Button></>)}</li>))}</ul>}</div>
+      <div><h4 className="mb-1 font-medium">Entries</h4>{d.earnings.length === 0 ? <p className="text-gray-600">None yet.</p> : <ul className="divide-y divide-gray-100">{d.earnings.map(x => (<li key={x.id} className="flex justify-between gap-2 py-1"><span>{x.kind}{x.jobNumber ? ` \u00b7 ${x.jobNumber}` : ''}{x.reason ? ` \u00b7 ${x.reason}` : ''}</span><span className="text-gray-600">{x.status}{x.status === 'held' ? ` until ${new Date(x.releaseAt).toLocaleDateString()}` : ''} \u00b7 <b>{usd(x.amountCents)}</b></span></li>))}</ul>}</div>
+    </section>
   )
 }
 

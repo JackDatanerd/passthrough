@@ -28,6 +28,10 @@ function validSettings(s) {
   if (!s || typeof s !== 'object') return false
   for (const k of [...TIERS, 'cover_letter']) if (!isInt(s.prices?.[k]) || !isInt(s.pay?.[k])) return false
   for (const k of TIERS) if (typeof s.tiers_enabled?.[k] !== 'boolean') return false
+  // A tier that can be sold must charge something and must not pay the expert more than it charges (a loss on every order is a config
+  // mistake, and the callers fail closed on invalid settings instead of selling at a loss); the same for the cover-letter add-on.
+  for (const k of TIERS) if (s.tiers_enabled[k] && (s.prices[k] < 1 || s.pay[k] > s.prices[k])) return false
+  if (s.pay.cover_letter > s.prices.cover_letter) return false
   return isInt(s.pilot_cap_orders) && isInt(s.accept_auto_hours) && s.accept_auto_hours > 0 && isInt(s.revision_window_days) && isInt(s.earnings_hold_days)
 }
 

@@ -1,0 +1,33 @@
+Experts audit A6 (Phase 1 money), pass 1. Base 7ac8e06. Migration 0130.
+
+Confirmed by running real SQL (PGlite) and the real service code. Tests: tests/migrations.0130.pglite.test.js, tests/human.a6.settle.test.js,
+tests/human.a6.admin.test.js, plus additions to expert.test.js, humanLibs.test.js, human.orders.test.js.
+
+BUGS
+B1  A payment that arrived for a job already closed (unpaid window passed, or a newer checkout replaced it) was revived to SUCCESS and then reported
+    ALREADY_FULFILLED: money taken, job cancelled, nobody told. settleHuman now refunds it in full through the shared refund path and alerts the owner once;
+    a refund already in flight is neither an error nor an alert; a failed refund alerts with the payment to fix.
+B2  The expert was paid for a refunded or disputed payment when the reverse hook had failed (auto-accept and accept ignored the payment). Accept, the sweep and
+    the 2A transition (by trigger) now require payment SUCCESS; the sweep only picks acceptable jobs so a blocked one cannot starve its 200-row batch. The
+    owner alert no longer points at a control that does not exist.
+B3  Payout key was built from the typed reference: reusing a reference silently recorded nothing, a reference over 43 characters could never be recorded, and a
+    key could return another expert's payout. The UI sends one key per attempt; the SQL checks the key after the lock, binds it to the expert (key_conflict),
+    stamps exactly the rows it summed, and survives a racing unique violation.
+B4  human_job_reverse had no expected state: a customer cancel racing an operator assignment refunded a job an expert had just taken. It takes p_only_states.
+B5  /accept and /record had no step-up, /record no audit log. Both fixed.
+B6  validSettings accepted a zero price on an enabled tier and pay above price. Rejected (a disabled tier is not judged).
+B7  A reversal was released at once while its pay row was held. A trigger releases it with the pay row.
+B8  Stale comment (migration 0121 -> 0124).
+
+FEATURE GAPS CLOSED
+G1  Late payment on a closed job (see B1).
+G2  Experts can see their own earnings: GET /api/expert/earnings and an Earnings tab (balance, entries by job number, payouts, no customer data).
+G3  Ledger corrections: bonus / tier_bonus / penalty / adjustment entries (signs enforced, reason and key required), void a payout (rows go back, the payout
+    stays on file), per-expert ledger view, and a late credit that is a real partial refund and the only way the recorded figure grows.
+G4  A DISPUTED payment freezes the pay rows out of payouts and balances (next to 0129's disputed-job freeze).
+G5  Admin experts list and summary no longer read through the 1000-row cap (expert_balances in SQL; paged reads).
+
+NOT TOUCHED / FOR THE OWNER
+  tests/migrations.numbering.test.js and the ledger test in tests/migrations.pglite.test.js already fail at 7ac8e06 and are not caused by this pass:
+  migration 0125_partners_section4_round44.sql does not record itself in applied_migrations and LEDGER_NAMES has no 125.
+  Real concurrent payouts cannot be tested in PGlite (single connection); the lock-then-check order is reasoned, not exercised.

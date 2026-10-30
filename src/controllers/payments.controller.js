@@ -908,6 +908,9 @@ async function reconcilePayment(ctx) {
     SCAN_MISSING:      'Scan not found.',
     NO_SCAN:           'This payment has no scan attached.',
     ACCOUNT_DELETED:   'The account was deleted — nothing to deliver. Refund it in Paystack.',
+    LATE_PAYMENT_REFUNDED:         'A human order that had already closed was paid late — the full refund was sent to Paystack.',
+    LATE_PAYMENT_REFUND_IN_FLIGHT: 'A human order that had already closed was paid late — a refund is already in progress.',
+    LATE_PAYMENT_REFUND_FAILED:    'A human order that had already closed was paid late and the automatic refund failed. Refund it in Paystack.',
   }
   const ok = !['SCAN_MISSING', 'NO_SCAN'].includes(result.outcome)
 

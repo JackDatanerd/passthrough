@@ -50,6 +50,30 @@ async function signIn(a) {
   return m.data.token
 }
 
+describe('A6: the expert\'s own earnings', () => {
+  it('shows only this expert\'s balance, entries (by job number) and payouts; a disputed payment reads under review; no customer data; 401 without a token', async () => {
+    const a = await build({ rpcs: { expert_balances: () => ({ data: [{ expert_id: E1, available_cents: 7000, held_cents: 500, frozen_cents: 1800, paid_cents: 9000 }], error: null }) } })
+    const w = t.world.t
+    w.human_jobs.push({ id: JOB, job_number: 'HJ-AAAAAA', payment_id: 'p1', customer_user_id: 'u1' }, { id: 'j2', job_number: 'HJ-BBBBBB', payment_id: 'p2', customer_user_id: 'u1' })
+    w.payments = [{ id: 'p1', status: 'SUCCESS' }, { id: 'p2', status: 'DISPUTED' }]
+    w.expert_earnings = [
+      { id: 'e1', expert_id: E1, job_id: JOB, kind: 'pay', amount_cents: 7000, release_at: '2020-01-01T00:00:00Z', payout_id: null, reason: 'accepted', created_at: '2026-10-02T00:00:00Z' },
+      { id: 'e2', expert_id: E1, job_id: 'j2', kind: 'pay', amount_cents: 1800, release_at: '2020-01-01T00:00:00Z', payout_id: null, reason: 'accepted', created_at: '2026-10-03T00:00:00Z' },
+      { id: 'e3', expert_id: E1, job_id: null, kind: 'bonus', amount_cents: 500, release_at: '2099-01-01T00:00:00Z', payout_id: null, reason: 'fast turnaround', created_at: '2026-10-04T00:00:00Z' },
+      { id: 'e4', expert_id: E1, job_id: null, kind: 'penalty', amount_cents: -100, release_at: '2020-01-01T00:00:00Z', payout_id: 'po1', reason: 'late', created_at: '2026-10-05T00:00:00Z' }]
+    w.expert_payouts = [{ id: 'po1', expert_id: E1, amount_cents: 9000, method: 'manual', reference: 'R1', paid_at: '2026-10-06T00:00:00Z', voided_at: null }, { id: 'po2', expert_id: E1, amount_cents: 5, method: 'manual', reference: 'R2', paid_at: '2026-10-07T00:00:00Z', voided_at: '2026-10-08T00:00:00Z' }]
+    const token = await signIn(a)
+    expect((await req(a, 'GET', '/api/expert/earnings')).status).toBe(401)
+    const r = await req(a, 'GET', '/api/expert/earnings', null, token); expect(r.status).toBe(200)
+    const d = (await r.json()).data
+    expect(d.balance).toEqual({ availableCents: 7000, onHoldCents: 500, underReviewCents: 1800, paidCents: 9000 })
+    expect(d.entries.map(x => [x.kind, x.jobNumber, x.status])).toEqual(expect.arrayContaining([['pay', 'HJ-AAAAAA', 'available'], ['pay', 'HJ-BBBBBB', 'under_review'], ['bonus', null, 'on_hold'], ['penalty', null, 'paid']]))
+    expect(d.entries.find(x => x.kind === 'pay').reason).toBeNull(); expect(d.entries.find(x => x.kind === 'bonus').reason).toBe('fast turnaround')
+    expect(d.payouts.map(x => x.id)).toEqual(['po1'])      // a voided payout is not shown
+    expect(JSON.stringify(d)).not.toMatch(/c@x\.y|Cust|customer/i)
+  })
+})
+
 describe('flag', () => {
   it('off: every path is the ordinary 404 and nothing is read', async () => {
     const a = await build()

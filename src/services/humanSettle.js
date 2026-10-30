@@ -30,7 +30,12 @@ async function settleHuman(env, supabase, payment, { won = false, defer = null, 
   const { data: res, error } = await supabase.rpc('human_job_confirm_payment', { p_payment: payment.id, p_promised: promised, p_internal: internal })
   if (error) throw error
   if (!res || res.ok === false) throw new Error(`human_job_confirm_payment: ${res && res.reason}`)
-  if (res.already) return { ...base, outcome: 'ALREADY_FULFILLED' }
+  if (res.already) {
+    // A payment that arrives for a job already closed (the unpaid window passed, or a newer checkout replaced it) has taken real money
+    // for nothing. Refund it and tell the owner; the refund webhook then finds the job closed and changes nothing.
+    if (res.state === 'cancelled' || res.state === 'refunded') return { ...base, outcome: await refundClosedJob(env, supabase, payment, job, res.state) }
+    return { ...base, outcome: 'ALREADY_FULFILLED' }
+  }
 
   // First confirmation only: tell the customer and the operator. Best-effort; never blocks settlement.
   const task = (async () => {
@@ -43,6 +48,27 @@ async function settleHuman(env, supabase, payment, { won = false, defer = null, 
   })()
   if (typeof defer === 'function') defer(task); else await task
   return { ...base, outcome: 'FULFILLED' }
+}
+
+// Money for a closed job. Refund the whole payment through the shared refund path (claim, Paystack's own refund list and the remaining
+// amount are all checked there, so a repeat call can never refund twice). A refund already in flight is not an error and not an alert.
+const IN_FLIGHT = ['CLAIM_LOST', 'OPEN_REFUND', 'ALREADY_REFUNDED']
+async function refundClosedJob(env, supabase, payment, job, state) {
+  try {
+    const { queueRefund } = require('./refund.service')
+    const r = await queueRefund(env, supabase, payment, { merchantNote: `Order ${job.job_number} was ${state} before this payment arrived`, customerNote: 'Your Passthrough order had already closed, so this payment is being refunded' })
+    if (r.ok) {
+      await alertOwner(env, `Late payment on closed human order ${job.job_number}`, `A payment arrived for order ${job.job_number}, which was already ${state}. A full refund was sent to Paystack.\nreference: ${payment.paystack_ref}`, `human-late-pay-${payment.id}`)
+      return 'LATE_PAYMENT_REFUNDED'
+    }
+    if (IN_FLIGHT.includes(r.code)) return 'LATE_PAYMENT_REFUND_IN_FLIGHT'
+    await alertOwner(env, `Late payment on closed human order ${job.job_number} could not be refunded`, `A payment arrived for order ${job.job_number}, which was already ${state}, and the automatic refund failed: ${r.message}\nreference: ${payment.paystack_ref}\nRefund it in Admin > Payments (or Paystack).`, `human-late-pay-fail-${payment.id}`)
+    return 'LATE_PAYMENT_REFUND_FAILED'
+  } catch (err) {
+    console.error('humanSettle refundClosedJob:', err.message)
+    await alertOwner(env, `Late payment on closed human order ${job.job_number} could not be refunded`, `error: ${err.message}\nreference: ${payment.paystack_ref}\nRefund it in Admin > Payments (or Paystack).`, `human-late-pay-fail-${payment.id}`)
+    return 'LATE_PAYMENT_REFUND_FAILED'
+  }
 }
 
 // A refund or lost dispute reversed the payment: close the job and reverse any earnings (once). Never throws.
@@ -58,7 +84,7 @@ async function onReversed(env, supabase, payment, { reason = 'refund' } = {}) {
     return res
   } catch (err) {
     console.error('humanSettle onReversed:', err.message)
-    await alertOwner(env, 'Human order refund could not close the job', `payment: ${payment.paystack_ref}\nerror: ${err.message}\nClose the job by hand in Admin > Human orders.`, `human-refund-fail-${payment.id}`)
+    await alertOwner(env, 'Human order refund could not close the job', `payment: ${payment.paystack_ref}\nerror: ${err.message}\nRe-run it from Admin > Payments > Resolve > Reverse now (that closes the job and reverses any earnings); the expert cannot be paid for it meanwhile.`, `human-refund-fail-${payment.id}`)
     return { ok: false, error: err.message }
   }
 }

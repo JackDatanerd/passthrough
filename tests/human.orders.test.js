@@ -183,6 +183,12 @@ describe('reading and acting on an order', () => {
     t.world.t.human_jobs[0].state = 'in_progress'
     expect((await post(a, `/api/human/orders/${id}/cancel`, {})).status).toBe(409)                 // taken
   })
+  it('A6: cancel states the states it expects, so an expert taken in between is never refunded; the customer is told why', async () => {
+    const { a, id } = await placed(); const j = t.world.t.human_jobs[0]; j.state = 'offered'
+    const seen = []; t.world.rpcs.human_job_reverse = args => { seen.push(args); return { data: { ok: false, reason: 'state_changed', state: 'claimed' }, error: null } }
+    const r = await post(a, `/api/human/orders/${id}/cancel`, {}); expect(r.status).toBe(409); expect((await r.json()).message).toMatch(/just taken/)
+    expect(seen[0]).toMatchObject({ p_job: id, p_only_states: ['offered', 'open'] }); expect(j.state).toBe('offered')
+  })
   it('rating validates stars; accept and revision are only available once delivered (the database decides)', async () => {
     const { a, id } = await placed()
     expect((await post(a, `/api/human/orders/${id}/rate`, { stars: 9 })).status).toBe(400)

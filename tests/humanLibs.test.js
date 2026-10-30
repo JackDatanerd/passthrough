@@ -123,6 +123,15 @@ describe('humanPilot', () => {
     expect(pilot.deadlines(S, 'polish', '2026-11-01T00:00:00Z')).toEqual({ promised: null, internal: null })
     expect(pilot.validSettings(S)).toBe(true); expect(pilot.validSettings({ ...S, prices: { ...S.prices, seven_day: undefined } })).toBe(false)
   })
+  it('A6: an enabled tier must charge something and must not pay more than it charges; the cover letter likewise; a disabled tier is not judged', () => {
+    const on = k => ({ ...S, tiers_enabled: { ...S.tiers_enabled, [k]: true } })
+    expect(pilot.validSettings({ ...S, prices: { ...S.prices, forty_eight_hour: 0 } })).toBe(false)
+    expect(pilot.validSettings({ ...S, pay: { ...S.pay, forty_eight_hour: S.prices.forty_eight_hour + 1 } })).toBe(false)
+    expect(pilot.validSettings({ ...S, pay: { ...S.pay, cover_letter: S.prices.cover_letter + 1 } })).toBe(false)
+    expect(pilot.validSettings({ ...S, pay: { ...S.pay, forty_eight_hour: S.prices.forty_eight_hour } })).toBe(true)   // equal is allowed (zero margin, not a loss)
+    expect(pilot.validSettings({ ...S, tiers_enabled: { ...S.tiers_enabled, polish: false }, prices: { ...S.prices, polish: 0 }, pay: { ...S.pay, polish: 9999 } })).toBe(true)
+    expect(pilot.validSettings({ ...on('polish'), prices: { ...S.prices, polish: 0 } })).toBe(false)
+  })
   it('job numbers are HJ- plus six unambiguous characters', () => { for (let i = 0; i < 50; i++) expect(pilot.newJobNumber()).toMatch(/^HJ-[2-9A-HJKMNP-TV-Z]{6}$/) })
 })
 

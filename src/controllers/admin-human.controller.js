@@ -12,6 +12,15 @@ const bad = (c, message, status = 400, extra = {}) => c.json({ success: false, m
 const readJson = async c => { try { return await c.req.json() } catch (_) { return undefined } }
 const isUuid = v => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)
 const opId = c => { const u = c.get('user'); return u && u.id ? u.id : null }
+// PostgREST silently caps a read (1000 rows by default): anything that totals or counts reads in pages so a number is never quietly short.
+async function fetchAll(build, page = 1000, max = 50000) {
+  const out = []
+  for (let from = 0; from < max; from += page) {
+    const { data, error } = await build().range(from, from + page - 1); if (error) throw error
+    out.push(...(data || [])); if (!data || data.length < page) break
+  }
+  return out
+}
 const STATES = ['awaiting_payment', 'offered', 'open', 'claimed', 'in_progress', 'waiting_customer', 'in_review', 'final_checks', 'delivered', 'revision', 'accepted', 'disputed', 'refunded', 'cancelled']
 
 const LIST_COLS = 'id, job_number, state, tier, add_cover_letter, price_cents, expert_pay_cents, customer_user_id, expert_id, paid_at, promised_deadline_at, internal_deadline_at, delivered_at, revision_count, rating_stars, created_at, payment_id'
@@ -29,7 +38,7 @@ async function listOrders(c) {
     pilot.loadSettings(supabase),
   ])
   const email = Object.fromEntries((users || []).map(u => [u.id, u.email])), ex = Object.fromEntries((experts || []).map(x => [x.id, `${x.display_first_name} ${x.display_initial}.`])), pay = Object.fromEntries((pays || []).map(p => [p.id, p.status]))
-  const { data: all } = await supabase.from('human_jobs').select('id, state, paid_at')
+  const all = await fetchAll(() => supabase.from('human_jobs').select('id, state, paid_at').order('created_at'))
   const counts = {}; for (const j of all || []) counts[j.state] = (counts[j.state] || 0) + 1
   return c.json({ success: true, data: { orders: jobs.map(j => ({ id: j.id, jobNumber: j.job_number, state: j.state, tier: j.tier, coverLetter: j.add_cover_letter, priceCents: j.price_cents, payCents: j.expert_pay_cents,
     customer: email[j.customer_user_id] || null, expert: j.expert_id ? ex[j.expert_id] || null : null, expertId: j.expert_id, paymentStatus: pay[j.payment_id] || null, paidAt: j.paid_at,
@@ -115,25 +124,25 @@ async function deliverOrder(c) {
   return c.json({ success: true, data: r })
 }
 
-const recordBody = z.object({ expertMinutes: z.number().int().min(0).max(5000).nullable().optional(), otherCostCents: z.number().int().min(0).max(1000000).optional(), lateCreditCents: z.number().int().min(0).max(1000000).optional(), note: z.string().max(500).nullable().optional() }).strict()
+const recordBody = z.object({ expertMinutes: z.number().int().min(0).max(5000).nullable().optional(), otherCostCents: z.number().int().min(0).max(1000000).optional(), note: z.string().max(500).nullable().optional() }).strict()
 async function record(c) {
   const p = recordBody.safeParse(await readJson(c)); if (!p.success) return bad(c, 'Check the numbers.')
   const patch = {}
   if (p.data.expertMinutes !== undefined) patch.expert_minutes_reported = p.data.expertMinutes
   if (p.data.otherCostCents !== undefined) patch.other_cost_cents = p.data.otherCostCents
-  if (p.data.lateCreditCents !== undefined) patch.late_credit_cents = p.data.lateCreditCents
   if (p.data.note !== undefined) patch.operator_note = p.data.note
   if (!Object.keys(patch).length) return bad(c, 'Nothing to record.')
   const supabase = getSupabase(c.env)
   const { data, error } = await supabase.from('human_jobs').update(patch).eq('id', c.req.param('id')).select('id'); if (error) throw error
   if (!data || !data.length) return bad(c, 'Order not found.', 404)
+  await logAdminAction(c, supabase, 'human.record', 'human_job', c.req.param('id'), { fields: Object.keys(patch) })
   return c.json({ success: true })
 }
 
 async function acceptForCustomer(c) {
   const id = c.req.param('id'); const supabase = getSupabase(c.env); const s = await pilot.loadSettings(supabase); if (!s) return bad(c, 'Settings missing.', 503)
   const { data, error } = await supabase.rpc('human_job_accept', { p_job: id, p_actor_kind: 'operator', p_actor: opId(c), p_hold_days: s.earnings_hold_days }); if (error) throw error
-  if (!data.ok) return bad(c, 'This order is not delivered.', 409)
+  if (!data.ok) return bad(c, data.reason === 'payment_not_settled' ? 'The payment for this order is refunded or disputed, so it cannot be accepted.' : 'This order is not delivered.', 409, { code: data.reason })
   await logAdminAction(c, supabase, 'human.accept', 'human_job', id, {})
   return c.json({ success: true, data: { already: !!data.already } })
 }
@@ -156,20 +165,18 @@ async function listExperts(c) {
   const supabase = getSupabase(c.env)
   const { data, error } = await supabase.from('expert_accounts').select(EXPERT_COLS).order('created_at'); if (error) throw error
   const { data: jobs } = await supabase.from('human_jobs').select('expert_id, state').in('state', ['claimed', 'in_progress', 'waiting_customer', 'in_review', 'revision'])
-  const { data: earn } = await supabase.from('expert_earnings').select('expert_id, amount_cents, release_at, payout_id')
-  const now = Date.now()
+  const { data: bal, error: balErr } = await supabase.rpc('expert_balances', { p_expert: null }); if (balErr) throw balErr
+  const byExpert = Object.fromEntries((bal || []).map(b => [b.expert_id, b]))
   return c.json({ success: true, data: { experts: (data || []).map(e => {
-    const mine = (earn || []).filter(r => r.expert_id === e.id)
+    const b = byExpert[e.id] || {}
     return { id: e.id, email: e.email, name: `${e.display_first_name} ${e.display_initial}.`, status: e.status, enabled: e.enabled, twoFactor: !!e.totp_enabled_at, agreementSigned: !!e.agreement_signed_at,
       lastLoginAt: e.last_login_at, openJobs: (jobs || []).filter(j => j.expert_id === e.id).length,
-      availableCents: mine.filter(r => !r.payout_id && new Date(r.release_at).getTime() <= now).reduce((n, r) => n + r.amount_cents, 0),
-      onHoldCents: mine.filter(r => !r.payout_id && new Date(r.release_at).getTime() > now).reduce((n, r) => n + r.amount_cents, 0),
-      paidCents: mine.filter(r => r.payout_id).reduce((n, r) => n + r.amount_cents, 0) } }) } })
+      availableCents: Number(b.available_cents) || 0, onHoldCents: Number(b.held_cents) || 0, frozenCents: Number(b.frozen_cents) || 0, paidCents: Number(b.paid_cents) || 0 } }) } })
 }
-
 const ALPHABET = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 const tempPassword = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), b => ALPHABET[b % ALPHABET.length]).join('')
 const createBody = z.object({ email: z.string().trim().toLowerCase().email().max(320), firstName: z.string().trim().min(1).max(40), initial: z.string().trim().min(1).max(2) }).strict()
+
 async function createExpert(c) {
   const p = createBody.safeParse(await readJson(c)); if (!p.success) return bad(c, 'Email, first name and one initial are needed.')
   const supabase = getSupabase(c.env); const password = tempPassword()
@@ -203,15 +210,71 @@ async function recordPayout(c) {
   const supabase = getSupabase(c.env); const s = await pilot.loadSettings(supabase); if (!s) return bad(c, 'Settings missing.', 503)
   const { data, error } = await supabase.rpc('expert_record_payout', { p_expert: p.data.expertId, p_method: p.data.method, p_reference: p.data.reference || null, p_key: p.data.idempotencyKey, p_min_cents: s.payout_min_cents || 2500, p_note: p.data.note || null })
   if (error) throw error
-  if (!data.ok) return bad(c, data.reason === 'below_minimum' ? 'Not enough is available to pay out yet.' : 'Could not record the payout.', 409, { code: data.reason, availableCents: data.available_cents })
+  if (!data.ok) return bad(c, data.reason === 'below_minimum' ? 'Not enough is available to pay out yet.' : data.reason === 'key_conflict' ? 'That request key was already used for another payout. Reload and try again.' : 'Could not record the payout.', 409, { code: data.reason, availableCents: data.available_cents })
   await logAdminAction(c, supabase, 'human.payout', 'expert_account', p.data.expertId, { amountCents: data.amount_cents, already: !!data.already })
   return c.json({ success: true, data })
 }
 
 // The pilot's numbers (runbook / spec 22): what the gate decision is made from.
+const adjustBody = z.object({ kind: z.enum(['bonus', 'tier_bonus', 'penalty', 'adjustment']), amountCents: z.number().int().min(-1000000).max(1000000).refine(n => n !== 0), jobId: z.string().refine(isUuid).optional(),
+  reason: z.string().trim().min(3).max(200), idempotencyKey: z.string().trim().min(8).max(80) }).strict()
+const ADJUST_MSG = { bad_amount: 'A bonus must be positive, a penalty negative, and the amount cannot be zero.', reason_required: 'Give a reason (at least 3 characters).', bad_key: 'Missing request key.', key_conflict: 'That request key was already used for a different entry. Reload and try again.',
+  job_mismatch: 'That order is not this expert\'s.', no_expert: 'Expert not found.', bad_kind: 'Unknown entry type.' }
+async function addAdjustment(c) {
+  const id = c.req.param('id'); const p = adjustBody.safeParse(await readJson(c)); if (!p.success) return bad(c, 'Check the type, amount, reason and request key.')
+  const supabase = getSupabase(c.env)
+  const { data, error } = await supabase.rpc('expert_record_adjustment', { p_expert: id, p_kind: p.data.kind, p_amount: p.data.amountCents, p_job: p.data.jobId || null, p_reason: p.data.reason, p_key: p.data.idempotencyKey, p_actor: opId(c), p_hold_days: 0 })
+  if (error) throw error
+  if (!data.ok) return bad(c, ADJUST_MSG[data.reason] || 'Could not record the entry.', 409, { code: data.reason })
+  await logAdminAction(c, supabase, 'human.adjustment', 'expert_account', id, { kind: p.data.kind, amountCents: p.data.amountCents, jobId: p.data.jobId || null, already: !!data.already })
+  return c.json({ success: true, data })
+}
+const voidBody = z.object({ reason: z.string().trim().min(3).max(200) }).strict()
+async function voidPayout(c) {
+  const id = c.req.param('id'); const p = voidBody.safeParse(await readJson(c)); if (!p.success) return bad(c, 'Give a reason (at least 3 characters).')
+  const supabase = getSupabase(c.env)
+  const { data, error } = await supabase.rpc('expert_void_payout', { p_payout: id, p_reason: p.data.reason, p_actor: opId(c) }); if (error) throw error
+  if (!data.ok) return bad(c, data.reason === 'not_found' ? 'Payout not found.' : 'Could not void the payout.', data.reason === 'not_found' ? 404 : 409, { code: data.reason })
+  await logAdminAction(c, supabase, 'human.payout_void', 'expert_payout', id, { amountCents: data.amount_cents || null, already: !!data.already })
+  return c.json({ success: true, data })
+}
+async function expertLedger(c) {
+  const id = c.req.param('id'); const supabase = getSupabase(c.env)
+  const [{ data: earn, error: e1 }, { data: pays, error: e2 }] = await Promise.all([
+    supabase.from('expert_earnings').select('id, job_id, kind, amount_cents, release_at, payout_id, reason, created_at').eq('expert_id', id).order('created_at', { ascending: false }).limit(200),
+    supabase.from('expert_payouts').select('id, amount_cents, method, reference, paid_at, note, voided_at, void_reason').eq('expert_id', id).order('paid_at', { ascending: false }).limit(50)])
+  if (e1) throw e1; if (e2) throw e2
+  const jobIds = [...new Set((earn || []).map(r => r.job_id).filter(Boolean))]
+  const { data: jobs } = jobIds.length ? await supabase.from('human_jobs').select('id, job_number').in('id', jobIds) : { data: [] }
+  const num = Object.fromEntries((jobs || []).map(j => [j.id, j.job_number])); const now = Date.now()
+  return c.json({ success: true, data: {
+    earnings: (earn || []).map(r => ({ id: r.id, jobNumber: r.job_id ? num[r.job_id] || null : null, kind: r.kind, amountCents: r.amount_cents, releaseAt: r.release_at, payoutId: r.payout_id, reason: r.reason, status: r.payout_id ? 'paid' : new Date(r.release_at).getTime() > now ? 'held' : 'available', createdAt: r.created_at })),
+    payouts: (pays || []).map(x => ({ id: x.id, amountCents: x.amount_cents, method: x.method, reference: x.reference, paidAt: x.paid_at, note: x.note, voided: !!x.voided_at, voidReason: x.void_reason })) } })
+}
+// A late credit is real money back to the customer: a PARTIAL refund through the shared refund path, then the recorded figure (which only this route can raise).
+const creditBody = z.object({ amountCents: z.number().int().min(1).max(1000000) }).strict()
+async function lateCredit(c) {
+  const id = c.req.param('id'); const p = creditBody.safeParse(await readJson(c)); if (!p.success) return bad(c, 'Enter the credit in cents.')
+  const supabase = getSupabase(c.env)
+  const { data: j } = await supabase.from('human_jobs').select('id, job_number, payment_id, price_cents, late_credit_cents, paid_at, state').eq('id', id).maybeSingle(); if (!j) return bad(c, 'Not found.', 404)
+  if (!j.paid_at || ['awaiting_payment', 'cancelled', 'refunded'].includes(j.state)) return bad(c, 'This order is not eligible for a credit.', 409)
+  if ((j.late_credit_cents || 0) + p.data.amountCents >= j.price_cents) return bad(c, 'A credit has to stay below the price. To give the whole amount back, refund the order.', 409, { code: 'over_price' })
+  const { data: pay } = await supabase.from('payments').select('*').eq('id', j.payment_id).maybeSingle()
+  if (!pay || pay.status !== 'SUCCESS') return bad(c, `The payment is ${pay ? pay.status : 'missing'}, so there is nothing to credit.`, 409)
+  const r = await require('../services/refund.service').queueRefund(c.env, supabase, pay, { amountCents: p.data.amountCents, merchantNote: `Late-delivery credit on order ${j.job_number}`, customerNote: 'Credit for a late delivery from Passthrough' })
+  await logAdminAction(c, supabase, 'human.late_credit', 'human_job', id, { amountCents: p.data.amountCents, ok: !!r.ok, code: r.code || null })
+  if (!r.ok) return bad(c, r.message || 'The credit could not be sent.', r.status || 502, { code: r.code })
+  const { data: rec, error } = await supabase.rpc('human_job_add_late_credit', { p_job: id, p_cents: p.data.amountCents })
+  if (error || !rec || !rec.ok) {
+    console.error(`[CRITICAL] late credit refunded but not recorded (job ${j.job_number})`, error && error.message, rec && rec.reason)
+    try { await require('../services/email.service').sendOwnerAlert(c.env, `Late credit sent but not recorded: ${j.job_number}`, `${p.data.amountCents} minor units were refunded to the customer but the job's late-credit figure was not updated (${(error && error.message) || (rec && rec.reason)}). Fix it in the database.`, { dedupeKey: `human-credit-rec-${id}-${p.data.amountCents}` }) } catch (_) { /* best effort */ }
+    return bad(c, 'The credit was sent to the customer but could not be recorded. The owner has been alerted.', 502)
+  }
+  return c.json({ success: true, data: { lateCreditCents: rec.late_credit_cents } })
+}
 async function summary(c) {
   const supabase = getSupabase(c.env)
-  const { data, error } = await supabase.from('human_jobs').select('state, tier, price_cents, expert_pay_cents, other_cost_cents, late_credit_cents, paid_at, delivered_at, promised_deadline_at, active_edit_seconds, expert_minutes_reported, revision_count, rating_stars, score_before, score_after'); if (error) throw error
+  const data = await fetchAll(() => supabase.from('human_jobs').select('state, tier, price_cents, expert_pay_cents, other_cost_cents, late_credit_cents, paid_at, delivered_at, promised_deadline_at, active_edit_seconds, expert_minutes_reported, revision_count, rating_stars, score_before, score_after').order('created_at'))
   const paid = (data || []).filter(j => j.paid_at)
   const done = paid.filter(j => j.delivered_at)
   const avg = a => (a.length ? Math.round((a.reduce((x, y) => x + y, 0) / a.length) * 10) / 10 : null)
@@ -226,4 +289,4 @@ async function summary(c) {
     revenueCents: revenue, costCents: cost, marginCents: revenue - cost, marginPct: revenue ? Math.round(100 * (revenue - cost) / revenue) : null } })
 }
 
-module.exports = { listOrders, getOrder, assign, unassign, review, returnToExpert, deliverOrder, record, acceptForCustomer, refund, listExperts, createExpert, patchExpert, recordPayout, summary }
+module.exports = { listOrders, getOrder, assign, unassign, review, returnToExpert, deliverOrder, record, acceptForCustomer, refund, listExperts, createExpert, patchExpert, recordPayout, summary, addAdjustment, voidPayout, expertLedger, lateCredit }

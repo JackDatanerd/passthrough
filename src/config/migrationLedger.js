@@ -53,6 +53,7 @@ const LEDGER_NAMES = {
   127: '0127_experts_phase2a_realm',
   128: '0128_experts_a3_content_access',
   129: '0129_experts_engine_audit_a4',
+  130: '0130_experts_a6_money',
 }
 
 module.exports = { LEDGER_NAMES }

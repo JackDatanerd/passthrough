@@ -283,7 +283,7 @@ async function acceptOrder(ctx) {
   const s = await pilot.loadSettings(supabase); if (!s) return bad(ctx, 'Not available right now.', 503)
   const { data, error } = await supabase.rpc('human_job_accept', { p_job: j.id, p_actor_kind: 'customer', p_actor: g.user.id, p_hold_days: s.earnings_hold_days })
   if (error) throw error
-  if (!data.ok) return bad(ctx, 'This order cannot be accepted yet.', 409, { state: data.state })
+  if (!data.ok) return bad(ctx, data.reason === 'payment_not_settled' ? 'This order cannot be accepted because its payment is being refunded or reviewed. Contact support and quote the order number.' : 'This order cannot be accepted yet.', 409, { state: data.state })
   return ctx.json({ success: true, data: { already: !!data.already } })
 }
 
@@ -324,9 +324,10 @@ async function cancelOrder(ctx) {
   const j = await ownJob(ctx, supabase, g.user, ctx.req.param('id'), 'id, state, payment_id, job_number'); if (!j) return bad(ctx, 'Order not found.', 404)
   if (!['offered', 'open'].includes(j.state)) return bad(ctx, j.state === 'awaiting_payment' ? 'This order has not been paid.' : 'An expert has already taken this order, so it can no longer be cancelled here. Contact support and quote the order number.', 409)
   const { data: pay } = await supabase.from('payments').select('*').eq('id', j.payment_id).maybeSingle()
-  const { data: closed, error } = await supabase.rpc('human_job_reverse', { p_job: j.id, p_reason: 'customer cancelled' })
+  const { data: closed, error } = await supabase.rpc('human_job_reverse', { p_job: j.id, p_reason: 'customer cancelled', p_only_states: ['offered', 'open'] })
   if (error) throw error
-  if (!closed.ok) return bad(ctx, 'This order cannot be cancelled.', 409)
+  // the check above and this call are two steps: if the operator assigned an expert in between, the database says so and nothing is refunded
+  if (!closed.ok) return bad(ctx, closed.reason === 'state_changed' ? 'An expert has just taken this order, so it can no longer be cancelled here. Contact support and quote the order number.' : 'This order cannot be cancelled.', 409)
   let refund = { ok: false }
   try { refund = await require('../services/refund.service').queueRefund(ctx.env, supabase, pay, { merchantNote: `Human order ${j.job_number} cancelled by the customer`, customerNote: 'Human rewrite cancelled before an expert took it' }) } catch (err) { refund = { ok: false, message: err.message } }
   if (!refund.ok) {

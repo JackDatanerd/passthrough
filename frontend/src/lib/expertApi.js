@@ -16,6 +16,7 @@ export const expert = {
   mfa: code => ex.post('/auth/mfa', { code }).then(r => r.data.data),
   logout: () => ex.post('/auth/logout').then(() => store.set(null)),
   me: () => ex.get('/me').then(r => r.data.data),
+  earnings: () => ex.get('/earnings').then(r => r.data.data),
   jobs: () => ex.get('/jobs').then(r => r.data.data.jobs),
   job: id => ex.get(`/jobs/${id}`).then(r => r.data.data),
   save: (id, payload) => ex.put(`/jobs/${id}/document`, payload).then(r => r.data.data),

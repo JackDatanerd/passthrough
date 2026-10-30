@@ -170,7 +170,7 @@ async function settlePayment(env, supabase, paymentRow, { authCode = null, sourc
     row = current
   }
 
-  // EXPERTS PHASE 1: a human-product payment (payments.product_kind, migration 0121) has its own settlement and skips everything below
+  // EXPERTS PHASE 1: a human-product payment (payments.product_kind, migration 0124) has its own settlement and skips everything below
   // (no scan claim, no fix queue, no commission, no fix receipt, no duplicate / undeliverable auto-refund). product_kind is null on
   // every payment the app made before this existed, so nothing else reaches the branch.
   if (row.product_kind) return require('./humanSettle').settleHuman(env, supabase, row, { won, defer, source })

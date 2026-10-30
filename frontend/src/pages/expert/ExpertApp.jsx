@@ -13,11 +13,14 @@ const MARK = /\[\[(?:lock:[\w.]+|c:\d+)\]\]/
 export default function ExpertApp() {
   const [stage, setStage] = useState(expert.token.get() ? 'jobs' : 'login')
   const [jobId, setJobId] = useState(null)
-  const out = async () => { try { await expert.logout() } catch (_) { expert.token.set(null) } setStage('login'); setJobId(null) }
+  const [tab, setTab] = useState('jobs')
+  const out = async () => { try { await expert.logout() } catch (_) { expert.token.set(null) } setStage('login'); setJobId(null); setTab('jobs') }
   return (
     <main className="mx-auto max-w-4xl px-4 py-6">
       <header className="mb-4 flex items-center justify-between"><h1 className="text-xl font-bold text-gray-900">Passthrough Experts</h1>{stage !== 'login' && stage !== 'mfa' && stage !== 'enroll' && <Button variant="ghost" onClick={out}>Sign out</Button>}</header>
-      {stage === 'login' || stage === 'mfa' || stage === 'enroll' ? <SignIn stage={stage} setStage={setStage} /> : jobId ? <Workbench id={jobId} onBack={() => setJobId(null)} onExpired={() => { expert.token.set(null); setStage('login') }} /> : <Jobs onOpen={setJobId} onExpired={() => { expert.token.set(null); setStage('login') }} />}
+      {stage === 'login' || stage === 'mfa' || stage === 'enroll' ? <SignIn stage={stage} setStage={setStage} /> : jobId ? <Workbench id={jobId} onBack={() => setJobId(null)} onExpired={() => { expert.token.set(null); setStage('login') }} /> : (<>
+        <nav className="mb-3 flex gap-2" aria-label="Sections"><Button variant={tab === 'jobs' ? 'primary' : 'ghost'} onClick={() => setTab('jobs')}>Jobs</Button><Button variant={tab === 'earnings' ? 'primary' : 'ghost'} onClick={() => setTab('earnings')}>Earnings</Button></nav>
+        {tab === 'earnings' ? <Earnings onExpired={() => { expert.token.set(null); setStage('login') }} /> : <Jobs onOpen={setJobId} onExpired={() => { expert.token.set(null); setStage('login') }} />}</>)}
     </main>
   )
 }
@@ -48,6 +51,24 @@ function Jobs({ onOpen, onExpired }) {
         <li key={j.id}><button type="button" className="flex w-full items-center justify-between rounded-lg border border-gray-200 bg-white p-3 text-left text-sm" onClick={() => onOpen(j.id)}>
           <span><b>{j.jobNumber}</b> {j.tierLabel}{j.coverLetter ? ' + cover letter' : ''}{j.revision ? ' (revision)' : ''}</span>
           <span className="text-gray-600">{j.state.replace('_', ' ')}{j.dueAt ? ` \u00b7 due ${new Date(j.dueAt).toLocaleString()}` : ''} \u00b7 ${(j.payCents / 100).toFixed(2)}</span></button></li>))}</ul></section>
+  )
+}
+
+const money = c => `${c < 0 ? '-' : ''}$${(Math.abs(c) / 100).toFixed(2)}`
+const KIND = { pay: 'Job pay', bonus: 'Bonus', tier_bonus: 'Tier bonus', penalty: 'Penalty', adjustment: 'Adjustment', reversal: 'Refunded job (reversed)' }
+const STATUS = { paid: 'Paid', on_hold: 'On hold', available: 'Available', under_review: 'Under review' }
+function Earnings({ onExpired }) {
+  const [d, setD] = useState(null); const [err, setErr] = useState('')
+  useEffect(() => { expert.earnings().then(setD).catch(e => { if (e?.response?.status === 401) onExpired(); else { setErr(msgOf(e, 'Could not load your earnings.')); setD({ balance: null, entries: [], payouts: [] }) } }) }, [onExpired])
+  if (!d) return <Spinner />
+  const b = d.balance
+  return (
+    <section aria-label="Your earnings" className="space-y-4"><h2 className="font-medium text-gray-900">Your earnings</h2>{err && <Alert variant="error">{err}</Alert>}
+      {b && <dl className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">{[['Available', b.availableCents], ['On hold', b.onHoldCents], ['Under review', b.underReviewCents], ['Paid so far', b.paidCents]].map(([k, v]) => (<div key={k} className="rounded-lg border border-gray-200 bg-white p-3"><dt className="text-gray-600">{k}</dt><dd className="text-lg font-semibold" data-testid={`earn-${k}`}>{money(v)}</dd></div>))}</dl>}
+      <p className="text-xs text-gray-500">Pay is held for a few days after a customer accepts a job, then paid out by hand. A refunded job is taken back here as a negative line.</p>
+      <div><h3 className="mb-1 text-sm font-medium text-gray-900">Entries</h3>{d.entries.length === 0 ? <p className="text-sm text-gray-600">Nothing yet.</p> : <ul className="divide-y divide-gray-100 rounded-lg border border-gray-200 bg-white text-sm">{d.entries.map(x => (<li key={x.id} className="flex items-center justify-between gap-2 p-2"><span>{KIND[x.kind] || x.kind}{x.jobNumber ? ` \u00b7 ${x.jobNumber}` : ''}{x.reason ? ` \u00b7 ${x.reason}` : ''}</span><span className="text-gray-600">{STATUS[x.status]}{x.status === 'on_hold' ? ` until ${new Date(x.releaseAt).toLocaleDateString()}` : ''} \u00b7 <b>{money(x.amountCents)}</b></span></li>))}</ul>}</div>
+      <div><h3 className="mb-1 text-sm font-medium text-gray-900">Payouts</h3>{d.payouts.length === 0 ? <p className="text-sm text-gray-600">No payout yet.</p> : <ul className="divide-y divide-gray-100 rounded-lg border border-gray-200 bg-white text-sm">{d.payouts.map(x => (<li key={x.id} className="flex justify-between p-2"><span>{new Date(x.paidAt).toLocaleDateString()} \u00b7 {x.method}{x.reference ? ` \u00b7 ${x.reference}` : ''}</span><b>{money(x.amountCents)}</b></li>))}</ul>}</div>
+    </section>
   )
 }
 

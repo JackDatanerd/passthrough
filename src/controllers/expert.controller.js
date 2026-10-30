@@ -104,4 +104,27 @@ async function submitJob(c) {
   return c.json({ success: true })
 }
 
-module.exports = { listJobs, getJob, saveDocument, askQuestion, submitJob, maskCompany, validateCover }
+// The expert's own money: what they are owed, what is on hold, what was paid, and every ledger row behind it. Only this expert's rows; a job is
+// named by its number and nothing about the customer, the resume or the price is shown.
+async function earnings(c) {
+  const e = c.get('expert'); const supabase = getSupabase(c.env)
+  const [{ data: bal, error: e0 }, { data: rows, error: e1 }, { data: pays, error: e2 }] = await Promise.all([
+    supabase.rpc('expert_balances', { p_expert: e.id }),
+    supabase.from('expert_earnings').select('id, job_id, kind, amount_cents, release_at, payout_id, reason, created_at').eq('expert_id', e.id).order('created_at', { ascending: false }).limit(100),
+    supabase.from('expert_payouts').select('id, amount_cents, method, reference, paid_at, voided_at').eq('expert_id', e.id).order('paid_at', { ascending: false }).limit(20)])
+  if (e0) throw e0; if (e1) throw e1; if (e2) throw e2
+  const jobIds = [...new Set((rows || []).map(r => r.job_id).filter(Boolean))]
+  const { data: jobs } = jobIds.length ? await supabase.from('human_jobs').select('id, job_number, payment_id, state').in('id', jobIds) : { data: [] }
+  const payIds = (jobs || []).map(j => j.payment_id).filter(Boolean)
+  const { data: disputed } = payIds.length ? await supabase.from('payments').select('id').in('id', payIds).eq('status', 'DISPUTED') : { data: [] }
+  const disputedPay = new Set((disputed || []).map(p => p.id)); const byJob = Object.fromEntries((jobs || []).map(j => [j.id, j]))
+  const b = (bal && bal[0]) || {}; const now = Date.now()
+  return c.json({ success: true, data: {
+    balance: { availableCents: Number(b.available_cents) || 0, onHoldCents: Number(b.held_cents) || 0, underReviewCents: Number(b.frozen_cents) || 0, paidCents: Number(b.paid_cents) || 0 },
+    entries: (rows || []).map(r => { const j = r.job_id ? byJob[r.job_id] : null
+      const status = r.payout_id ? 'paid' : (j && (j.state === 'disputed' || (r.kind === 'pay' && disputedPay.has(j.payment_id)))) ? 'under_review' : new Date(r.release_at).getTime() > now ? 'on_hold' : 'available'
+      return { id: r.id, jobNumber: j ? j.job_number : null, kind: r.kind, amountCents: r.amount_cents, releaseAt: r.release_at, status, reason: r.kind === 'pay' || r.kind === 'reversal' ? null : r.reason, createdAt: r.created_at } }),
+    payouts: (pays || []).filter(x => !x.voided_at).map(x => ({ id: x.id, amountCents: x.amount_cents, method: x.method, reference: x.reference, paidAt: x.paid_at })) } })
+}
+
+module.exports = { earnings, listJobs, getJob, saveDocument, askQuestion, submitJob, maskCompany, validateCover }

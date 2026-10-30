@@ -1651,5 +1651,40 @@
    "success",
    "timestamp"
   ]
+ },
+ "POST /api/admin/human/orders/00000000-0000-4000-8000-0000000000aa/late-credit": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/admin/human/experts/00000000-0000-4000-8000-0000000000aa/ledger": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/admin/human/experts/00000000-0000-4000-8000-0000000000aa/adjustments": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "POST /api/admin/human/payouts/00000000-0000-4000-8000-0000000000aa/void": {
+  "status": 401,
+  "shape": [
+   "message",
+   "success"
+  ]
+ },
+ "GET /api/expert/earnings": {
+  "status": 404,
+  "shape": [
+   "message",
+   "success"
+  ]
  }
 }
