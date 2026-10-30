@@ -1,0 +1,34 @@
+Search indexing: Google, Bing and the IndexNow engines
+=====================================================
+
+Why: the site had a hand-written 7-URL sitemap, every route served the homepage's <head> until JavaScript ran, and nothing told
+any search engine about new pages. Adding a marketing page or blog post meant remembering several places, then resubmitting.
+
+BUG FIXED (found while wiring this): /partner/apply and /partner/terms were classed "private" by isPrivatePath (the /partner prefix
+is token pages), so the SPA stamped <meta name="robots" content="noindex,nofollow"> and removed the canonical on them at runtime while
+_headers, robots.txt and the sitemap all said index. Google reads the rendered page, so the noindex won. Pages in the registry are now
+never private.
+
+Added
+- frontend/src/lib/publicPages.js: the ONE registry of indexable pages (path, title, description, optional lastmod, source files).
+  Dependency-free on purpose. Add a page or blog post = one object here.
+- frontend/seo/render.js + vitePlugin.js (wired into vite.config.js): at build time writes dist/sitemap.xml (stamped with
+  CF_PAGES_COMMIT_SHA) and, per page, a copy of index.html with that page's own title / description / canonical / og / twitter tags
+  (pricing.html, partner/apply.html, ...). A bad registry fails the build; a bad single page is a warning and keeps index.html.
+- frontend/seo/indexnow.js, scripts/indexnow.mjs, .github/workflows/indexnow.yml: after a push to main touching frontend/, waits for the
+  deploy to show on the live site, then announces new / changed pages to IndexNow (Bing, Yandex, Seznam, Naver, Yep). "Changed" =
+  new entry, edited title/description/lastmod, or an edited source file. Manual "all" run available.
+- frontend/public/3fa59d6e2d5d67a36c0fea096c93f298.txt: the IndexNow key file (public by design).
+- _headers: X-Robots-Tag noindex on *.pages.dev (production alias + previews) so they never compete with usepassthrough.com.
+- DEPLOYMENT.md section 13: the one-time Google / Bing steps, the www redirect, and curl checks.
+- Tests: seo.publicPages, seo.build, seo.pageMeta (registry shape, every listed page crawlable and indexable, every public route listed or
+  deliberately unlisted, lastmod equals the date printed on Terms/Privacy, renderer, sitemap, plugin, IndexNow selection / retry / wait).
+
+Changed
+- lib/pageTitles.js: titleFor / isPrivatePath consult the registry (tab title == the title crawlers read in the static HTML).
+- hooks/usePageTitle.js: canonical uses the real site origin when reached via www or *.pages.dev, and the registered path.
+- /partner/apply and /partner/terms now have their own titles ("Become a partner", "Partner Program Terms") instead of "Partner".
+- frontend/public/sitemap.xml removed (generated now); tests/publicPartnerPages.test.js checks the generated one.
+
+No Worker change, no migration, no new env vars, no secrets. Google cannot be notified from code (its sitemap ping is retired and the
+Indexing API is for job postings only): it needs the one-time Search Console steps in DEPLOYMENT.md section 13.

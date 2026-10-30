@@ -17,6 +17,8 @@ backend runs as a Cloudflare Worker.
 9. [Monitoring & Logs](#9-monitoring--logs)
 10. [Updating](#10-updating)
 11. [Troubleshooting](#11-troubleshooting)
+12. [Domain migration](#12-domain-migration-passthroughdev---usepassthroughcom)
+13. [Search indexing (Google, Bing and the rest)](#13-search-indexing-google-bing-and-the-rest)
 
 ---
 
@@ -1097,6 +1099,57 @@ Order matters; do these in sequence:
 Deliberately unchanged: the `deleted-<id>@passthrough.dev` placeholder written when an account is deleted
 (migration `scrub_account_data` and `auth.controller.js`). It is an internal tombstone identifier, never
 mailed to, and changing it would orphan the email-log purge for every account already deleted.
+
+---
+
+## 13. Search indexing (Google, Bing and the rest)
+
+**What is automatic.** Every public page is listed once, in `frontend/src/lib/publicPages.js`. The Pages build turns that list into:
+`/sitemap.xml` (stamped with the commit it was built from); a copy of `index.html` per page whose `<head>` is that page's own
+(title, description, canonical, share tags), served from e.g. `/pricing` -> `pricing.html`; and the tab titles. After every push to `main`
+that touches `frontend/`, `.github/workflows/indexnow.yml` waits for that deploy to appear on the live site, then tells
+**IndexNow** (Bing, Yandex, Seznam, Naver, Yep; Yahoo, DuckDuckGo and Ecosia take Bing's index) about each page that is new or changed.
+Google does not use IndexNow; it re-reads the sitemap on its own once you have submitted it ONCE (below).
+
+**Adding a marketing page or a blog post later:** add its `<Route>` and ONE object to `PAGES` / `POSTS` in `publicPages.js`
+(path, title, description, and for a post its real `lastmod`; see the header comment of that file). Deploy. Nothing is resubmitted by
+hand. `npm run test:frontend` fails if a new public route is neither listed nor deliberately unlisted, or if a listed page is
+blocked by robots.txt, noindexed in `_headers`, or missing its route.
+
+### One-time setup (about ten minutes, needs your Google and Bing logins)
+
+1. **Google Search Console** -> Add property -> **Domain** -> `usepassthrough.com`. Verify with the DNS TXT record it shows (add it in
+   Cloudflare DNS; Google also offers a one-click Cloudflare flow). A domain property covers `www`, `api.` and every other subdomain.
+2. Search Console -> Sitemaps -> add `sitemap.xml` -> Submit. Status should read "Success" with 7 discovered pages (it grows as you add pages).
+3. Search Console -> URL inspection -> `https://usepassthrough.com/` -> **Request indexing** (once; speeds up the first crawl).
+4. **Bing Webmaster Tools** -> Add a site -> **Import from Google Search Console** (sign in with the same Google account). It brings the site
+   and the sitemap across with no second verification. Then Sitemaps -> confirm `https://usepassthrough.com/sitemap.xml` is listed.
+5. **First IndexNow announcement:** GitHub -> Actions -> "Search indexing (IndexNow)" -> Run workflow -> tick **all**. After that it runs by itself.
+6. **www -> apex redirect (recommended):** if `www.usepassthrough.com` is a custom domain on the Pages project, add a Cloudflare
+   Redirect Rule (Rules -> Redirect Rules): hostname equals `www.usepassthrough.com` -> dynamic redirect to
+   `concat("https://usepassthrough.com", http.request.uri.path)` preserving the query string, status 301. (`_redirects` cannot match a host.)
+   Without it the canonical tags still name the apex, so this is tidiness, not a blocker.
+
+### Check it worked (after the deploy that ships this)
+
+```bash
+# 1. the generated sitemap, with a build marker equal to the deployed commit
+curl -s https://usepassthrough.com/sitemap.xml | head -5
+# 2. a page now has its OWN head in the raw HTML (no JavaScript involved). Expect the pricing title and canonical:
+curl -s https://usepassthrough.com/pricing | grep -oE '<title>[^<]*</title>|<link rel="canonical"[^>]*>'
+# 3. the IndexNow key file
+curl -s https://usepassthrough.com/3fa59d6e2d5d67a36c0fea096c93f298.txt
+# 4. pages.dev copies are noindex (replace with your project's address)
+curl -sI https://<project>.pages.dev/ | grep -i x-robots-tag
+```
+
+If step 2 shows the homepage title for `/pricing`, Cloudflare Pages is answering from the SPA fallback instead of the per-page file
+(the `/* /index.html 200` line in `_redirects` is the only thing that could cause that). Nothing is broken: pages work as before and the
+sitemap is still right. Delete that one line (Pages already falls back to `index.html` for unknown paths when there is no `404.html`) and redeploy.
+
+Search Console's Pages report is where to watch progress. A new site usually takes days to weeks to show up in Google; the sitemap
+makes sure nothing is missed, and no one can speed up ranking. Not covered: Baidu (needs its own account and an ICP-style setup), and
+Naver/Yandex dashboards, which are optional because IndexNow already reaches them.
 
 ---
 

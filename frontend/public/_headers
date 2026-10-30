@@ -85,3 +85,11 @@
 /.well-known/security.txt
   Content-Type: text/plain; charset=utf-8
   Cache-Control: public, max-age=86400
+
+# Search indexing: this project is also reachable at its *.pages.dev addresses (the production alias and every preview
+# deployment), which serve the same site as usepassthrough.com. Keep them out of search so they never compete with the
+# real domain. The rules only match those hosts; usepassthrough.com is unaffected.
+https://:project.pages.dev/*
+  X-Robots-Tag: noindex
+https://:version.:project.pages.dev/*
+  X-Robots-Tag: noindex

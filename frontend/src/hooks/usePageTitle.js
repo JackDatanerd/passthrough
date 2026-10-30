@@ -6,6 +6,7 @@ import { useLocation } from 'react-router-dom'
 // Also marks private/per-user pages noindex (robots.txt only covered /dashboard/).
 
 import { DEFAULT_TITLE, titleFor, isPrivatePath } from '../lib/pageTitles'
+import { canonicalOriginFor, findPublicPage } from '../lib/publicPages'
 export { DEFAULT_TITLE, titleFor, isPrivatePath }
 
 export default function usePageTitle(override) {
@@ -36,7 +37,11 @@ export default function usePageTitle(override) {
         canon.setAttribute('rel', 'canonical')
         document.head.appendChild(canon)
       }
-      canon.setAttribute('href', `${window.location.origin}${pathname === '/' ? '/' : pathname.replace(/\/+$/, '')}`)
+      // The origin is the real site's even when this copy was reached through www. or a *.pages.dev address, and a page
+      // in the search-index registry uses its registered path (so "/Pricing/" canonicalises to "/pricing").
+      const page = findPublicPage(pathname)
+      const origin = canonicalOriginFor(window.location.hostname, window.location.origin)
+      canon.setAttribute('href', `${origin}${page ? page.path : (pathname === '/' ? '/' : pathname.replace(/\/+$/, ''))}`)
     }
   }, [pathname, override])
 }

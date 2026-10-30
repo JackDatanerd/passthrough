@@ -1,13 +1,17 @@
 import { describe, it, expect } from 'vitest'
 import fs from 'node:fs'
 import path from 'node:path'
+import { publicPages } from '../src/lib/publicPages.js'
+import { sitemapXml } from '../seo/render.js'
 
 // Section 4 round 6 (bug): robots.txt said `Disallow: /partner/`, which also blocked /partner/apply — the one public
 // page of the program, which _headers deliberately makes indexable — and pointed at a sitemap that did not exist.
+// The sitemap is no longer a hand-kept file: the build generates it from src/lib/publicPages.js (frontend/seo/), so this
+// checks what the build will publish.
 const pub = f => fs.readFileSync(path.join(__dirname, '..', 'public', f), 'utf8')
 const robots = pub('robots.txt')
 const headers = pub('_headers')
-const sitemap = pub('sitemap.xml')
+const sitemap = sitemapXml(publicPages())
 const app = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.jsx'), 'utf8')
 
 const disallowed = robots.split(/\r?\n/).filter(l => /^Disallow:/i.test(l)).map(l => l.replace(/^Disallow:\s*/i, '').trim())

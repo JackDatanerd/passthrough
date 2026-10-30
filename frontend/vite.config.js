@@ -1,8 +1,10 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import seoPlugin from './seo/vitePlugin.js'
 
 export default defineConfig({
-  plugins: [react()],
+  // seoPlugin writes sitemap.xml and one <head>-per-page copy of index.html into dist/ (see frontend/seo/vitePlugin.js).
+  plugins: [react(), seoPlugin()],
   server: {
     port: 3000,
     proxy: {

@@ -1,0 +1,45 @@
+name: Search indexing (IndexNow)
+
+# After a push to main that touches the frontend, tell Bing, Yandex, Seznam, Naver and Yep (IndexNow) about any public
+# page that is new or changed, once its Cloudflare Pages deploy is live. Pages are listed in
+# frontend/src/lib/publicPages.js; Google reads the sitemap by itself. See DEPLOYMENT.md section 13.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - 'scripts/indexnow.mjs'
+      - '.github/workflows/indexnow.yml'
+  workflow_dispatch:
+    inputs:
+      all:
+        description: 'Announce every public page, not just what changed'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One at a time, none dropped: each run decides what to announce from its own commit range.
+concurrency:
+  group: indexnow
+  cancel-in-progress: false
+
+jobs:
+  indexnow:
+    name: Announce changed pages
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # the script reads the previous commit's page list and checks commit ancestry
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Announce
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          ALL: ${{ inputs.all }}
+        run: node scripts/indexnow.mjs

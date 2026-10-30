@@ -1,6 +1,8 @@
 // Pure route -> title table (kept separate from the hook so it can be unit-tested
 // without React). See hooks/usePageTitle.js.
-export const DEFAULT_TITLE = 'Passthrough — Does your resume pass the ATS filter?'
+import { HOME_TITLE, findPublicPage } from './publicPages'
+
+export const DEFAULT_TITLE = HOME_TITLE
 
 const ROUTES = [
   [/^\/pricing/, 'Pricing'],
@@ -34,12 +36,21 @@ const ROUTES = [
 // Case-insensitive like the router, so "/Dashboard" is private too.
 const PRIVATE = /^\/(scan|dashboard|admin|partner|payment|reset-password|verify-email|v)(\/|$)/i
 
+// A page listed in lib/publicPages.js (the search-index registry) names its own title there: the static <head> a crawler
+// reads before any JavaScript runs and the tab title set here must be the same string, and a page added to the
+// registry later (a blog post) needs no second edit in this file. Everything else falls through to the table above.
 export function titleFor(pathname) {
+  const page = findPublicPage(pathname)
+  if (page) return page.title
   const hit = ROUTES.find(([re]) => re.test(pathname))
   return hit ? `${hit[1]} — Passthrough` : DEFAULT_TITLE
 }
 
+// A page in the search-index registry is public by definition. This matters for /partner/apply and /partner/terms: the
+// /partner prefix above is private (token pages), and without this check the SPA stamped <meta name="robots"
+// content="noindex,nofollow"> and removed the canonical on those two pages at runtime, while _headers, robots.txt and
+// the sitemap all said "index me". Google reads the rendered page, so the noindex won.
 export function isPrivatePath(pathname) {
+  if (findPublicPage(pathname)) return false
   return PRIVATE.test(pathname)
 }
-
