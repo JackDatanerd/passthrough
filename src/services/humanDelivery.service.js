@@ -10,7 +10,7 @@ const pilot = require('../lib/humanPilot')
 const locks = require('../lib/humanLocks')
 const fieldCrypto = require('../lib/fieldCrypto')
 const { diffDocuments } = require('../lib/humanDiff')
-const { newFigures } = require('../lib/humanFacts')
+const { newFiguresDetailed } = require('../lib/humanFacts')
 
 async function logView(supabase, operatorId, action, jobId, detail = {}) {
   const { error } = await supabase.from('expert_audit_log').insert({ actor_kind: 'operator', actor_id: operatorId || null, action, target_type: 'human_job', target_id: jobId, detail })
@@ -31,16 +31,17 @@ async function loadLocked(env, supabase, jobId) {
   return locked
 }
 
-// Everything the customer gave us that makes a figure "already known": the original and AI draft, the brief, the guided top results,
-// answered questions, and the masked text of supporting files.
-async function knownSources(supabase, job, source, aiDraft) {
+// Everything the CUSTOMER gave us that makes a figure "already known": their original resume, any edit they made themselves, the brief,
+// the guided top results, answered questions, and the masked text of supporting files. NOT the AI draft and NOT the job posting: a
+// figure only those carry is still flagged (and labelled with where it came from), so the operator can check it with the customer.
+async function knownSources(supabase, job, source, userEdited) {
   const [{ data: qs }, { data: mats }] = await Promise.all([
     supabase.from('job_questions').select('answer_body, status').eq('job_id', job.id),
     supabase.from('job_materials').select('extracted_masked_text, status').eq('job_id', job.id).eq('kind', 'file'),
   ])
   const b = job.brief || {}
-  const texts = [JSON.stringify(b.topResults || []), b.keepAvoid, b.story, b.notes, b.jobPosting, ...(qs || []).filter(q => q.status === 'answered').map(q => q.answer_body), ...(mats || []).filter(m => m.status === 'ready').map(m => m.extracted_masked_text)].filter(Boolean)
-  return [source && source.body, aiDraft && aiDraft.body, ...texts].filter(Boolean)
+  const texts = [JSON.stringify(b.topResults || []), b.keepAvoid, b.story, b.notes, ...(qs || []).filter(q => q.status === 'answered').map(q => q.answer_body), ...(mats || []).filter(m => m.status === 'ready').map(m => m.extracted_masked_text)].filter(Boolean)
+  return [source && source.body, userEdited, ...texts].filter(Boolean)
 }
 
 async function buildReview(env, supabase, jobId, operatorId) {
@@ -52,18 +53,24 @@ async function buildReview(env, supabase, jobId, operatorId) {
   if (!working) return { ok: false, code: 'NOTHING_SAVED' }
   await logView(supabase, operatorId, 'review_job_content', jobId, { state: job.state })
   const locked = await loadLocked(env, supabase, jobId)
-  const { data: resume, missing } = locks.restoreDocument(working.body, locked)
-  const coverText = working.cover_letter && working.cover_letter.text ? locks.restoreDocument({ summary: working.cover_letter.text }, locked, { requireAll: false }) : null
   const base = aiDraft || source
-  const sources = await knownSources(supabase, job, source, aiDraft)
-  const figures = newFigures(working.body, sources, working.cover_letter && working.cover_letter.text ? [] : [])
-  const coverFigures = working.cover_letter && working.cover_letter.text ? newFigures({ t: working.cover_letter.text }, sources) : []
+  // only the lock markers the document the expert STARTED from carried can be missing: a field the customer's draft never had is not "lost"
+  const required = base ? Object.keys(locks.markerCounts(base.body)).filter(k => k.startsWith('lock:')) : null
+  const { data: resume, missing } = locks.restoreDocument(working.body, locked, { required })
+  // a cover letter is delivered only when it was ordered
+  const coverText = job.add_cover_letter && working.cover_letter && working.cover_letter.text ? locks.restoreDocument({ summary: working.cover_letter.text }, locked, { requireAll: false }) : null
+  const { data: scanRow } = job.scan_id ? await supabase.from('scans').select('user_edited_resume_data').eq('id', job.scan_id).maybeSingle() : { data: null }
+  const sources = await knownSources(supabase, job, source, scanRow && scanRow.user_edited_resume_data)
+  const labelled = { ai_draft: aiDraft ? [aiDraft.body] : [], job_posting: job.brief && job.brief.jobPosting ? [job.brief.jobPosting] : [] }
+  const figures = newFiguresDetailed(working.body, sources, [], labelled)
+  const coverFigures = coverText ? newFiguresDetailed({ t: working.cover_letter.text }, sources, [], labelled) : []
+  const details = [...new Map([...figures, ...coverFigures].map(f => [f.key, f])).values()].sort((x, y) => x.text.localeCompare(y.text))
   const { data: scan } = job.scan_id ? await supabase.from('scans').select('job_description_text').eq('id', job.scan_id).maybeSingle() : { data: null }
   const atsService = require('./ats.service'); const { serializeResumeData } = require('./resume.parser')
   let scoreAfter = null
   try { scoreAfter = atsService.scoreResume(serializeResumeData(resume), (scan && scan.job_description_text) || (job.brief && job.brief.jobPosting) || '').score } catch (err) { console.error('humanDelivery score:', err.message) }
   return { ok: true, job, resume, cover: coverText ? coverText.data.summary : null, missing: [...missing, ...(coverText ? coverText.missing : [])],
-    newFigures: [...new Set([...figures, ...coverFigures])].sort(), changes: diffDocuments(base && base.body, working.body), scoreBefore: job.score_before, scoreAfter, workingVersion: working.version }
+    newFigures: details.map(f => f.text), newFigureDetails: details.map(f => ({ text: f.text, origin: f.origin })), changes: diffDocuments(base && base.body, working.body), scoreBefore: job.score_before, scoreAfter, workingVersion: working.version }
 }
 
 const PDF_FAILED = 'PDF_FAILED'

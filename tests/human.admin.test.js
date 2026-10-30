@@ -66,6 +66,29 @@ describe('review', () => {
   })
 })
 
+describe('review: A5 audit', () => {
+  it('a figure only the AI draft or the job posting carries is flagged and labelled; a figure in the customer\'s own edit is not', async () => {
+    const body = JSON.parse(JSON.stringify(SRC.body)); body.experience[0].bullets = ['Grew users 40% across 3 markets.', 'Cut churn 70%, 10+ years, 12 reports, 25% faster.']
+    const w = world({ working: body, job: { brief: { targetRole: 'PM', jobPosting: 'We need 10+ years of SQL' } } })
+    w.t.job_documents.push({ job_id: J, kind: 'ai_draft', version: 1, body: { ...SRC.body, experience: [{ ...SRC.body.experience[0], bullets: ['Cut churn 70%.'] }] } })
+    w.t.scans[0].user_edited_resume_data = { summary: 'Made onboarding 25% faster' }
+    const d = delivery(w); const r = await d.svc.buildReview(d.env, w.db, J, OP)
+    expect(r.newFigures).toEqual(expect.arrayContaining(['70%', '10+', '12'])); expect(r.newFigures).not.toContain('25%')
+    expect(r.newFigureDetails).toEqual(expect.arrayContaining([{ text: '70%', origin: 'ai_draft' }, { text: '10+', origin: 'job_posting' }, { text: '12', origin: 'nowhere' }]))
+  })
+  it('a field the customer\'s draft never carried is not reported missing (the job used to be undeliverable, and nobody could fix it)', async () => {
+    const draft = JSON.parse(JSON.stringify(SRC.body)); delete draft.phone
+    const w = world({ working: draft }); w.t.job_documents.push({ job_id: J, kind: 'ai_draft', version: 1, body: draft })
+    const d = delivery(w); expect((await d.svc.buildReview(d.env, w.db, J, OP)).missing).toEqual([])
+    const noEmail = JSON.parse(JSON.stringify(draft)); delete noEmail.email; w.t.job_documents.find(x => x.kind === 'working').body = noEmail
+    expect((await d.svc.buildReview(d.env, w.db, J, OP)).missing).toEqual(['lock:email'])
+  })
+  it('a cover letter that was not ordered is not delivered', async () => {
+    const w = world({ cover: { text: 'Dear team, I am keen.' } })
+    const d = delivery(w); expect((await d.svc.buildReview(d.env, w.db, J, OP)).cover).toBeNull()
+  })
+})
+
 describe('delivery', () => {
   it('builds the Word and PDF files, stores them, records the scores and the diff through the database function, and tells the customer once', async () => {
     const w = world(); const d = delivery(w)

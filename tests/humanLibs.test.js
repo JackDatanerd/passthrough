@@ -75,8 +75,8 @@ describe('humanDiff', () => {
 })
 
 describe('humanFacts', () => {
-  it('reads figures with their symbols; ignores a lone digit and markers', () => {
-    expect([...figuresIn('Grew 40% to $1,200,000 in 2023 across 3 markets; [[c:12]] 2 teams')].sort()).toEqual(['1200000', '2023', '40%'].sort())
+  it('reads figures with their symbols (a lone digit counts too) and ignores markers', () => {
+    expect([...figuresIn('Grew 40% to $1,200,000 in 2023 across 3 markets; [[c:12]] 2 teams')].sort()).toEqual(['1200000', '2023', '2', '3', '40%'].sort())
   })
   it('flags a figure that is in none of the sources, accepts ones from source, brief or answers', () => {
     const final = { summary: 'Grew users 55% and cut cost 40%.' }

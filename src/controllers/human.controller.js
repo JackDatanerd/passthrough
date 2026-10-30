@@ -163,10 +163,10 @@ async function createOrder(ctx) {
   // freeze: source, AI draft and the working copy, all behind one lock map
   const shared = { locked: {}, n: 0 }
   const src = locks.lockDocument(source, shared)
-  const dr = draft ? locks.lockDocument(draft, shared) : null
+  const dr = draft ? locks.lockDocument(draft, shared, { override: true }) : null    // the document the expert works from decides the contact values (an owner's edit in the editor wins over the original)
   const working = dr ? dr.body : src.body
   let cover = null
-  if (q.addCoverLetter) cover = { text: locks.lockText(scan.cover_letter_text || '', shared, source.name) }
+  if (q.addCoverLetter) cover = { text: locks.lockText(scan.cover_letter_text || '', shared, (draft && draft.name) || source.name) }
 
   // the job's brief: the posting is stored as the customer gave it (the company name is masked from the expert when the job is read)
   const brief = { ...body.brief, jobPosting: body.brief.jobPosting || scan.job_description_text || '' }

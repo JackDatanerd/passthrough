@@ -4,8 +4,8 @@
 const { getSupabase } = require('../config/supabase')
 const pilot = require('../lib/humanPilot')
 const { audit } = require('../services/expertAudit.service')
-const { maskCompany } = require('./expert.controller')
 const { jobAccess } = require('../lib/expertRealm/scope')
+const { loadMaskContext, presentForExpert } = require('../lib/expertView')
 
 const isUuid = v => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)
 const WORKING = ['claimed', 'in_progress', 'waiting_customer', 'in_review', 'final_checks', 'revision', 'delivered']
@@ -37,8 +37,8 @@ async function jobBrief(c) {
   if (!r) return deny(c)                                            // the database refused: it logged the attempt itself
   try { await audit(supabase, { actorId: account.id, roles, action: 'job.brief_read', targetType: 'job', targetId: id, required: true }) }
   catch (_) { return c.json({ success: false, message: 'Not available right now.' }, 503) }     // no log, no read
-  const brief = { ...(r.job.brief || {}), jobPosting: maskCompany(r.job.brief && r.job.brief.jobPosting) }
   const { brief: _b, ...meta } = r.job
+  const { brief } = presentForExpert({ job: meta, brief: r.job.brief, questions: [], materials: [] }, await loadMaskContext(c.env, supabase, id))
   return c.json({ success: true, data: { job: { id: meta.id, jobNumber: meta.job_number, state: meta.state, tier: meta.tier, version: meta.version, dueAt: meta.promised_deadline_at }, brief } })
 }
 

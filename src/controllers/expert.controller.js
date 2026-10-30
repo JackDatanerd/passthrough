@@ -7,19 +7,12 @@ const { getSupabase } = require('../config/supabase')
 const pilot = require('../lib/humanPilot')
 const locks = require('../lib/humanLocks')
 const { diffDocuments } = require('../lib/humanDiff')
-const { companyFromPosting } = require('../lib/jobCompany')
+const { maskCompany, loadMaskContext, presentForExpert } = require('../lib/expertView')
 
 const bad = (c, message, status = 400, extra = {}) => c.json({ success: false, message, ...extra }, status)
 const readJson = async c => { try { return await c.req.json() } catch (_) { return undefined } }
 const isUuid = v => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)
 const NO_ACCESS = 'You do not have access to this job.'
-
-// The employer's name is hidden from the expert (product spec 6.3). Only a name the extractor is sure of is replaced.
-function maskCompany(text) {
-  const t = String(text || ''); const name = companyFromPosting(t)
-  if (!name) return t
-  return t.replace(new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g'), '[the company]')
-}
 
 const JOB_LIST_COLS = 'id, job_number, state, tier, add_cover_letter, expert_pay_cents, promised_deadline_at, internal_deadline_at, revision_count, revision_due_at, claimed_at'
 async function listJobs(c) {
@@ -41,10 +34,11 @@ async function getJob(c) {
   if (!r) return bad(c, NO_ACCESS, 403)
   const base = r.ai_draft || r.source
   const working = r.working || { version: 0, body: base, cover_letter: null }
-  const brief = { ...(r.job.brief || {}), jobPosting: maskCompany(r.job.brief && r.job.brief.jobPosting) }
-  const { brief: _b, ...job } = r.job
-  return c.json({ success: true, data: { job, brief, document: { version: working.version, body: working.body, coverLetter: working.cover_letter },
-    readOnly: locks.readOnlyPaths(base), baseline: base, changes: diffDocuments(base, working.body), questions: r.questions, materials: r.materials,
+  const { brief: _b, ...rawJob } = r.job
+  const ctx = await loadMaskContext(c.env, supabase, id)
+  const view = presentForExpert({ job: rawJob, brief: r.job.brief, questions: r.questions, materials: r.materials }, ctx)
+  return c.json({ success: true, data: { job: view.job, brief: view.brief, document: { version: working.version, body: working.body, coverLetter: working.cover_letter },
+    readOnly: locks.readOnlyPaths(base), baseline: base, changes: diffDocuments(base, working.body), questions: view.questions, materials: view.materials,
     askLimit: s.question_max || 3, canEdit: ['claimed', 'in_progress', 'revision'].includes(r.job.state) } })
 }
 
@@ -53,9 +47,9 @@ const saveBody = z.object({ baseVersion: z.number().int().min(0), body: z.record
 function validateCover(base, next) {
   const errors = []
   const baseText = base && typeof base.text === 'string' ? base.text : ''
-  if (locks.hasContact(next.text)) errors.push({ path: 'coverLetter', code: 'CONTACT_IN_TEXT' })
+  if (next.text !== baseText && locks.hasContact(next.text)) errors.push({ path: 'coverLetter', code: 'CONTACT_IN_TEXT' })
   const bc = locks.markerCounts(baseText), nc = locks.markerCounts(next.text)
-  for (const [m, n] of Object.entries(nc)) { if (!(m in bc)) errors.push({ path: m, code: 'UNKNOWN_MARKER' }); else if (n > bc[m]) errors.push({ path: m, code: 'MARKER_DUPLICATED' }) }
+  for (const [m, n] of Object.entries(nc)) { if (!Object.prototype.hasOwnProperty.call(bc, m)) errors.push({ path: m, code: 'UNKNOWN_MARKER' }); else if (n > bc[m]) errors.push({ path: m, code: 'MARKER_DUPLICATED' }) }
   return errors
 }
 
@@ -68,7 +62,11 @@ async function saveDocument(c) {
   if (be) throw be
   if (!start) return bad(c, NO_ACCESS, 403)
   const v = locks.validateEdit(start.body, p.data.body)
-  const coverErrors = p.data.coverLetter ? validateCover(start.cover_letter, p.data.coverLetter) : []
+  // the cover letter is bound to what was ordered: no letter on a job that did not buy one, and a letter that exists is never dropped by a save that leaves it out
+  const coverErrors = []
+  if (start.cover_letter == null && p.data.coverLetter) coverErrors.push({ path: 'coverLetter', code: 'COVER_NOT_ORDERED' })
+  else if (start.cover_letter != null && !p.data.coverLetter) coverErrors.push({ path: 'coverLetter', code: 'COVER_MISSING' })
+  else if (p.data.coverLetter) coverErrors.push(...validateCover(start.cover_letter, p.data.coverLetter))
   const errors = [...v.errors, ...coverErrors]
   if (errors.length) return bad(c, 'Some of that cannot be saved: locked details and read-only lines cannot be changed, and contact details cannot be typed into the text.', 422, { errors })
   const { data, error } = await supabase.rpc('human_job_expert_save', { p_job: id, p_expert: e.id, p_base_version: p.data.baseVersion, p_body: p.data.body, p_cover: p.data.coverLetter || null, p_seconds: p.data.seconds || 0 })

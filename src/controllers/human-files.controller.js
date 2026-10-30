@@ -12,6 +12,7 @@ const MIME = { pdf: 'application/pdf', docx: 'application/vnd.openxmlformats-off
 const KIND_FILE = { docx: { name: 'resume.docx', mime: MIME.docx }, pdf: { name: 'resume.pdf', mime: MIME.pdf }, cover: { name: 'cover-letter.docx', mime: MIME.docx } }
 const BEFORE_CLAIM = ['awaiting_payment', 'offered', 'open']
 const MIN_TEXT_CHARS = 200
+const MAX_TEXT_CHARS = 60000
 
 // Adds one supporting file: stored original (customer-only), extracted text masked into the job's lock map (the expert sees only that).
 async function addMaterial(ctx) {
@@ -32,19 +33,36 @@ async function addMaterial(ctx) {
   const text = (await require('../services/resume.parser').extractText(bytes, mime)) || ''
   if (text.trim().length < MIN_TEXT_CHARS) return bad(ctx, 'We could not read text from that file. Please use a Word or text-based PDF file.', 422)
 
-  const { data: scanRow } = await supabase.from('human_jobs').select('scan_id').eq('id', j.id).maybeSingle()
-  const { data: sc } = scanRow && scanRow.scan_id ? await supabase.from('scans').select('original_resume_data').eq('id', scanRow.scan_id).maybeSingle() : { data: null }
   const shared = await loadShared(ctx.env, supabase, j.id)
   const before = new Set(Object.keys(shared.locked))
-  const masked = locks.lockText(text.slice(0, 60000), shared, sc && sc.original_resume_data && sc.original_resume_data.name)
+  // the client's name comes from the lock map frozen when the order was placed (their later edits to the scan do not change what we hide)
+  let name = shared.locked['lock:name']
+  if (!name) {
+    const { data: scanRow } = await supabase.from('human_jobs').select('scan_id').eq('id', j.id).maybeSingle()
+    const { data: sc } = scanRow && scanRow.scan_id ? await supabase.from('scans').select('original_resume_data').eq('id', scanRow.scan_id).maybeSingle() : { data: null }
+    name = sc && sc.original_resume_data && sc.original_resume_data.name
+  }
+  const truncated = text.length > MAX_TEXT_CHARS
+  const masked = locks.lockText(text.slice(0, MAX_TEXT_CHARS), shared, name)
   const key = `human/${j.id}/materials/${crypto.randomUUID()}`
   await ctx.env.RESUMES_BUCKET.put(key, bytes, { httpMetadata: { contentType: mime } })
   try {
     await saveNewLocked(ctx.env, supabase, j.id, shared, before)
     const { data: row, error } = await supabase.from('job_materials').insert({ job_id: j.id, kind: 'file', label: String(file.name || 'file').slice(0, 120), extracted_masked_text: masked, original_object_key: key }).select('id').single()
     if (error) throw error
+    // the checks above ran before a slow parse and upload: re-check now that the row exists, and back out if two uploads raced past the limit or an expert took the order meanwhile
+    const [{ data: nowHave }, { data: nowJob }] = await Promise.all([
+      supabase.from('job_materials').select('id').eq('job_id', j.id).eq('kind', 'file').neq('status', 'removed'),
+      supabase.from('human_jobs').select('state').eq('id', j.id).maybeSingle(),
+    ])
+    const overLimit = (nowHave || []).length > s.materials_max_files, claimed = !nowJob || !BEFORE_CLAIM.includes(nowJob.state)
+    if (overLimit || claimed) {
+      await supabase.from('job_materials').update({ status: 'removed', extracted_masked_text: null, original_object_key: null }).eq('id', row.id)
+      await ctx.env.RESUMES_BUCKET.delete(key).catch(() => {})
+      return bad(ctx, overLimit ? `You can add up to ${s.materials_max_files} files.` : 'An expert has this order now. If you have more to tell them, answer their question when they ask.', 409)
+    }
     await supabase.from('job_events').insert({ job_id: j.id, kind: 'material_added', actor_kind: 'customer', actor_id: g.user.id, detail: { kind: 'file' } })
-    return ctx.json({ success: true, data: { id: row.id } })
+    return ctx.json({ success: true, data: { id: row.id, truncated } })
   } catch (err) {
     await ctx.env.RESUMES_BUCKET.delete(key).catch(() => {})
     throw err
@@ -64,6 +82,8 @@ async function addLink(ctx) {
   if ((have || []).length >= 5) return bad(ctx, 'You can add up to 5 links.', 409)
   const { data: row, error } = await supabase.from('job_materials').insert({ job_id: j.id, kind: 'link', label: p.data.label || null, link_url: p.data.url }).select('id').single()
   if (error) throw error
+  const { data: nowHave } = await supabase.from('job_materials').select('id').eq('job_id', j.id).eq('kind', 'link').neq('status', 'removed')
+  if ((nowHave || []).length > 5) { await supabase.from('job_materials').update({ status: 'removed', link_url: null }).eq('id', row.id); return bad(ctx, 'You can add up to 5 links.', 409) }
   return ctx.json({ success: true, data: { id: row.id } })
 }
 
@@ -75,7 +95,8 @@ async function removeMaterial(ctx) {
   if (!BEFORE_CLAIM.includes(j.state)) return bad(ctx, 'An expert has this order now.', 409)
   const { data: m } = await supabase.from('job_materials').select('id, original_object_key').eq('id', mid).eq('job_id', j.id).maybeSingle()
   if (!m) return bad(ctx, 'Not found.', 404)
-  await supabase.from('job_materials').update({ status: 'removed', extracted_masked_text: null, link_url: null, original_object_key: null }).eq('id', mid)
+  const { error: ue } = await supabase.from('job_materials').update({ status: 'removed', extracted_masked_text: null, link_url: null, original_object_key: null }).eq('id', mid)
+  if (ue) throw ue                                                  // the row still points at the file: keep the file
   if (m.original_object_key) await ctx.env.RESUMES_BUCKET.delete(m.original_object_key).catch(() => {})
   return ctx.json({ success: true })
 }

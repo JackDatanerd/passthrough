@@ -35,7 +35,16 @@ function validSettings(s) {
 async function loadSettings(supabase) {
   const { data, error } = await supabase.from('system_state').select('value').eq('key', SETTINGS_KEY).maybeSingle()
   if (error) throw error
-  return data && validSettings(data.value) ? data.value : null
+  return data && validSettings(data.value) ? withLimitDefaults(data.value) : null
+}
+
+// validSettings guards prices and tiers; the limits below are guarded here by filling a safe default for any that is missing or not a positive
+// whole number, so an edited settings row can never switch an upload or question limit OFF.
+const LIMIT_DEFAULTS = { materials_max_files: 3, materials_max_bytes: 5 * 1048576, question_max: 3, question_answer_hours: 24, pending_expiry_hours: 24 }
+function withLimitDefaults(s) {
+  const out = { ...s }
+  for (const [k, d] of Object.entries(LIMIT_DEFAULTS)) if (!Number.isInteger(out[k]) || out[k] <= 0) out[k] = d
+  return out
 }
 
 // What a given order costs and pays, from the settings in force right now. The caller stores the result ON THE JOB ROW.
@@ -67,4 +76,4 @@ function newJobNumber() {
   return 'HJ-' + Array.from(b, x => JOB_NO_ALPHABET[x % JOB_NO_ALPHABET.length]).join('')
 }
 
-module.exports = { tierLabel, SETTINGS_KEY, TIERS, KIND_BY_TIER, TIER_BY_KIND, isHumanKind, humanEnabled, userAllowed, validSettings, loadSettings, quote, deadlines, newJobNumber }
+module.exports = { tierLabel, SETTINGS_KEY, TIERS, KIND_BY_TIER, TIER_BY_KIND, isHumanKind, humanEnabled, userAllowed, validSettings, loadSettings, withLimitDefaults, LIMIT_DEFAULTS, quote, deadlines, newJobNumber }

@@ -188,6 +188,28 @@ describe('the workbench', () => {
     const b = await build({ rpcs: { ...savable(), human_job_expert_save: () => ({ data: { ok: false, reason: 'conflict', current_version: 3 }, error: null }) } }); const tk = await signIn(b)
     const r = await req(b, 'PUT', `/api/expert/jobs/${JOB}/document`, { baseVersion: 1, body: LOCKED.body }, tk); expect(r.status).toBe(409)
   })
+  it('A5: what the customer typed (brief, answers, revision note) reaches the expert scrubbed of contact details, the customer\'s own details and the employer', async () => {
+    const read = () => ({ data: { job: { id: JOB, job_number: 'HJ-T', state: 'in_progress', tier: 'forty_eight_hour', revision_reason: 'My number is 0712 345 678',
+      brief: { targetRole: 'PM', story: 'I am Wanjiru Kamau (w@example.com) from Nairobi, Kenya.', jobPosting: 'Company: Globex Inc\nGlobex Inc is hiring. Globex leads. Mail jobs@globex.com' } },
+      source: LOCKED.body, ai_draft: null, working: { version: 1, body: LOCKED.body, cover_letter: null }, questions: [{ id: 'q1', body: 'Which role?', status: 'answered', answer_body: 'Call +254 712 345 678 or write w@example.com' }], materials: [] }, error: null })
+    const a = await build({ rpcs: { human_job_expert_read: read } }); const token = await signIn(a)
+    t.world.t.job_locked_values = Object.entries(LOCKED.locked).map(([path, v]) => ({ job_id: JOB, path, value_enc: `enc:${v}` }))
+    const d = (await (await req(a, 'GET', `/api/expert/jobs/${JOB}`, null, token)).json()).data
+    const json = JSON.stringify({ job: d.job, brief: d.brief, questions: d.questions })        // the resume body itself is the client\'s own text (it names the client\'s own employers)
+    for (const secret of ['Wanjiru', 'Kamau', 'w@example.com', '712 345 678', 'Globex', 'jobs@globex.com']) expect(json, secret).not.toContain(secret)
+    expect(d.brief.targetRole).toBe('PM')
+  })
+  it('A5: the cover letter is bound to the order: none on a job that did not buy one, and a save that leaves out an existing one is refused rather than deleting it', async () => {
+    const withCover = { human_job_expert_baseline: () => ({ data: { body: LOCKED.body, cover_letter: { text: 'Dear team.' } }, error: null }), human_job_expert_save: () => ({ data: { ok: true, version: 2 }, error: null }) }
+    let a = await build({ rpcs: savable() }); let token = await signIn(a)
+    let r = await req(a, 'PUT', `/api/expert/jobs/${JOB}/document`, { baseVersion: 1, body: LOCKED.body, coverLetter: { text: 'Dear hiring team.' } }, token)
+    expect(r.status).toBe(422); expect((await r.json()).errors.map(e => e.code)).toContain('COVER_NOT_ORDERED'); expect(t.calls.some(c => c[0] === 'human_job_expert_save')).toBe(false); t.restore()
+    a = await build({ rpcs: withCover }); token = await signIn(a)
+    r = await req(a, 'PUT', `/api/expert/jobs/${JOB}/document`, { baseVersion: 1, body: LOCKED.body }, token)
+    expect(r.status).toBe(422); expect((await r.json()).errors.map(e => e.code)).toContain('COVER_MISSING'); expect(t.calls.some(c => c[0] === 'human_job_expert_save')).toBe(false)
+    r = await req(a, 'PUT', `/api/expert/jobs/${JOB}/document`, { baseVersion: 1, body: LOCKED.body, coverLetter: { text: 'Dear hiring team.' } }, token)
+    expect(r.status).toBe(200)
+  })
   it('asks a question (no contact details in it) and submits for review', async () => {
     const a = await build({ rpcs: { human_job_ask: () => ({ data: { ok: true, seq: 1 }, error: null }), human_job_submit: () => ({ data: { ok: true }, error: null }) } }); const token = await signIn(a)
     expect((await req(a, 'POST', `/api/expert/jobs/${JOB}/questions`, { body: 'Which role is the target?' }, token)).status).toBe(200)
