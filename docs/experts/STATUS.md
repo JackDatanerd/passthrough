@@ -24,6 +24,15 @@ Contract: `passthrough-experts-spec-pack-index.docx` (read first), `passthrough-
 | 7 | Hardening and independent audits | not started |
 | 8 | Controlled launch and growth | not started |
 
+## Audit passes (Phases 0A, 1, 2A; started 30 Oct 2026)
+
+Plan and section list: `docs/experts/audit/AUDIT-PLAN.md`. Phase 2B stays on hold until sections A1 to A6 are done (A1 to A4 are the minimum).
+
+| Section | State |
+|---|---|
+| A1 Realm sign-in, second factor, sessions, reset | **pass 1 done**: six findings fixed (lockout race, cookie not rotated, step-up ignored the lock, lock oracle at sign-in, second-factor replay race, reset 500), nine reported, one decision for the owner (enrolment by first password). `docs/experts/audit/auth-sessions-pass1.md`, `CHANGES-experts-audit-1.txt` |
+| A2 to A12 | not started |
+
 ## Phase 0A: what exists
 
 A fake door for **Human rewrite**, behind one flag, waitlist only. No payment, no deposit, no job table, no expert realm.

@@ -135,7 +135,7 @@ describe('sign-in, two-factor, recovery codes', () => {
   it('five wrong passwords lock the account; the right password is then refused until the lock ends', async () => {
     for (let i = 0; i < 5; i++) expect((await call('POST', '/api/expert-realm/auth/login', { body: { email: 'exp@example.com', password: 'nope nope nope nope' } })).status).toBe(401)
     expect(row('exp').locked_until).toBeTruthy()
-    const locked = await call('POST', '/api/expert-realm/auth/login', { body: { email: 'exp@example.com', password: PASSWORD } }); expect(locked.status).toBe(429)
+    const locked = await call('POST', '/api/expert-realm/auth/login', { body: { email: 'exp@example.com', password: PASSWORD } }); expect(locked.status).toBe(401)
     row('exp').locked_until = new Date(Date.now() - 1000).toISOString()
     expect((await call('POST', '/api/expert-realm/auth/login', { body: { email: 'exp@example.com', password: PASSWORD } })).status).toBe(200)
   })

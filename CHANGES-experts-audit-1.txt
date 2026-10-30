@@ -1,0 +1,50 @@
+CHANGES-experts-audit-1.txt  (Experts audit pass 1: realm sign-in, second factor, sessions, password reset)
+Base commit: 1e4b582c80be60a7c89613df800980741106cb9d  ("Experts Phase 2A")
+================================================================================
+
+1. WHAT THIS IS
+   The first independent audit of Experts (nothing was audited before). It maps what exists, lists the sections to audit across chats
+   (docs/experts/audit/AUDIT-PLAN.md) and does section A1. No new feature; Phase 2B is not started.
+
+2. FIXED (details, evidence and severity: docs/experts/audit/auth-sessions-pass1.md)
+   F1 lockout counter race (parallel guesses never locked)      -> compare-and-set in recordFailure
+   F2 cookie after second factor was the same token             -> new session row and cookie on promotion, pending row revoked
+   F3 step-up and change-password ignored the lock              -> both answer 429 while locked
+   F4 sign-in told a locked account from a wrong password       -> one 401 answer for wrong password, unknown email, disabled, locked
+   F5 second-factor code could be replayed in parallel          -> compare-and-set on totp_last_step
+   F6 reset link for a deleted account was a 500                -> clean 400
+
+3. EXISTING FILES TOUCHED
+   src/controllers/expert-realm-auth.controller.js   F1 to F6 (recordFailure, login, totpVerify, finishSignIn, stepUp, changePassword, reset, GENERIC message)
+   src/services/expertSession.service.js             F2: promoteSession (new); promote() kept as a thin wrapper, same return value as before
+   tests/expertRealm.phase2a.test.js                 ONE line: a locked sign-in now expects 401 (was 429) because of F4
+   docs/experts/STATUS.md                            audit section added
+   No migration. No change to EXPECTED_SCHEMA_VERSION. No shared (non-Experts) file touched. Flag off: nothing changes (the realm router is
+   still the ordinary 404; the flag-off snapshot test and the cross-realm test pass unchanged).
+
+4. NEW FILES
+   docs/experts/audit/AUDIT-PLAN.md, docs/experts/audit/auth-sessions-pass1.md, tests/expertRealm.auditAuth1.test.js (8 tests), this file.
+
+5. TESTS
+   Realm files before the change: 74 passed. After: core 23, crossRealm 5, phase2a 46, auditAuth1 8, bridge 8, staffScript 4 = all passing (see section 8 for the full suite).
+   Regression check: with the two source files reverted, 7 of the 8 new tests fail (the eighth is a guard that held before).
+   Proven on an in-memory database double; F1 and F5 are race fixes, so they must be re-tested against a real Postgres (see 7).
+
+6. BEHAVIOUR CHANGES YOU WILL NOTICE
+   - A locked account's sign-in now shows the same message as a wrong password (the message now ends "After several failed attempts, sign-in pauses for a while.").
+     The "Too many attempts" 429 remains for the second factor, recovery code, step-up and change-password (those need a password first).
+   - Signing in with the second factor gives a new session id; audit rows 'auth.signed_in' now carry the new id. The pending session shows as revoked ('promoted') in expert_sessions.
+   - A second factor code that loses a simultaneous race is a failed code and counts toward the lock.
+
+7. KNOWN GAPS / NOT FIXED
+   See auth-sessions-pass1.md "Not fixed" (nine items) and "Could not test". Decision needed from you: first-sign-in enrolment relies on the first password
+   alone (item 1 there). Not tested: real browser, phone authenticator, real Postgres concurrency, the rate limiter's atomicity, the full jwt.js verify path.
+
+8. FULL SUITE
+   A full-suite run did not finish in this environment (no output after ~14 minutes, killed; the 2A notes say the same happened to them), so there is NO full-suite number.
+   Run instead: every test file that references the changed code (expertRealm.core, crossRealm, phase2a, auditAuth1, migrations.0127.pglite) plus
+   all tests/expert*, tests/human*, migrations.0124, email.registry, and frontend/tests/experts and frontend/tests/human:
+   backend 374 of 375 first run, the 1 failure and 2 file errors were missing frontend packages (axios, react-router-dom) in this sandbox;
+   after installing them the frontend experts and human tests: 4 files, 48 tests passed. Backend targeted set: all passed.
+   Please run the full suite on your machine before committing. Known failing on the base (from the 2A notes, not touched here): hot-categories frontend tests,
+   migration numbering tests (0125 records itself as 124).

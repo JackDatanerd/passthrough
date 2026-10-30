@@ -12,7 +12,9 @@ const sessions = require('../services/expertSession.service')
 const { audit } = require('../services/expertAudit.service')
 const mail = require('../services/expertMail.service')
 
-const GENERIC = 'Email or password is not correct.'
+// AUDIT (auth/sessions 1, F4): ONE answer for a wrong password, an unknown email, a disabled account AND a locked account, so the sign-in
+// form cannot be used to find out whether an address has an account or is locked. The sentence tells a real person what to do.
+const GENERIC = 'Email or password is not correct. After several failed attempts, sign-in pauses for a while.'
 const bad = (c, message, status = 400, code) => c.json({ success: false, message, ...(code ? { code } : {}) }, status)
 const readJson = async c => { try { return await c.req.json() } catch (_) { return undefined } }
 let dummyHash = null
@@ -23,12 +25,25 @@ const setCookie = (c, value) => c.header('Set-Cookie', value)
 
 const loginBody = z.object({ email: z.string().trim().toLowerCase().email().max(320), password: z.string().min(1).max(200) }).strict()
 
+// AUDIT (auth/sessions 1, F1): the counter used to be read, +1, written back, so parallel guesses all wrote the same number and never reached
+// the lock (12 parallel wrong passwords left failed_logins at 1). Now a compare-and-set on the value that was read: a lost race re-reads and
+// retries, every lost race means someone else's failure was counted, and if contention will not settle the account is locked (fail safe).
+const lockPatch = s => ({ failed_logins: 0, locked_until: new Date(Date.now() + s.lock_minutes * 60e3).toISOString() })
 async function recordFailure(supabase, account, s) {
-  const fails = (account.failed_logins || 0) + 1
-  await supabase.from('expert_accounts').update(fails >= s.max_failures
-    ? { failed_logins: 0, locked_until: new Date(Date.now() + s.lock_minutes * 60e3).toISOString() } : { failed_logins: fails }).eq('id', account.id)
-  return fails >= s.max_failures
+  let cur = account.failed_logins || 0
+  for (let i = 0; i < 6; i++) {
+    const fails = cur + 1; const lock = fails >= s.max_failures
+    const { data } = await supabase.from('expert_accounts').update(lock ? lockPatch(s) : { failed_logins: fails }).eq('id', account.id).eq('failed_logins', cur).select('id').maybeSingle()
+    if (data) return lock
+    const { data: fresh } = await supabase.from('expert_accounts').select('failed_logins, locked_until').eq('id', account.id).maybeSingle()
+    if (!fresh) return false
+    if (fresh.locked_until && new Date(fresh.locked_until) > new Date()) return true
+    cur = fresh.failed_logins || 0
+  }
+  await supabase.from('expert_accounts').update(lockPatch(s)).eq('id', account.id)
+  return true
 }
+const isLocked = a => !!(a && a.locked_until && new Date(a.locked_until) > new Date())
 
 async function login(c) {
   const p = loginBody.safeParse(await readJson(c)); if (!p.success) return bad(c, GENERIC, 401)
@@ -36,7 +51,7 @@ async function login(c) {
   const { data: a, error } = await supabase.from('expert_accounts').select(`${COLS}, password_hash`).eq('email', p.data.email).maybeSingle()
   if (error) throw error
   const match = await bcrypt.compare(p.data.password, (a && a.password_hash) || await getDummy())     // same work whether or not the account exists
-  if (a && a.locked_until && new Date(a.locked_until) > new Date()) return bad(c, 'Too many attempts. Please wait and try again.', 429, 'LOCKED')
+  if (isLocked(a)) return bad(c, GENERIC, 401)                 // F4: same answer as a wrong password
   if (!a || !match || !usable(a)) {
     if (a && !match) { const locked = await recordFailure(supabase, a, s); await audit(supabase, { actorKind: 'expert', actorId: a.id, action: 'auth.password_failed', targetType: 'account', targetId: a.id, detail: { locked } }) }
     return bad(c, GENERIC, 401)
@@ -69,11 +84,11 @@ async function issueRecoveryCodes(env, supabase, expertId, count) {
 }
 
 async function finishSignIn(c, supabase, account, sessionId, extra = {}) {
-  const cookie = await sessions.promote(c.env, supabase, account, sessionId)
-  if (!cookie) return bad(c, 'Please sign in again.', 401, 'AUTH')
-  setCookie(c, cookie)
+  const r = await sessions.promoteSession(c.env, supabase, account, sessionId)         // F2: a NEW session id and cookie; the pending one ends
+  if (!r) return bad(c, 'Please sign in again.', 401, 'AUTH')
+  setCookie(c, r.cookie)
   await supabase.from('expert_accounts').update({ failed_logins: 0, last_login_at: new Date().toISOString() }).eq('id', account.id)
-  await audit(supabase, { actorId: account.id, roles: account.roles, action: 'auth.signed_in', targetType: 'session', targetId: sessionId, detail: extra.method ? { method: extra.method } : {} })
+  await audit(supabase, { actorId: account.id, roles: account.roles, action: 'auth.signed_in', targetType: 'session', targetId: r.sessionId, detail: extra.method ? { method: extra.method } : {} })
   return null
 }
 
@@ -92,7 +107,15 @@ async function totpVerify(c) {
     return bad(c, 'That code did not work.', 401, 'BAD_CODE')
   }
   const enrolling = !a.totp_enabled_at
-  await supabase.from('expert_accounts').update({ totp_last_step: step, ...(enrolling ? { totp_enabled_at: new Date().toISOString() } : {}) }).eq('id', a.id)
+  // AUDIT (auth/sessions 1, F5): the step is claimed with a compare-and-set on the step that was read, so the same code sent twice at once
+  // (two sessions) wins once. The loser is a failed code like any other.
+  const claim = supabase.from('expert_accounts').update({ totp_last_step: step, ...(enrolling ? { totp_enabled_at: new Date().toISOString() } : {}) }).eq('id', a.id)
+  const { data: won } = await (a.totp_last_step == null ? claim.is('totp_last_step', null) : claim.eq('totp_last_step', a.totp_last_step)).select('id').maybeSingle()
+  if (!won) {
+    const locked = await recordFailure(supabase, a, s)
+    await audit(supabase, { actorId: a.id, roles: a.roles, action: 'auth.second_factor_failed', targetType: 'session', targetId: session.id, detail: { locked, reason_code: 'replay' } })
+    return bad(c, 'That code did not work.', 401, 'BAD_CODE')
+  }
   const refused = await finishSignIn(c, supabase, a, session.id, { method: 'totp' }); if (refused) return refused
   // recovery codes are issued at enrolment, and also to a pilot account that enrolled in Phase 1 and has none yet
   const { data: have } = await supabase.from('expert_recovery_codes').select('id').eq('expert_id', a.id).limit(1)
@@ -156,7 +179,8 @@ async function endSession(c) {
 async function stepUp(c) {
   const { account, session } = c.get('xr'); const supabase = getSupabase(c.env); const s = await cfg.loadSettings(supabase)
   const p = z.object({ password: z.string().min(1).max(200) }).strict().safeParse(await readJson(c)); if (!p.success) return bad(c, 'Enter your password.', 400)
-  const { data: a } = await supabase.from('expert_accounts').select('password_hash, failed_logins, id').eq('id', account.id).maybeSingle()
+  const { data: a } = await supabase.from('expert_accounts').select('password_hash, failed_logins, locked_until, id').eq('id', account.id).maybeSingle()
+  if (isLocked(a)) return bad(c, 'Too many attempts. Please wait and try again.', 429, 'LOCKED')     // F3: a locked account cannot be guessed at through step-up
   if (!(await bcrypt.compare(p.data.password, a.password_hash))) { const locked = await recordFailure(supabase, a, s); return bad(c, 'That password is not correct.', locked ? 429 : 401, 'BAD_PASSWORD') }
   const until = await sessions.elevate(supabase, session.id)
   return c.json({ success: true, data: { elevatedUntil: until } })
@@ -193,6 +217,7 @@ async function reset(c) {
   const { data: row } = await supabase.from('expert_password_resets').select('id, expert_id, expires_at, used_at').eq('token_hash', hash).maybeSingle()
   if (!row || row.used_at || new Date(row.expires_at) <= new Date()) return bad(c, 'This link is not valid or has expired.', 400)
   const { data: a } = await supabase.from('expert_accounts').select('id, email, token_version, roles').eq('id', row.expert_id).maybeSingle()
+  if (!a) return bad(c, 'This link is not valid or has expired.', 400)          // F6: the account was removed after the link was issued (this used to be a 500)
   const problem = await passwordProblem(c, p.data.password, a && a.email); if (problem) return bad(c, problem, 400, 'WEAK_PASSWORD')
   const { data: claimed } = await supabase.from('expert_password_resets').update({ used_at: new Date().toISOString() }).eq('id', row.id).is('used_at', null).select('id').maybeSingle()
   if (!claimed) return bad(c, 'This link is not valid or has expired.', 400)       // another request used it first
@@ -205,7 +230,8 @@ async function reset(c) {
 async function changePassword(c) {
   const { account, roles, session } = c.get('xr'); const supabase = getSupabase(c.env)
   const p = z.object({ current: z.string().min(1).max(200), next: z.string().min(1).max(200) }).strict().safeParse(await readJson(c)); if (!p.success) return bad(c, 'Fill in both fields.', 400)
-  const { data: a } = await supabase.from('expert_accounts').select('id, email, password_hash, token_version, failed_logins').eq('id', account.id).maybeSingle()
+  const { data: a } = await supabase.from('expert_accounts').select('id, email, password_hash, token_version, failed_logins, locked_until').eq('id', account.id).maybeSingle()
+  if (isLocked(a)) return bad(c, 'Too many attempts. Please wait and try again.', 429, 'LOCKED')     // F3
   if (!(await bcrypt.compare(p.data.current, a.password_hash))) { await recordFailure(supabase, a, await cfg.loadSettings(supabase)); return bad(c, 'Your current password is not correct.', 401, 'BAD_PASSWORD') }
   const problem = await passwordProblem(c, p.data.next, a.email); if (problem) return bad(c, problem, 400, 'WEAK_PASSWORD')
   await supabase.from('expert_accounts').update({ password_hash: await bcrypt.hash(p.data.next, 10) }).eq('id', a.id)

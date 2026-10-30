@@ -39,15 +39,22 @@ async function mint(env, supabase, account, sessionId, now = Date.now()) {
   return cookieHeader(token, secs)
 }
 
-// Second factor passed: lift the session to its full absolute lifetime and rotate the cookie.
-async function promote(env, supabase, account, sessionId, now = Date.now()) {
+// Second factor passed: end the PENDING session and open a NEW session row at its full lifetime, with a new cookie.
+// AUDIT (auth/sessions 1, F2): this used to keep the same session id and re-sign identical claims, so the cookie held from the password step
+// (which was never promised to stay inert) became the full session, and "rotate the cookie" was not true. Now the pending id dies here.
+// Returns the new cookie string; the new session id is on the second value of promoteSession() for callers that need it.
+async function promoteSession(env, supabase, account, pendingId, now = Date.now()) {
   const s = await loadSettings(supabase, now)
-  const abs = new Date(now + s.absolute_days * 86400e3).toISOString()
-  const { data } = await supabase.from('expert_sessions').update({ mfa_verified_at: new Date(now).toISOString(), absolute_expires_at: abs, last_seen_at: new Date(now).toISOString() })
-    .eq('id', sessionId).eq('expert_id', account.id).is('revoked_at', null).select('id').maybeSingle()
-  if (!data) return null
-  return mint(env, supabase, account, sessionId, now)
+  const { data: old } = await supabase.from('expert_sessions').select('ip_hash, user_agent, absolute_expires_at, revoked_at').eq('id', pendingId).eq('expert_id', account.id).maybeSingle()
+  if (!old || old.revoked_at || now >= new Date(old.absolute_expires_at).getTime()) return null
+  const abs = new Date(now + s.absolute_days * 86400e3).toISOString(), at = new Date(now).toISOString()
+  const { data: fresh } = await supabase.from('expert_sessions').insert({ expert_id: account.id, mfa_verified_at: at, absolute_expires_at: abs, last_seen_at: at, ip_hash: old.ip_hash, user_agent: old.user_agent }).select('id').single()
+  if (!fresh) return null
+  const { data: ended } = await supabase.from('expert_sessions').update({ revoked_at: at, revoked_reason: 'promoted' }).eq('id', pendingId).eq('expert_id', account.id).is('revoked_at', null).select('id').maybeSingle()
+  if (!ended) { await supabase.from('expert_sessions').update({ revoked_at: at, revoked_reason: 'promote_race' }).eq('id', fresh.id); return null }     // another request promoted it first
+  return { cookie: await mint(env, supabase, account, fresh.id, now), sessionId: fresh.id }
 }
+const promote = async (...a) => { const r = await promoteSession(...a); return r && r.cookie }
 
 // Resolve a request's cookie to { account, session } or { error }. Never throws for a bad token. Checks, in order: signature, audience,
 // session row (exists, not revoked, not past absolute, within idle), account (enabled, usable status, a role, token_version).
@@ -95,4 +102,4 @@ async function listSessions(supabase, expertId, now = Date.now()) {
   return (data || []).filter(r => new Date(r.absolute_expires_at).getTime() > now && r.mfa_verified_at)
 }
 
-module.exports = { AUD, cookieHeader, clearCookieHeader, readCookie, createSession, mint, promote, resolve, isElevated, elevate, revoke, revokeAll, listSessions }
+module.exports = { AUD, cookieHeader, clearCookieHeader, readCookie, createSession, mint, promote, promoteSession, resolve, isElevated, elevate, revoke, revokeAll, listSessions }
