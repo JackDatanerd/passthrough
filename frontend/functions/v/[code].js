@@ -39,6 +39,10 @@ export async function onRequestGet(context) {
   // so the SPA's own boot behavior can't drift from what real users get.
   const response = await context.next()
 
+  // A11: the expert site's Pages project is built from this same folder, so it deploys this Function too. It has no verification pages and its
+  // project has no API_URL, but say so here instead of relying on that: on the expert host this is a pass-through and nothing more.
+  if (/^experts?\./i.test(new URL(request.url).hostname)) return response
+
   if (!env.API_URL || !code) return response
   // Every Worker route lives under /api. DEPLOYMENT.md used to say to set
   // API_URL to the bare host, which made this fetch hit /verify/<code> (404)

@@ -18,7 +18,7 @@ The realm stays **off** until step 9. Steps 1 to 8 change nothing a customer or 
 - Already present from Phase 1 and needed: the field-encryption key (seals the two-factor secrets), `RESEND_API_KEY`, `SUPABASE_*`.
 - Do **not** add the expert site to `CORS_EXTRA_ORIGINS`. The expert page calls the API on its own host, so it needs no CORS, and adding it would let that origin call the main API cross-site.
 
-**4. The expert site (Cloudflare Pages, a new project).** Connect the same repo. Root directory `frontend`, build command `npm run build:experts`, output directory `dist-experts`, no build variables needed (it never reads `VITE_API_URL`). Add the custom domain `experts.usepassthrough.com`.
+**4. The expert site (Cloudflare Pages, a new project).** Connect the same repo. Root directory `frontend`, build command `npm run build:experts`, output directory `dist-experts`, no build variables needed (it never reads `VITE_API_URL`). Add the custom domain `experts.usepassthrough.com`. The build writes `dist-experts/index.html` (the single-page fallback in `_redirects` is the documented `/* /index.html 200`). Do NOT set `API_URL` on this project: it is built from the same folder as the main site, so it also carries the main site's `/v/:code` preview Function, which does nothing on the `experts.` host and must stay that way. Local use: `npm run dev:experts` with `EXPERT_SITE_URL=http://experts.localhost` on the API (the dev proxy states that Host and Origin).
 
 **5. DNS and the API route.**
 - DNS: `experts` CNAME to the Pages project (proxied), as Pages instructs when you add the custom domain.

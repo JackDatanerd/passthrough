@@ -78,6 +78,23 @@
   X-Robots-Tag: noindex, nofollow
   Cache-Control: no-store
 
+# A11: a customer's human-rewrite orders and the Phase 1 expert console are private pages: kept out of search and never cached. (The order page's
+# address carries the payment reference after a Paystack return, so it is also never sent on as a referrer to another site.)
+/human
+  X-Robots-Tag: noindex, nofollow
+/human/*
+  X-Robots-Tag: noindex, nofollow
+  Cache-Control: no-store
+  ! Referrer-Policy
+  Referrer-Policy: no-referrer
+/expert
+  X-Robots-Tag: noindex, nofollow
+/expert/*
+  X-Robots-Tag: noindex, nofollow
+  Cache-Control: no-store
+  ! Referrer-Policy
+  Referrer-Policy: no-referrer
+
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
 

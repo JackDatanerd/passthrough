@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useSearchParams, useNavigate } from 'react-router-dom'
+import { useSearchParams, useNavigate, Link } from 'react-router-dom'
 import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
 import Textarea from '../../components/ui/Textarea'
@@ -23,7 +23,7 @@ export default function HumanOrder() {
   const [results, setResults] = useState([{ result: '', number: '', confirmer: '' }, { result: '', number: '', confirmer: '' }, { result: '', number: '', confirmer: '' }])
   const [ticks, setTicks] = useState({ terms: false, age: false, rights: false, learning: false })
   const [busy, setBusy] = useState(false); const [err, setErr] = useState(''); const [note, setNote] = useState('')
-  const [order, setOrder] = useState(null); const [files, setFiles] = useState([]); const [link, setLink] = useState('')
+  const [existing, setExisting] = useState(null); const [order, setOrder] = useState(null); const [files, setFiles] = useState([]); const [link, setLink] = useState('')
 
   useEffect(() => { human.config().then(setCfg).catch(e => setLoadErr(getErrorMessage(e, 'Human rewrite is not available.'))) }, [])
   if (!scanId) return <Page><Alert variant="error">Choose a resume to rewrite first.</Alert></Page>
@@ -37,7 +37,7 @@ export default function HumanOrder() {
   const ready = !!chosen && brief.targetRole.trim().length >= 2 && ticks.terms && ticks.age && ticks.rights
 
   const submit = async () => {
-    setBusy(true); setErr(''); setNote('')
+    setBusy(true); setErr(''); setNote(''); setExisting(null)
     const body = { scanId, tier, addCoverLetter: cover, brief: { ...brief, topResults: results.filter(r => r.result.trim()) }, consents: { terms: true, age: true, rights: true, learning: ticks.learning } }
     try {
       let d
@@ -46,7 +46,10 @@ export default function HumanOrder() {
         if (e?.response?.data?.code === 'NO_STRUCTURED_RESUME') { setNote('Reading your resume\u2026'); await human.structure(scanId); d = await human.create(body) } else throw e
       }
       setOrder(d); setNote(d.codeIgnored || '')
-    } catch (e) { setErr(getErrorMessage(e, 'We could not start your order. Please try again.')) } finally { setBusy(false) }
+    } catch (e) {
+      if (e?.response?.data?.code === 'ALREADY_ORDERED' && e.response.data.orderId) setExisting(e.response.data.orderId)    // A11: say where that order is
+      setErr(getErrorMessage(e, 'We could not start your order. Please try again.'))
+    } finally { setBusy(false) }
   }
   const pay = () => { if (order?.authorizationUrl) window.location.assign(order.authorizationUrl); else setErr('Payment could not be opened. Please try again.') }
   const upload = async f => { if (!f) return; setErr(''); try { await human.upload(order.orderId, f); setFiles(x => [...x, f.name]) } catch (e) { setErr(getErrorMessage(e, 'That file could not be added.')) } }
@@ -72,7 +75,7 @@ export default function HumanOrder() {
 
   return (
     <Page title="Order a human rewrite">
-      {err && <Alert variant="error" className="mb-3">{err}</Alert>}
+      {err && <Alert variant="error" className="mb-3">{err}{existing && <> <Link to={`/human/orders?order=${encodeURIComponent(existing)}`} className="font-medium underline">See that order</Link></>}</Alert>}
       <div className="mb-4">
         <RadioGroup legend="How fast?" value={tier} onChange={setTier}
           options={cfg.tiers.map(t => ({ value: t.tier, label: `${t.label}${t.turnaroundHours ? ` (${hoursLabel(t.turnaroundHours)})` : ''}: ${money(t.priceCents)}` }))} />

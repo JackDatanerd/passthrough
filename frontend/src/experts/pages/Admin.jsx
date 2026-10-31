@@ -1,9 +1,10 @@
 // The expert admin console: job board with timeline, assign and reassign, the expert directory, the refund action (through the bridge, with a fresh
 // password check) and the audit log viewer. Every screen shows identifiers, states and times only: no resume text, no contact details.
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { admin, realm, errorMessage, errorCode } from '../api'
 import { useSession } from '../session'
+import { parseDollars, formatDollars } from '../money'
 import { Page } from '../Layout'
 import Button from '../../components/ui/Button'
 import Alert from '../../components/ui/Alert'
@@ -20,8 +21,9 @@ const label = s => String(s || '').replace(/_/g, ' ')
 const OFFER_STATES = ['offered', 'open'], WORK_STATES = ['claimed', 'in_progress', 'waiting_customer']
 
 export function Board() {
-  const [state, setState] = useState(''); const [jobs, setJobs] = useState(null); const [error, setError] = useState('')
-  useEffect(() => { setJobs(null); admin.board(state).then(setJobs).catch(err => setError(errorMessage(err))) }, [state])
+  const [state, setState] = useState(''); const [jobs, setJobs] = useState(null); const [error, setError] = useState(''); const seq = useRef(0)
+  // A11: only the answer to the filter that is selected NOW is shown (answers can arrive out of order), and an old error goes when a new load starts
+  useEffect(() => { const mine = ++seq.current; setJobs(null); setError(''); admin.board(state).then(r => { if (mine === seq.current) setJobs(r) }).catch(err => { if (mine === seq.current) setError(errorMessage(err)) }) }, [state])
   return (
     <Page title="Job board" wide>
       <label className="text-sm block mb-3">State <select className="border rounded px-2 py-1 ml-2" value={state} onChange={e => setState(e.target.value)}><option value="">All</option>{STATES.map(s => <option key={s} value={s}>{label(s)}</option>)}</select></label>
@@ -78,8 +80,8 @@ function RefundModal({ jobId, jobNumber, onClose, onDone }) {
     setBusy(true); setError('')
     try {
       if (needPw) { await realm.stepUp(pw); setPw(''); setNeedPw(false) }
-      const cents = amount.trim() ? Math.round(parseFloat(amount) * 100) : undefined
-      if (amount.trim() && !(cents > 0)) { setError('Enter a valid amount, or leave it empty for the full refund.'); return }
+      const cents = amount.trim() ? parseDollars(amount) : undefined
+      if (amount.trim() && cents == null) { setError('Enter the amount with digits and a dot only, for example 10.50, or leave it empty for the full refund.'); return }
       await admin.refund(jobId, { reason: reason.trim(), amountCents: cents, idemKey: key }); onDone()
     } catch (err) { if (errorCode(err) === 'STEP_UP_REQUIRED') setNeedPw(true); else setError(errorMessage(err)) } finally { setBusy(false) }
   }
@@ -89,6 +91,7 @@ function RefundModal({ jobId, jobNumber, onClose, onDone }) {
         <p>This sends the customer's money back through the payment provider and cannot be undone. The expert's pay for this job is reversed when the refund completes. Leave the amount empty to refund everything that is left.</p>
         {error && <Alert variant="error" focusOnShow>{error}</Alert>}
         <Input label="Amount in dollars (optional)" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} />
+        <p className="muted" data-testid="refund-preview">{!amount.trim() ? 'Everything that is left will be refunded.' : parseDollars(amount) != null ? `${formatDollars(parseDollars(amount))} will be refunded.` : 'This is not an amount. Use digits and a dot, for example 10.50.'}</p>
         <Input label="Reason (5 to 300 characters, recorded)" value={reason} onChange={e => setReason(e.target.value)} />
         {needPw && <PasswordInput label="Confirm your password to continue" autoComplete="current-password" value={pw} onChange={e => setPw(e.target.value)} />}
         <div className="flex gap-2 justify-end"><Button variant="secondary" onClick={onClose}>Cancel</Button><Button variant="danger" loading={busy} disabled={reason.trim().length < 5 || (needPw && !pw)} onClick={send}>{needPw ? 'Confirm and refund' : 'Refund'}</Button></div>
@@ -112,14 +115,17 @@ export function Directory() {
 }
 
 export function AuditLog() {
-  const [rows, setRows] = useState([]); const [next, setNext] = useState(null); const [action, setAction] = useState(''); const [error, setError] = useState(''); const [loaded, setLoaded] = useState(false)
+  const [rows, setRows] = useState([]); const [next, setNext] = useState(null); const [typed, setTyped] = useState(''); const [action, setAction] = useState(''); const [error, setError] = useState(''); const [loaded, setLoaded] = useState(false); const seq = useRef(0)
+  // A11: the filter is applied once typing pauses (it used to send a request per keystroke), and only the newest request's answer is kept
+  useEffect(() => { const t = setTimeout(() => setAction(typed), 350); return () => clearTimeout(t) }, [typed])
   const load = useCallback(async (before, append) => {
-    try { const r = await admin.audit({ ...(before ? { before } : {}), ...(action ? { action } : {}) }); setRows(p => (append ? [...p, ...r.entries] : r.entries)); setNext(r.nextBefore); setLoaded(true) } catch (err) { setError(errorMessage(err)) }
+    const mine = ++seq.current; setError(''); if (!append) setLoaded(false)
+    try { const r = await admin.audit({ ...(before ? { before } : {}), ...(action ? { action } : {}) }); if (mine !== seq.current) return; setRows(p => (append ? [...p, ...r.entries] : r.entries)); setNext(r.nextBefore); setLoaded(true) } catch (err) { if (mine === seq.current) setError(errorMessage(err)) }
   }, [action])
   useEffect(() => { load(null, false) }, [load])
   return (
     <Page title="Audit log" wide>
-      <Input label="Filter by action (exact, for example money.refund_queued)" value={action} onChange={e => setAction(e.target.value.trim())} wrapperClassName="mb-3 max-w-md" />
+      <Input label="Filter by action (exact, for example money.refund_queued)" value={typed} onChange={e => setTyped(e.target.value.trim())} wrapperClassName="mb-3 max-w-md" />
       {error && <Alert variant="error">{error}</Alert>}{!loaded && !error && <Spinner />}
       {loaded && rows.length === 0 && <EmptyState>No entries.</EmptyState>}
       {rows.length > 0 && <div className="sheet"><DataTable caption="Audit log" rows={rows} rowKey={r => r.id} density="compact" columns={[

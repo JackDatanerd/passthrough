@@ -264,6 +264,20 @@ async function getOrder(ctx) {
     wording: { refunds: WORDING.refunds, privacy: WORDING.privacy } } })
 }
 
+// A11 (G1): an order the customer started but did not pay can be paid from the orders page. The Paystack transaction made at checkout is
+// still open under its stored access code, so this hands back its checkout address; no new transaction, no new reference, and the
+// callback set at checkout (this order's page, with its reference) still applies. Anything else is told plainly what to do.
+async function payOrder(ctx) {
+  const g = guardUser(ctx); if (g.res) return g.res
+  const supabase = getSupabase(ctx.env)
+  const j = await ownJob(ctx, supabase, g.user, ctx.req.param('id'), 'id, state, payment_id'); if (!j) return bad(ctx, 'Order not found.', 404)
+  if (j.state !== 'awaiting_payment') return bad(ctx, 'This order does not need a payment.', 409, { code: 'NOT_AWAITING_PAYMENT' })
+  const { data: pay, error } = await supabase.from('payments').select('id, status, paystack_ref, paystack_access_code').eq('id', j.payment_id).maybeSingle()
+  if (error) throw error
+  if (!pay || pay.status !== 'PENDING' || !pay.paystack_access_code) return bad(ctx, 'This payment can no longer be opened. Please start a new order from your scan.', 409, { code: 'PAYMENT_CLOSED' })
+  return ctx.json({ success: true, data: { reference: pay.paystack_ref, authorizationUrl: `https://checkout.paystack.com/${encodeURIComponent(pay.paystack_access_code)}` } })
+}
+
 const answerBody = z.object({ answer: z.string().trim().min(1).max(2000) }).strict()
 async function answerQuestion(ctx) {
   const g = guardUser(ctx); if (g.res) return g.res
@@ -336,5 +350,5 @@ async function cancelOrder(ctx) {
   return ctx.json({ success: true, data: { refund: refund.ok ? 'QUEUED' : 'REVIEW' } })
 }
 
-module.exports = { getConfig, createOrder, listOrders, getOrder, answerQuestion, acceptOrder, requestRevision, rateOrder, cancelOrder, WORDING, TERMS_VERSION, STATUS_LABEL,
+module.exports = { getConfig, createOrder, listOrders, getOrder, payOrder, answerQuestion, acceptOrder, requestRevision, rateOrder, cancelOrder, WORDING, TERMS_VERSION, STATUS_LABEL,
   _internal: { loadShared, saveNewLocked, capacityLeft, ownJob, guardUser, bad, isUuid } }

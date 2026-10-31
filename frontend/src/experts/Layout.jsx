@@ -1,4 +1,5 @@
-import { Link, NavLink, useNavigate } from 'react-router-dom'
+import { useEffect } from 'react'
+import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { useSession, mayShow } from './session'
 
 export function Page({ title, children, wide }) {
@@ -10,7 +11,14 @@ export function Page({ title, children, wide }) {
   )
 }
 
+// A11: the tab title says where you are, and a screen reader is told when the screen changes (the page never reloads, so neither happens by itself)
+const TITLES = [[/^\/sign-in/, 'Sign in'], [/^\/two-factor/, 'Two-factor code'], [/^\/recovery-codes/, 'Recovery codes'], [/^\/forgot-password/, 'Forgot your password'], [/^\/reset-password/, 'Reset your password'],
+  [/^\/desk/, 'Desk'], [/^\/settings/, 'Settings'], [/^\/admin\/jobs/, 'Job'], [/^\/admin\/experts/, 'Experts'], [/^\/admin\/audit/, 'Audit log'], [/^\/admin/, 'Job board']]
+export const routeTitle = pathname => { const hit = TITLES.find(([re]) => re.test(pathname)); return hit ? `${hit[1]} \u2014 Passthrough Experts` : 'Passthrough Experts' }
+
 export function Shell({ children }) {
+  const { pathname } = useLocation(); const title = routeTitle(pathname)
+  useEffect(() => { document.title = title }, [title])
   const { me, signOut } = useSession(); const nav = useNavigate(); const roles = me ? me.roles : []
   const link = ({ isActive }) => `px-3 py-2 text-sm ${isActive ? 'underline' : 'opacity-90 hover:opacity-100'}`
   return (
@@ -27,6 +35,7 @@ export function Shell({ children }) {
           {me && <button type="button" className="px-3 py-2 text-sm" onClick={async () => { await signOut(); nav('/sign-in') }}>Sign out</button>}
         </div>
       </header>
+      <div role="status" aria-live="polite" className="sr-only" data-testid="route-announcer">{title}</div>
       {children}
     </div>
   )

@@ -23,6 +23,7 @@ import { statusLabel } from '../../lib/utils'
 import ToggleChip from '../../components/ui/ToggleChip'
 import { createPoller } from '../../lib/poller'
 import { loadNeedsDecision } from '../../lib/needsDecision'
+import { HumanOrdersLink } from '../../components/scan/HumanOrderEntry'
 import { describeQuota } from '../../lib/quota'
 import { canDeleteScan, isLive, effectiveSearch } from '../../lib/scanDisplay'
 import { isAlreadyVerified } from '../../lib/resendVerification'
@@ -370,6 +371,7 @@ export default function DashboardIndex() {
       <div className="flex flex-col gap-6">
         {/* Asks, 14 days after a fix landed, whether it led to an interview. */}
         <OutcomeCard showStories={false} />
+        <HumanOrdersLink />
         <div className="flex items-start justify-between flex-wrap gap-3">
           <div>
             <h1 className="text-xl font-bold text-gray-900">Your scans</h1>

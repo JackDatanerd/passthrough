@@ -27,3 +27,17 @@ export default function HumanOrderEntry({ scanId }) {
     </div>
   )
 }
+
+// A11 (G3): the way back into the orders page from the dashboard (it was reachable only from an email or the payment return). Same rules as
+// the offer card: nothing is rendered and NO request is made unless the build flag is on, and it shows only for an account that has orders.
+export function HumanOrdersLink() {
+  const [n, setN] = useState(0)
+  useEffect(() => {
+    let off = false
+    if (!EXPERTS_UI) return undefined
+    Promise.resolve().then(() => human.list()).then(list => { if (!off) setN(Array.isArray(list) ? list.length : 0) }).catch(() => {})
+    return () => { off = true }
+  }, [])
+  if (!EXPERTS_UI || n === 0) return null
+  return <p className="text-sm" data-testid="human-orders-link"><Link to="/human/orders" className="font-medium text-blue-700 hover:underline">Your human rewrite orders ({n}) {'\u2192'}</Link></p>
+}

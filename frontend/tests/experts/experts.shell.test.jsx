@@ -12,7 +12,7 @@ const { realm, admin } = vi.hoisted(() => {
   return { realm: f(['login', 'totpSetup', 'totp', 'recover', 'me', 'logout', 'logoutAll', 'sessions', 'endSession', 'stepUp', 'changePassword', 'newRecoveryCodes', 'forgot', 'reset', 'desk']),
     admin: f(['board', 'job', 'assign', 'reassign', 'refund', 'experts', 'audit']) }
 })
-vi.mock('../../src/experts/api', () => ({ realm, admin, errorMessage: (e, f) => e?.response?.data?.message || f, errorCode: e => e?.response?.data?.code || null }))
+vi.mock('../../src/experts/api', () => ({ realm, admin, errorMessage: (e, f) => e?.response?.data?.message || f, errorCode: e => e?.response?.data?.code || null, onSessionEnded: () => () => {} }))
 import App from '../../src/experts/App'
 import { SessionProvider } from '../../src/experts/session'
 

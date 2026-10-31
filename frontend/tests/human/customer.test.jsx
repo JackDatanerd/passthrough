@@ -92,7 +92,8 @@ describe('HumanOrders', () => {
     fireEvent.click(await screen.findByRole('button', { name: /HJ-ABC234/ }))
     expect(await screen.findByText(/ATS score 41/)).toBeInTheDocument(); expect(screen.getByText(/55%/)).toBeInTheDocument(); expect(screen.getByText(/accepted automatically/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /download word/i })).toBeInTheDocument(); expect(screen.getByRole('button', { name: /download pdf/i })).toBeInTheDocument(); expect(screen.queryByRole('button', { name: /cover letter/i })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /^accept$/i })); await waitFor(() => expect(api.post).toHaveBeenCalledWith('/human/orders/11111111-1111-4111-8111-111111111111/accept'))
+    fireEvent.click(screen.getByRole('button', { name: /^accept$/i })); expect(api.post).not.toHaveBeenCalled()       // A11: accept asks first
+    fireEvent.click(await screen.findByRole('button', { name: /yes, accept/i })); await waitFor(() => expect(api.post).toHaveBeenCalledWith('/human/orders/11111111-1111-4111-8111-111111111111/accept'))
   })
   it('coming back from Paystack verifies the reference through the existing verify endpoint', async () => {
     view([O], D, '/human/orders?reference=ref-123')

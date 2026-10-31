@@ -6,6 +6,7 @@ export const human = {
   create: body => api.post('/human/orders', body).then(r => r.data.data),
   list: () => api.get('/human/orders').then(r => r.data.data.orders),
   get: id => api.get(`/human/orders/${id}`).then(r => r.data.data),
+  pay: id => api.post(`/human/orders/${id}/pay`).then(r => r.data.data),
   structure: scanId => api.post(`/scan/${scanId}/structure`).then(r => r.data),
   verify: reference => api.get(`/payments/verify?reference=${encodeURIComponent(reference)}`).then(r => r.data),
   answer: (id, qid, answer) => api.post(`/human/orders/${id}/questions/${qid}`, { answer }),

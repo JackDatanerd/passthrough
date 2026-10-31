@@ -4,6 +4,16 @@
 import axios from 'axios'
 
 const http = axios.create({ baseURL: '/api', timeout: 30_000, withCredentials: true })
+export const _http = http     // for tests: the one place a request can be stubbed
+
+// A11: when the server says the session is gone (code AUTH: idle too long, "sign out everywhere", a password change elsewhere), tell the session
+// owner once, so the app goes back to sign-in instead of sitting on a screen full of errors. A wrong password or code carries other codes and is untouched.
+const endedListeners = new Set()
+export const onSessionEnded = fn => { endedListeners.add(fn); return () => endedListeners.delete(fn) }
+http.interceptors.response.use(r => r, err => {
+  if (err && err.response && err.response.status === 401 && err.response.data && err.response.data.code === 'AUTH') endedListeners.forEach(fn => { try { fn() } catch (_) { /* a listener must not mask the request's own error */ } })
+  return Promise.reject(err)
+})
 const data = r => r.data.data
 const R = '/expert-realm', A = '/expert-admin'
 

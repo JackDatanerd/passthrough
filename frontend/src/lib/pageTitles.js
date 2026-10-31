@@ -25,6 +25,10 @@ const ROUTES = [
   [/^\/dashboard\/proof/, 'Proof'],
   [/^\/dashboard\/story/, 'My Story'],
   [/^\/dashboard/, 'Your scans'],
+  [/^\/human\/orders\/?$/, 'Your human rewrite orders'],
+  [/^\/human\/order\/?$/, 'Order a human rewrite'],
+  [/^\/human/, 'Human rewrite'],
+  [/^\/expert/, 'Expert workbench'],
   [/^\/admin/, 'Admin'],
   [/^\/partner/, 'Partner'],
 ]
@@ -34,7 +38,7 @@ const ROUTES = [
 // link-preview Function adds, and only when its API call succeeded in time. public/_headers now
 // sends X-Robots-Tag for /v/* too.
 // Case-insensitive like the router, so "/Dashboard" is private too.
-const PRIVATE = /^\/(scan|dashboard|admin|partner|payment|reset-password|verify-email|v)(\/|$)/i
+const PRIVATE = /^\/(scan|dashboard|admin|partner|payment|reset-password|verify-email|v|human|expert)(\/|$)/i
 
 // A page listed in lib/publicPages.js (the search-index registry) names its own title there: the static <head> a crawler
 // reads before any JavaScript runs and the tab title set here must be the same string, and a page added to the

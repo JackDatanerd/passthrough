@@ -1,0 +1,24 @@
+Experts audit A11 (frontend and expert site build), pass 1. Base e655154. No migration.
+
+Customer pages
+  B1  Paystack return: pending / declined / needs-support / retry handled (lib/humanPaymentCheck.js, HumanOrders.jsx)
+  B2  Cancel and Accept ask first
+  B5  no stale "expected by" line; B6 tracker wording (unpaid, revision); B11 load error no longer says "no orders"
+  B7  /human/* and /expert/* are private: pageTitles.js, public/_headers
+  G1  pay an unpaid order: POST /api/human/orders/:id/pay (human.controller.js, human.routes.js) + button
+  G2  supporting materials list / remove / add on the orders page
+  G3  dashboard link (HumanOrdersLink), ?order= opens an order, refused second order links to it
+  G4  orders page refreshes itself (60 s, not while hidden)
+
+Expert site
+  B3  session ended by the server -> back to sign-in (api.js interceptor, session.jsx, visibility re-check)
+  B4  refund amount strictly parsed (experts/money.js) and previewed
+  B9  job board / audit log: newest answer wins, errors cleared, audit filter debounced
+  B10 one two-factor setup key per enrolment
+  G5  tab titles and route announcement
+  B8  public-experts/_headers: ! Cache-Control for /assets/*
+  B12 dev proxy Origin; B13 /v/:code Function is a pass-through on experts.; B14 build writes index.html, _redirects is /* /index.html 200
+
+Tests: tests/human.orders.test.js (3 added), frontend/tests/human/a11.customer.test.jsx, frontend/tests/experts/a11.experts.test.jsx,
+frontend/tests/a11.config.test.js; orderTracker / customer / experts.shell tests updated for the new behaviour.
+Docs: docs/experts/audit/a11-pass1.md, AUDIT-PLAN.md row, phase2a/deployment-checklist.md.

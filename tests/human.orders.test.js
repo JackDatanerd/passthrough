@@ -189,6 +189,24 @@ describe('reading and acting on an order', () => {
     const r = await post(a, `/api/human/orders/${id}/cancel`, {}); expect(r.status).toBe(409); expect((await r.json()).message).toMatch(/just taken/)
     expect(seen[0]).toMatchObject({ p_job: id, p_only_states: ['offered', 'open'] }); expect(j.state).toBe('offered')
   })
+  it('A11: an unpaid order can be paid from the orders page: the open transaction is handed back, nothing new is created', async () => {
+    const { a, id } = await placed(); const before = { pay: t.world.t.payments.length, init: t.init.length }
+    const r = await post(a, `/api/human/orders/${id}/pay`, {}); expect(r.status).toBe(200)
+    const d = (await r.json()).data
+    expect(d.authorizationUrl).toBe('https://checkout.paystack.com/AC1'); expect(d.reference).toBe(t.world.t.payments[0].paystack_ref)
+    expect(t.world.t.payments.length).toBe(before.pay); expect(t.init.length).toBe(before.init)
+  })
+  it('A11: paying again is refused once the order is paid, closed, abandoned or has no open transaction; a stranger gets 404', async () => {
+    const { a, id } = await placed(); const j = t.world.t.human_jobs[0]; const p = t.world.t.payments[0]
+    p.status = 'ABANDONED'; let r = await post(a, `/api/human/orders/${id}/pay`, {}); expect(r.status).toBe(409); expect((await r.json()).code).toBe('PAYMENT_CLOSED')
+    p.status = 'PENDING'; p.paystack_access_code = null; expect((await post(a, `/api/human/orders/${id}/pay`, {})).status).toBe(409)
+    p.paystack_access_code = 'AC1'; j.state = 'offered'; r = await post(a, `/api/human/orders/${id}/pay`, {}); expect(r.status).toBe(409); expect((await r.json()).code).toBe('NOT_AWAITING_PAYMENT')
+    j.state = 'awaiting_payment'; j.customer_user_id = 'someone-else'; expect((await post(a, `/api/human/orders/${id}/pay`, {})).status).toBe(404)
+  })
+  it('A11: the pay route is behind the flag like every other human route', async () => {
+    const a = build(); const r = await a.request(`/api/human/orders/${SCAN}/pay`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }, {})
+    expect(r.status).toBe(404)
+  })
   it('rating validates stars; accept and revision are only available once delivered (the database decides)', async () => {
     const { a, id } = await placed()
     expect((await post(a, `/api/human/orders/${id}/rate`, { stars: 9 })).status).toBe(400)

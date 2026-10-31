@@ -9,5 +9,8 @@
   Permissions-Policy: camera=(), microphone=(), geolocation=()
   Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'
 
+# The catch-all above says no-store. Pages JOINS same-named headers from every rule a path matches, so without the detach line the hashed files
+# would be sent as "no-store, public, max-age=31536000, immutable" and never cached. `!` removes the inherited value first.
 /assets/*
+  ! Cache-Control
   Cache-Control: public, max-age=31536000, immutable

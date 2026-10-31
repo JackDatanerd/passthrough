@@ -9,9 +9,9 @@ import Button from '../../components/ui/Button'
 import Alert from '../../components/ui/Alert'
 
 export default function TwoFactor() {
-  const nav = useNavigate(); const { stage, refresh, setStage } = useSession()
-  const [setup, setSetup] = useState(null); const [code, setCode] = useState(''); const [useRecovery, setUseRecovery] = useState(false); const [busy, setBusy] = useState(false); const [error, setError] = useState('')
-  useEffect(() => { if (stage === 'enroll' && !setup) realm.totpSetup().then(setSetup).catch(err => setError(errorMessage(err))) }, [stage, setup])
+  const nav = useNavigate(); const { stage, setup, ensureSetup, refresh, setStage } = useSession()
+  const [code, setCode] = useState(''); const [useRecovery, setUseRecovery] = useState(false); const [busy, setBusy] = useState(false); const [error, setError] = useState('')
+  useEffect(() => { if (stage === 'enroll' && !setup) ensureSetup().catch(err => setError(errorMessage(err))) }, [stage, setup, ensureSetup])
   if (!stage) return <Navigate to="/sign-in" replace />
   async function submit(e) {
     e.preventDefault(); setBusy(true); setError('')
