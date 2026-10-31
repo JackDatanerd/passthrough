@@ -1299,3 +1299,26 @@ Operator notes for the newest migrations. Apply each migration before deploying 
 # ORDER: a Worker that predates look 4 reads the new default as look 1, so the Worker goes out before the migration.
 # The badge (SVG/PNG) and the 1200x630 share card now lead with the same tile; the PNG badge and the card are 4-bit indexed images instead of 2-bit.
 # Cover letters are untouched (their query does not select doc_marks, so the Worker is safe to deploy before the column exists).
+
+# ======================================================================================================================================
+# MIGRATION RUNBOOK, 0119 ONWARD (audit A10). One row per migration: what to do about the Worker, and what it is. tests/migrations.numbering.test.js
+# fails when a migration from 0119 on has no row here, so the order is written down where the person deploying looks, not only in a CHANGES file.
+# Default rule: apply the migration BEFORE deploying the Worker that needs it (EXPECTED_SCHEMA_VERSION ships with the Worker, and a database
+# AHEAD of the Worker is a note, never a failure). Exceptions are marked "Worker first": for those the Worker goes out first and /health reads
+# "database behind the code" (red, one owner email a day) until the migration is applied, so apply it in the same sitting.
+# After applying, check:  select version, name from applied_migrations where version >= 119 order by version;   -- every number, no gaps
+#
+# | 0119 | before | human demand test tables (flag HUMAN_DEMAND_ENABLED) |
+# | 0120 | before | scans.first_delivered_at, stamped by a trigger |
+# | 0121 | before | one compensating credit per purchase |
+# | 0122 | before | the interview-question clock starts at the first REAL resume |
+# | 0123 | before | referral usage release stamp restored |
+# | 0124 | before | Experts Phase 1 pilot tables and functions (flag EXPERTS_ENABLED); product_kind on payments |
+# | 0125 | before | partners round 44: channel-tag eviction guard (created_at). Older copies of this file recorded themselves as 124: re-run the current file once |
+# | 0126 | Worker first | document look 4 marks (see the DOCUMENT LOOK 4 section above) |
+# | 0127 | before | Experts realm and job engine (flag EXPERT_REALM_ENABLED) |
+# | 0128 | before | Experts audit A3: content-access functions |
+# | 0129 | before | Experts audit A4: engine fixes, give-back window |
+# | 0130 | before | Experts audit A6: money (late-payment refund, payout key and freeze, adjustments, void) |
+#
+# Going back: `node scripts/experts-rollback.cjs --to <version>` prints the SQL (derived from the migration files, tested by running it).

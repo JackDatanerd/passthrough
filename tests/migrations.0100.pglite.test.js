@@ -108,6 +108,7 @@ describe('0100: channel tags and sessions', () => {
   it('a full code evicts its quietest unattributed tag for a new one', async () => {
     for (let i = 0; i < 50; i++) await sub(`t${i}`)
     for (let i = 1; i < 50; i++) await sub(`t${i}`)       // t0 stays quietest
+    await q(`update referral_sub_clicks set created_at = now() - interval '8 days'`)   // 0125: only a tag older than 7 days can be displaced
     await sub('real-channel')
     const tags = (await q(`select sub from referral_sub_clicks`)).map(r => r.sub)
     expect(tags).toHaveLength(50)
@@ -115,6 +116,7 @@ describe('0100: channel tags and sessions', () => {
     expect(tags).not.toContain('t0')
   })
   it('tags tied to a payment are never evicted', async () => {
+    await q(`update referral_sub_clicks set created_at = now() - interval '8 days'`)   // old enough to be evictable, so only the payment protects them
     const { rows } = await db.query(`select sub from referral_sub_clicks`)
     for (const r of rows) {
       const [{ id: pay }] = await q(`insert into payments (amount_cents, paystack_ref, user_id, referral_code_id, referral_sub) values (1900, $1, '${U1}', '${C1}', $2) returning id`, ['att' + Math.random(), r.sub])

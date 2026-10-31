@@ -28,7 +28,7 @@ Order is by risk (money, content access, identity first).
 | A7 | Audit log, bridge, refund path, admin console actions | `expertAudit/Bridge.service.js`, `expert-admin.controller.js` refund, `reversePayment` hook | step-up and reasons; refund is the one money action in 2A | |
 | A8 | Customer order flow: checkout, settle, sweep, delivery, retention, deletion, emails | `human.controller.js`, `humanSweep.js`, `humanDelivery.service.js`, `humanJobs.service.js` | | |
 | A9 | Phase 1 admin screens and expert accounts and payouts | `admin-human.controller.js`, `expert-auth.controller.js`, `expertAuth.js`, `AdminHumanOrders.jsx` | | |
-| A10 | Migrations and schema consistency: numbering (0125 records itself as 124), ledger, `EXPECTED_SCHEMA_VERSION`, RLS and revokes across 0119, 0124, 0127, rollback script | `supabase/migrations/*`, `migrationLedger.js` | cheap, catches deploy failures | |
+| A10 | Migrations and schema consistency: numbering (0125 records itself as 124), ledger, `EXPECTED_SCHEMA_VERSION`, RLS and revokes across 0119, 0124, 0127, rollback script | `supabase/migrations/*`, `migrationLedger.js` | cheap, catches deploy failures | **pass 1 done** (`a10-pass1.md`); pass 2 (independent) to do |
 | A11 | Frontend and expert site build: headers, redirects, CSP, API clients, customer pages, tracker, build isolation | `frontend/src/experts/*`, `public-experts/*`, `pages/human`, `pages/expert` | | |
 | A12 | Demand test (0A) | `human-demand.*`, migration 0119 | low risk, no money, no content | |
 

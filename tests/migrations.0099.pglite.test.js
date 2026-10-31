@@ -34,16 +34,18 @@ beforeAll(async () => {
 afterAll(async () => { await db?.close() })
 
 describe('0099: channel tags are capped per code', () => {
-  // 0100 supersedes 0099's "a 51st new tag is dropped": a full code now EVICTS its quietest unattributed tag for a new one, so 50
-  // random tags can no longer lock a partner's real channels out. The cap itself (50 distinct tags) is unchanged.
-  it('keeps at most 50 distinct tags (0100: a newer tag displaces the quietest instead of being dropped)', async () => {
+  // 0100 made a full code EVICT its quietest unattributed tag instead of dropping the newcomer; 0125 (partners round 44) then said a tag can
+  // only be displaced once it is 7 days old, so a burst of made-up ?sub= values can no longer wipe fresh real channels. The cap itself
+  // (50 distinct tags) is unchanged. Eviction of OLD tags is tested in migrations.0100 / migrations.0125.
+  it('keeps at most 50 distinct tags (0125: while every tag is fresh a newcomer is simply not tracked)', async () => {
     for (let i = 0; i < 60; i++) await sub('ANN10', `junk${i}`)
     expect((await q(`select count(*)::int n from referral_sub_clicks`))[0].n).toBe(50)
-    expect((await q(`select count(*)::int n from referral_sub_clicks where sub = 'junk59'`))[0].n).toBe(1)
+    expect((await q(`select count(*)::int n from referral_sub_clicks where sub = 'junk59'`))[0].n).toBe(0)
+    expect((await q(`select count(*)::int n from referral_sub_clicks where sub = 'junk49'`))[0].n).toBe(1)
   })
   it('a tag that is already stored keeps counting after the cap is reached', async () => {
-    await sub('ANN10', 'junk59'); await sub('ANN10', 'junk59')
-    expect((await q(`select clicks from referral_sub_clicks where sub = 'junk59'`))[0].clicks).toBe(3)
+    await sub('ANN10', 'junk49'); await sub('ANN10', 'junk49')
+    expect((await q(`select clicks from referral_sub_clicks where sub = 'junk49'`))[0].clicks).toBe(3)
   })
   it('the cap is per code, not global', async () => {
     await sub('PAUSED10', 'fresh')

@@ -1,0 +1,16 @@
+Experts audit A10, pass 1: migrations and schema consistency (base aef2905). Details: docs/experts/audit/a10-pass1.md
+
+BUGS
+- 0125 recorded itself as 124: no ledger row for 125 -> /health red forever, daily owner alert whose advice could not clear it. Now records 125, repairs a wrong name on row 124, LEDGER_NAMES[125] added.
+- Test for 0125 had been overwritten (same file name as the Experts 0124 test); 0099/0100 tests stale against 0125. New tests/migrations.0125.pglite.test.js; the two old files updated.
+- rollback-0127.sql failed when run as written and missed 0128/0130: replaced by scripts/experts-rollback.cjs (generated from the migration files).
+- phase2a/deployment-checklist.md stale (code expects the newest version, not 127). STATUS.md literal %s.
+
+FEATURE GAPS BUILT
+- migrations.numbering: every file from 0059 writes/guards its own number; ledger insert has on conflict do nothing; DEPLOYMENT.md has a runbook row for every migration from 0119.
+- tests/migrations.rollback.pglite.test.js executes the generated rollback and compares with the older schema.
+- DEPLOYMENT.md migration runbook (apply order, "Worker first" exceptions).
+
+APPLY: no migration is new. Run the current supabase/migrations/0125_partners_section4_round44.sql once on any database that already ran it (idempotent), then check
+  select version, name from applied_migrations where version >= 119 order by version;   -- 125 present, 124 = 0124_experts_phase1_pilot
+Nothing else to deploy: Worker behaviour is unchanged.

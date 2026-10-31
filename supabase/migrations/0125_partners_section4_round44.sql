@@ -49,10 +49,22 @@ $$;
 revoke execute on function increment_referral_sub_clicks(text, text) from public, anon, authenticated;
 grant  execute on function increment_referral_sub_clicks(text, text) to service_role;
 
-insert into applied_migrations (version, name) values (124, '0124_partners_section4_round44')
+-- Audit A10: this file was written as 0124 and renumbered to 0125 when the Experts migration took 0124, but it kept recording ITSELF as
+-- version 124. On a fresh database one of the two ledger rows was silently skipped and there was never a row for 125, so the health check
+-- stayed red ("0125 was never recorded as applied") and its advice, "run that file again", could not clear it.
+-- Repair for a database that ran the file under its old number BEFORE the Experts 0124: row 124 then holds this file's name and the Experts
+-- migration was never recorded. Where the Experts tables really exist, give row 124 its own name back.
+do $$ begin
+  if to_regclass('public.expert_accounts') is not null then
+    update applied_migrations set name = '0124_experts_phase1_pilot'
+     where version = 124 and name = '0124_partners_section4_round44';
+  end if;
+end $$;
+
+insert into applied_migrations (version, name) values (125, '0125_partners_section4_round44')
 on conflict (version) do nothing;
 
 insert into system_state (key, value)
-values ('schema_version', jsonb_build_object('version', 124, 'applied_at', now()))
+values ('schema_version', jsonb_build_object('version', 125, 'applied_at', now()))
 on conflict (key) do update set value = excluded.value, updated_at = now()
-  where coalesce((system_state.value ->> 'version')::int, 0) < 124;
+  where coalesce((system_state.value ->> 'version')::int, 0) < 125;

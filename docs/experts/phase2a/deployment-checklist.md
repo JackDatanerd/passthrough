@@ -4,12 +4,12 @@ The realm stays **off** until step 9. Steps 1 to 8 change nothing a customer or 
 
 **0. Before you start.** Make the GitHub repo private again. Take a Supabase backup (Dashboard > Database > Backups) or note the restore point.
 
-**1. Apply the migration first, in the Supabase SQL editor.** Paste `supabase/migrations/0127_experts_phase2a_realm.sql` and run it once. It only adds. Check:
-`select version, name from applied_migrations where version in (124, 126, 127);` and `select value from system_state where key = 'schema_version';` (version 127).
-It also copies the Phase 1 pilot jobs' pauses and next actions into the new tables (rows marked `phase1_backfill`); nothing existing is changed. Order matters: the code in step 2 expects 127, and a database ahead of the code is fine, so migrate before you deploy.
-(Seen, not fixed: `0125_partners_section4_round44.sql` records itself as version 124, so the ledger has no row for 125. Not caused by this work; see CHANGES section 8.)
+**1. Apply the migrations first, in the Supabase SQL editor, one file at a time and in order.** Every file above what the database already has and up to the newest one in `supabase/migrations/`: at the time of writing `0127_experts_phase2a_realm.sql`, `0128_experts_a3_content_access.sql`, `0129_experts_engine_audit_a4.sql` and `0130_experts_a6_money.sql` (the Worker's `EXPECTED_SCHEMA_VERSION` is the newest number, not 127, and health stays red until every one is recorded). Each only adds or replaces; each is safe to run twice. Check:
+`select version, name from applied_migrations where version >= 119 order by version;` (a row for every number, including 125 and 126) and `select value from system_state where key = 'schema_version';` (the newest number).
+0127 also copies the Phase 1 pilot jobs' pauses and next actions into the new tables (rows marked `phase1_backfill`); nothing existing is changed. Order matters: the Worker expects the newest version, and a database ahead of the code is fine, so migrate before you deploy.
+(If the check shows no row for 125, or row 124 named `0124_partners_section4_round44`: that is the old 0125 file, which recorded itself as 124. Run the current `0125_partners_section4_round44.sql` once; it records 125 and puts the right name back on 124.)
 
-**2. Deploy the Worker with the flag off.** Apply the patch, push. Confirm `https://api.usepassthrough.com/health` is healthy with schema 127 and the main site, sign-in, a scan and the Phase 1 pilot behave as before. With `EXPERT_REALM_ENABLED` unset, `/api/expert-realm/*` and `/api/expert-admin/*` answer 404.
+**2. Deploy the Worker with the flag off.** Apply the patch, push. Confirm `https://api.usepassthrough.com/health` is healthy with the newest schema version and the main site, sign-in, a scan and the Phase 1 pilot behave as before. With `EXPERT_REALM_ENABLED` unset, `/api/expert-realm/*` and `/api/expert-admin/*` answer 404.
 
 **3. Secrets and variables (Worker, Cloudflare dashboard or `wrangler secret put`).**
 - `EXPERT_REALM_SECRET`: a new random secret, 32+ characters, **different from `JWT_SECRET` and `EXPERT_JWT_SECRET`** (for example `openssl rand -base64 48`). The realm refuses to run otherwise.
@@ -41,5 +41,5 @@ It also copies the Phase 1 pilot jobs' pauses and next actions into the new tabl
 **Rollback.**
 1. Set `EXPERT_REALM_ENABLED` to anything but `true` (or delete it): the whole realm is a 404 again, immediately. Customers and the Phase 1 pilot are unaffected.
 2. Phase 1 (`EXPERTS_ENABLED`, `/api/expert`) was not changed and keeps working throughout, so pilot experts can fall back to it.
-3. If you must undo the data: `docs/experts/phase2a/rollback-0127.sql` (level 1 removes only the copied pilot data; level 2 drops everything 0127 added).
-4. To undo the code: `git revert` the Phase 2A commit and push. Revert only after level 2 if you revert the schema version.
+3. If you must undo the schema: `node scripts/experts-rollback.cjs --to 126` prints the SQL (newest migration back to 126, derived from the migration files and tested by running it; `--to 128` undoes only the newest ones). Read it, then run it once with the flag off and nobody signed in. Added columns stay in place; `expert_audit_log` is never dropped.
+4. To undo the code: `git revert` the Phase 2A commit and push. Run the rollback SQL first if you revert the schema version, then set `EXPECTED_SCHEMA_VERSION` and `migrationLedger.js` back as the script's last lines say.

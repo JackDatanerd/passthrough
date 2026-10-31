@@ -7,7 +7,7 @@ Contract: `passthrough-experts-spec-pack-index.docx` (read first), `passthrough-
 - Phase 0B (non-code groundwork) was built on commit `59f6d4a` (26 Oct 2026, 22:20 +03:00, "Scan/ATS: stop foreign stop words ..."). The files read for Phase 0B tasks 4 and 9 were read at `4f261ac`; the only change between `4f261ac` and `59f6d4a` is the ATS service, its test and a CHANGES file, none of which Phase 0B reads.
 - Phase 0A was built on commit `ae07e09` (26 Oct 2026, 13:34 +03:00, "Partners round 41 ...") and is committed as `4f261ac`.
 - Earlier drafts were checked against `7388d37` and `38817f2` (24 Oct). Between `7388d37` and `ae07e09` no file this work touches or depends on changed.
-- **Phase 1 (concierge pilot) was built on commit `%s`** (28 Oct 2026, 06:44 +03:00, "Partners section 4 round 43 ..."), after four earlier re-clones as the repo moved (bases `6473c79`, `6c2aa26`, `0ba3616`, `491c7f5`). Next free migration at that time: **0124** (files and ledger stood at 123; `EXPECTED_SCHEMA_VERSION` 123).
+- **Phase 1 (concierge pilot) was built on commit `df44f21`** (28 Oct 2026, 06:44 +03:00, "Partners section 4 round 43 ..."), after four earlier re-clones as the repo moved (bases `6473c79`, `6c2aa26`, `0ba3616`, `491c7f5`). Next free migration at that time: **0124** (files and ledger stood at 123; `EXPECTED_SCHEMA_VERSION` 123).
 - Next free migration at the Phase 0A time: **0119** (files, ledger and `EXPECTED_SCHEMA_VERSION` all stood at 118).
 
 ## Phases
